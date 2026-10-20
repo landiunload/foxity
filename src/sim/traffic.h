@@ -71,8 +71,12 @@ typedef struct FoxTrafficStats
     uint64_t removed;
     /* Of the removed: cars taken off after standing a minute. */
     uint64_t stuck;
-    /* Mean speed of all cars, units per second. */
+    /* Mean speed of all cars and the fastest one, units per second. */
     int32_t meanSpeed;
+    int32_t maxSpeed;
+    uint32_t trucks;
+    /* Vehicles that have stood for half a minute or more. */
+    uint32_t waitingLong;
 } FoxTrafficStats;
 
 FoxTraffic *FoxTrafficCreate(const FoxTrafficDesc *desc);

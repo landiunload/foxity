@@ -26,6 +26,12 @@ if(FOX_BUILD_HEADLESS)
         foxity.headless_rejects_options PROPERTIES TIMEOUT 120)
     set_tests_properties(foxity.headless PROPERTIES
         PASS_REGULAR_EXPRESSION "stopped at tick 108000")
+    # A loaded grid with the full statistics at the end.
+    add_test(NAME foxity.headless_grid
+        COMMAND foxity_headless --grid 10 --spacing 80 --cars 800 --ticks 9000
+                --time-scale 10000 --stats)
+    set_tests_properties(foxity.headless_grid PROPERTIES TIMEOUT 120
+        PASS_REGULAR_EXPRESSION "0 dead ends.*-- performance")
 endif()
 if(FOX_BUILD_CLIENT)
     # Presents three frames through the engine modules copied next to the

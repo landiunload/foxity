@@ -238,6 +238,27 @@ static void TestCurve(const FoxPlanet *planet)
     FoxNetworkDestroy(network);
 }
 
+/* A road laid across the dead end of another joins it there. */
+static void TestThroughDeadEnd(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &(FoxRoadPlan){.start = Pole(0, 0),
+                                                                .end = Pole(0, 60),
+                                                                .type = FOX_ROAD_STREET}) ==
+               FOX_ROAD_OK,
+           "a street ending in the open");
+    EXPECT(FoxNetworkBuildRoad(network, planet, &(FoxRoadPlan){.start = Pole(-60, 60),
+                                                                .end = Pole(60, 60),
+                                                                .type = FOX_ROAD_STREET}) ==
+               FOX_ROAD_OK,
+           "a street across its end");
+    EXPECT(FoxNetworkRoadCount(network) == 3u, "the crossing street is cut at the end");
+    EXPECT(FoxNetworkNodeCount(network) == 4u, "the end became a junction");
+    const FoxNetworkStats stats = FoxNetworkGetStats(network);
+    EXPECT(stats.junctions == 1u && stats.deadEnds == 3u, "one junction, three dead ends");
+    FoxNetworkDestroy(network);
+}
+
 int main(void)
 {
     FoxPlanet *planet = FoxPlanetCreate(RADIUS);
@@ -247,6 +268,7 @@ int main(void)
     TestCrossing(planet);
     TestZones(planet);
     TestCurve(planet);
+    TestThroughDeadEnd(planet);
     FoxPlanetDestroy(planet);
     return 0;
 }

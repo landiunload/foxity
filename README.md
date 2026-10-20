@@ -72,7 +72,11 @@ Foxity --drive left
 | `--smoke` | Present three frames and exit |
 
 `FoxityHeadless` runs the city without presentation:
-`--ticks N --time-scale X --cars N --drive right|left --no-routing`.
+`--ticks N --time-scale X --cars N --drive right|left --no-routing`. `--grid N --spacing M`
+loads it with a grid of N roads each way instead of the demo town, and `--stats`
+prints everything at the end: roads, nodes, signs, lanes, turns and conflicts;
+vehicles, speeds by 10 km/h, arrivals and removals; ticks per second and tick
+times.
 
 ## Building
 

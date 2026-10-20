@@ -244,6 +244,59 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
     return ok;
 }
 
+bool FoxWorldBuildGrid(FoxWorld *world, uint32_t lines, int64_t spacing)
+{
+    if (world == NULL || lines < 2u || spacing < FOX_METRES(20) ||
+        (int64_t)(lines - 1u) * spacing > FOX_ROAD_MAX_LENGTH)
+    {
+        return false;
+    }
+    const int64_t half = (int64_t)(lines - 1u) * spacing / 2;
+    const uint32_t middle = lines / 2u;
+    bool ok = true;
+    for (uint32_t pass = 0u; pass < 2u; ++pass)
+    {
+        for (uint32_t line = 0u; line < lines; ++line)
+        {
+            const int64_t at = (int64_t)line * spacing - half;
+            const bool boulevard = line == middle;
+            const bool avenue = line % 4u == 0u || line + 1u == lines;
+            const FoxRoadPlan plan = {
+                .start = pass == 0u ? (FoxVec){at, -half, FoxPlanetRadius(world->planet)}
+                                    : (FoxVec){-half, at, FoxPlanetRadius(world->planet)},
+                .end = pass == 0u ? (FoxVec){at, half, FoxPlanetRadius(world->planet)}
+                                  : (FoxVec){half, at, FoxPlanetRadius(world->planet)},
+                .type = boulevard ? FOX_ROAD_BOULEVARD
+                                  : (avenue ? FOX_ROAD_AVENUE : FOX_ROAD_STREET),
+            };
+            ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+        }
+    }
+    /* Lights where two big roads cross. */
+    for (uint32_t index = 0u; index < FoxNetworkNodeCapacity(world->network); ++index)
+    {
+        FoxNodeView node;
+        if (!FoxNetworkNode(world->network, index, &node) || node.roadCount < 4u)
+        {
+            continue;
+        }
+        uint32_t big = 0u;
+        for (uint32_t slot = 0u; slot < node.roadCount; ++slot)
+        {
+            FoxRoadView road;
+            big += FoxNetworkRoad(world->network, node.roads[slot], &road) &&
+                           road.type != FOX_ROAD_STREET
+                       ? 1u
+                       : 0u;
+        }
+        if (big == node.roadCount)
+        {
+            ok = FoxWorldSetSignals(world, index, true) && ok;
+        }
+    }
+    return ok;
+}
+
 uint64_t FoxWorldHash(const FoxWorld *world)
 {
     if (world == NULL)

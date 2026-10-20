@@ -1688,6 +1688,9 @@ FoxTrafficStats FoxTrafficGetStats(const FoxTraffic *traffic)
         {
             ++stats.vehicles;
             stats.standing += vehicle->speed <= STANDING_SPEED ? 1u : 0u;
+            stats.trucks += vehicle->kind == FOX_VEHICLE_TRUCK ? 1u : 0u;
+            stats.waitingLong += vehicle->waitTicks >= 30u * TICKS ? 1u : 0u;
+            stats.maxSpeed = vehicle->speed > stats.maxSpeed ? vehicle->speed : stats.maxSpeed;
             speeds += vehicle->speed;
         }
     }

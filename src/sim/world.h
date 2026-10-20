@@ -54,6 +54,12 @@ void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles);
  * not be built. */
 bool FoxWorldBuildDemoTown(FoxWorld *world);
 
+/* A square grid around the north pole for loading the city: `lines` roads
+ * each way `spacing` apart. Every fourth line is an avenue, the middle ones
+ * boulevards, and lights stand where those cross. False if a road could not
+ * be built. */
+bool FoxWorldBuildGrid(FoxWorld *world, uint32_t lines, int64_t spacing);
+
 /* One value for the whole state: equal on every machine that ran the same
  * commands. */
 uint64_t FoxWorldHash(const FoxWorld *world);

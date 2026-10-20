@@ -21,6 +21,12 @@ typedef struct FoxHeadlessOptions
     FoxDriveSide driveSide;
     /* Off ignores laiue.navigation even where it is present. */
     bool routing;
+    /* Non-zero builds a grid of this many roads each way instead of the
+     * demo town. */
+    uint32_t gridLines;
+    int64_t gridSpacing;
+    /* Prints the full statistics when the run ends. */
+    bool statistics;
 } FoxHeadlessOptions;
 
 /* Returns the process exit code. */

@@ -1,0 +1,136 @@
+
+
+######## demo town, 300 cars
+foxity info: stopped at tick 18000: 62 roads, 47 nodes, 300 cars (125 standing, mean 1.8 m/s), 589 arrived, 151 taken off stuck, state 54ccdb2a8eb583a3
+== city at tick 18000 (10.0 min), state 54ccdb2a8eb583a3
+routing: laiue.navigation
+-- roads
+roads 62, 4.09 km of road, 8.38 km of lanes in 152 lanes
+  street             49  (50 km/h)
+  avenue             12  (60 km/h)
+  boulevard           1  (70 km/h)
+  one-way street      0  (50 km/h)
+  highway             0  (110 km/h)
+nodes 47: 25 junctions (1 with lights), 2 bends, 20 dead ends
+signs at junctions: 16 priority, 16 give way, 4 stop, 60 none
+speed limits set by hand: 1
+turns through junctions 500, conflicting pairs 1326
+-- traffic
+vehicles 300 (aim 300): 265 cars, 35 trucks
+moving 175, standing 125 (42 %), standing over 30 s 36
+speed: mean 6.6 km/h, fastest 35.0 km/h
+speeds: 0-10:228 10-20:42 20-30:25 30-40:5 km/h
+spawned 451, arrived 589, removed 151 (151 stuck a minute)
+per city minute: 58.9 arrived, 15.10 taken off stuck
+-- performance
+ticks 18000 in 0.219 s: 82027 ticks/s, 2734x real time
+tick: mean 0.012 ms, p50 <= 0.016 ms, p99 <= 0.032 ms, slowest 0.062 ms
+budget used at 1x: 0.04 % of a 33.3 ms tick
+
+######## grid 16x16 80 m, 1000
+foxity info: stopped at tick 18000: 480 roads, 256 nodes, 1000 cars (265 standing, mean 3.5 m/s), 1446 arrived, 120 taken off stuck, state 841bf5329d493cf3
+== city at tick 18000 (10.0 min), state 841bf5329d493cf3
+routing: laiue.navigation
+-- roads
+roads 480, 32.91 km of road, 68.28 km of lanes in 1320 lanes
+  street            330  (50 km/h)
+  avenue            120  (60 km/h)
+  boulevard          30  (70 km/h)
+  one-way street      0  (50 km/h)
+  highway             0  (110 km/h)
+nodes 256: 252 junctions (9 with lights), 4 bends, 0 dead ends
+signs at junctions: 224 priority, 184 give way, 0 stop, 508 none
+speed limits set by hand: 0
+turns through junctions 4592, conflicting pairs 12956
+-- traffic
+vehicles 1000 (aim 1000): 867 cars, 133 trucks
+moving 735, standing 265 (26 %), standing over 30 s 45
+speed: mean 12.4 km/h, fastest 62.5 km/h
+speeds: 0-10:484 10-20:270 20-30:170 30-40:53 40-50:11 50-60:11 60-70:1 km/h
+spawned 1120, arrived 1446, removed 120 (120 stuck a minute)
+per city minute: 144.6 arrived, 12.00 taken off stuck
+-- performance
+ticks 18000 in 1.175 s: 15321 ticks/s, 511x real time
+tick: mean 0.065 ms, p50 <= 0.064 ms, p99 <= 0.128 ms, slowest 0.781 ms
+budget used at 1x: 0.20 % of a 33.3 ms tick
+
+######## grid 16x16 80 m, 3000
+foxity info: stopped at tick 18000: 480 roads, 256 nodes, 3000 cars (1743 standing, mean 1.3 m/s), 1163 arrived, 2324 taken off stuck, state 0fcadf21951c5f38
+== city at tick 18000 (10.0 min), state 0fcadf21951c5f38
+routing: laiue.navigation
+-- roads
+roads 480, 32.91 km of road, 68.28 km of lanes in 1320 lanes
+  street            330  (50 km/h)
+  avenue            120  (60 km/h)
+  boulevard          30  (70 km/h)
+  one-way street      0  (50 km/h)
+  highway             0  (110 km/h)
+nodes 256: 252 junctions (9 with lights), 4 bends, 0 dead ends
+signs at junctions: 224 priority, 184 give way, 0 stop, 508 none
+speed limits set by hand: 0
+turns through junctions 4592, conflicting pairs 12956
+-- traffic
+vehicles 3000 (aim 3000): 2782 cars, 218 trucks
+moving 1257, standing 1743 (58 %), standing over 30 s 596
+speed: mean 4.8 km/h, fastest 56.9 km/h
+speeds: 0-10:2471 10-20:325 20-30:148 30-40:39 40-50:11 50-60:6 km/h
+spawned 5324, arrived 1163, removed 2324 (2324 stuck a minute)
+per city minute: 116.3 arrived, 232.40 taken off stuck
+-- performance
+ticks 18000 in 3.308 s: 5441 ticks/s, 181x real time
+tick: mean 0.184 ms, p50 <= 0.256 ms, p99 <= 0.512 ms, slowest 0.521 ms
+budget used at 1x: 0.55 % of a 33.3 ms tick
+
+######## grid 21x21 60 m, 5000
+foxity info: stopped at tick 18000: 840 roads, 441 nodes, 4898 cars (3254 standing, mean 1.0 m/s), 1009 arrived, 4892 taken off stuck, state 30cf845833fd07e5
+== city at tick 18000 (10.0 min), state 30cf845833fd07e5
+routing: laiue.navigation
+-- roads
+roads 840, 43.25 km of road, 80.96 km of lanes in 2320 lanes
+  street            560  (50 km/h)
+  avenue            240  (60 km/h)
+  boulevard          40  (70 km/h)
+  one-way street      0  (50 km/h)
+  highway             0  (110 km/h)
+nodes 441: 437 junctions (25 with lights), 4 bends, 0 dead ends
+signs at junctions: 396 priority, 344 give way, 0 stop, 832 none
+speed limits set by hand: 0
+turns through junctions 8204, conflicting pairs 23821
+-- traffic
+vehicles 4898 (aim 5000): 4576 cars, 322 trucks
+moving 1644, standing 3254 (66 %), standing over 30 s 1086
+speed: mean 3.6 km/h, fastest 59.8 km/h
+speeds: 0-10:4248 10-20:450 20-30:148 30-40:39 40-50:11 50-60:2 km/h
+spawned 9790, arrived 1009, removed 4892 (4892 stuck a minute)
+per city minute: 100.9 arrived, 489.20 taken off stuck
+-- performance
+ticks 18000 in 6.850 s: 2628 ticks/s, 88x real time
+tick: mean 0.381 ms, p50 <= 0.512 ms, p99 <= 1.024 ms, slowest 2.398 ms
+budget used at 1x: 1.14 % of a 33.3 ms tick
+
+######## grid 21x21 60 m, 10000
+foxity info: stopped at tick 18000: 840 roads, 441 nodes, 4898 cars (3254 standing, mean 1.0 m/s), 1009 arrived, 4892 taken off stuck, state 30cf845833fd07e5
+== city at tick 18000 (10.0 min), state 30cf845833fd07e5
+routing: laiue.navigation
+-- roads
+roads 840, 43.25 km of road, 80.96 km of lanes in 2320 lanes
+  street            560  (50 km/h)
+  avenue            240  (60 km/h)
+  boulevard          40  (70 km/h)
+  one-way street      0  (50 km/h)
+  highway             0  (110 km/h)
+nodes 441: 437 junctions (25 with lights), 4 bends, 0 dead ends
+signs at junctions: 396 priority, 344 give way, 0 stop, 832 none
+speed limits set by hand: 0
+turns through junctions 8204, conflicting pairs 23821
+-- traffic
+vehicles 4898 (aim 10000): 4576 cars, 322 trucks
+moving 1644, standing 3254 (66 %), standing over 30 s 1086
+speed: mean 3.6 km/h, fastest 59.8 km/h
+speeds: 0-10:4248 10-20:450 20-30:148 30-40:39 40-50:11 50-60:2 km/h
+spawned 9790, arrived 1009, removed 4892 (4892 stuck a minute)
+per city minute: 100.9 arrived, 489.20 taken off stuck
+-- performance
+ticks 18000 in 6.791 s: 2651 ticks/s, 88x real time
+tick: mean 0.377 ms, p50 <= 0.512 ms, p99 <= 1.024 ms, slowest 1.061 ms
+budget used at 1x: 1.13 % of a 33.3 ms tick

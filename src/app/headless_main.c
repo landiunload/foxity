@@ -15,6 +15,7 @@ int main(int argumentCount, char **arguments)
         .cars = 150u,
         .driveSide = FOX_DRIVE_RIGHT,
         .routing = true,
+        .gridSpacing = FOX_METRES(80),
     };
     for (int index = 1; index < argumentCount; ++index)
     {
@@ -22,6 +23,11 @@ int main(int argumentCount, char **arguments)
         if (strcmp(argument, "--no-routing") == 0)
         {
             options.routing = false;
+            continue;
+        }
+        if (strcmp(argument, "--stats") == 0)
+        {
+            options.statistics = true;
             continue;
         }
         /* Every other option takes one value. */
@@ -45,6 +51,16 @@ int main(int argumentCount, char **arguments)
             parsed = FoxParseUint64(value, &number) && number <= FOX_TRAFFIC_MAX_VEHICLES;
             options.cars = (uint32_t)number;
         }
+        else if (strcmp(argument, "--grid") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number >= 2u && number <= 64u;
+            options.gridLines = (uint32_t)number;
+        }
+        else if (strcmp(argument, "--spacing") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number >= 20u && number <= 600u;
+            options.gridSpacing = FOX_METRES(number);
+        }
         else if (strcmp(argument, "--drive") == 0)
         {
             parsed = value != NULL && (strcmp(value, "right") == 0 || strcmp(value, "left") == 0);
@@ -54,7 +70,7 @@ int main(int argumentCount, char **arguments)
         if (!parsed)
         {
             fputs("usage: FoxityHeadless [--seed N] [--ticks N] [--time-scale X] [--cars N] "
-                  "[--drive right|left] [--no-routing]\n",
+                  "[--drive right|left] [--no-routing] [--grid N] [--spacing M] [--stats]\n",
                   stderr);
             return 2;
         }

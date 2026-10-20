@@ -273,6 +273,30 @@ uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane);
  * its cars off them first. */
 void FoxNetworkReleaseRetired(FoxNetwork *network);
 
+/* Everything the network holds, counted. */
+typedef struct FoxNetworkStats
+{
+    uint32_t roads;
+    uint32_t roadsByType[FOX_ROAD_TYPE_COUNT];
+    uint32_t nodes;
+    /* Nodes by what they are: three or more roads, two, one. */
+    uint32_t junctions;
+    uint32_t bends;
+    uint32_t deadEnds;
+    uint32_t signalled;
+    /* The signs in force at the road ends of junctions without lights. */
+    uint32_t signs[FOX_SIGN_COUNT];
+    uint32_t speedLimitsSet;
+    uint32_t lanes;
+    uint32_t connections;
+    /* Pairs of connections that cross or merge, each counted once. */
+    uint32_t conflicts;
+    int64_t roadLength;
+    int64_t laneLength;
+} FoxNetworkStats;
+
+FoxNetworkStats FoxNetworkGetStats(const FoxNetwork *network);
+
 uint64_t FoxNetworkHash(const FoxNetwork *network);
 
 #endif

@@ -7,6 +7,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* A city with the engine technology it runs on: the world and, where the
  * engine has laiue.navigation, the router its cars take routes from. Shared
@@ -23,8 +24,11 @@ typedef struct FoxCityDesc
     uint64_t seed;
     FoxDriveSide driveSide;
     uint32_t cars;
-    /* Builds the demo town right away. */
+    /* Builds the demo town right away, or with gridLines a square grid of
+     * that many roads each way gridSpacing apart. */
     bool demo;
+    uint32_t gridLines;
+    int64_t gridSpacing;
     /* Loaded engine modules to take routing from; NULL turns cars at random. */
     const FoxModules *modules;
 } FoxCityDesc;
@@ -35,5 +39,22 @@ void FoxCityDestroy(FoxCity *city);
 
 /* Logs the tick, the roads, the cars and the state hash. */
 void FoxCityReport(const FoxCity *city, const char *event);
+
+#define FOX_TICK_TIMER_BUCKETS 32u
+
+/* How long ticks took: a histogram by powers of two of microseconds. */
+typedef struct FoxTickTimer
+{
+    uint64_t ticks;
+    double seconds;
+    double slowest;
+    uint64_t buckets[FOX_TICK_TIMER_BUCKETS];
+} FoxTickTimer;
+
+void FoxTickTimerRecord(FoxTickTimer *timer, double seconds);
+
+/* Writes everything known about the city to `stream`: the network, the
+ * traffic and, given a timer, how fast it ran. */
+void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE *stream);
 
 #endif

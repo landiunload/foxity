@@ -1123,6 +1123,49 @@ static bool FindCrossings(const FoxNetwork *network, const FoxVec *points, const
             }
         }
     }
+    /* Nodes the line runs over, such as the dead ends of roads it meets end
+     * on, join it too. */
+    for (uint32_t index = 0u; index < network->nodeCapacity; ++index)
+    {
+        const FoxNode *node = &network->nodes[index];
+        if (!node->alive || FoxVecDistance(middle, node->position) > bound + FOX_ROAD_SNAP_DISTANCE)
+        {
+            continue;
+        }
+        bool known = false;
+        for (uint32_t cut = 0u; cut < *cutCount && !known; ++cut)
+        {
+            known = cuts[cut].kind == CUT_NODE && cuts[cut].node == index;
+        }
+        int64_t best = FOX_ROAD_SNAP_DISTANCE + 1;
+        int64_t along = 0;
+        for (uint32_t i = 0u; !known && i + 1u < count; ++i)
+        {
+            int64_t distance = 0;
+            const int64_t at = ClosestOnSegment(points[i], points[i + 1u], node->position, &distance);
+            if (distance < best)
+            {
+                best = distance;
+                along = lengths[i] + at;
+            }
+        }
+        if (known || best > FOX_ROAD_SNAP_DISTANCE || along < FOX_ROAD_SNAP_DISTANCE ||
+            along > total - FOX_ROAD_SNAP_DISTANCE)
+        {
+            continue;
+        }
+        if (*cutCount >= capacity)
+        {
+            return false;
+        }
+        cuts[(*cutCount)++] = (Cut){
+            .along = along,
+            .kind = CUT_NODE,
+            .node = index,
+            .point = node->position,
+            .resolved = FOX_NETWORK_NONE,
+        };
+    }
     return true;
 }
 
@@ -1573,6 +1616,60 @@ uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane)
         }
     }
     return turns;
+}
+
+FoxNetworkStats FoxNetworkGetStats(const FoxNetwork *network)
+{
+    FoxNetworkStats stats = {0};
+    if (network == NULL)
+    {
+        return stats;
+    }
+    for (uint32_t index = 0u; index < network->roadCapacity; ++index)
+    {
+        const FoxRoad *road = &network->roads[index];
+        if (!road->alive)
+        {
+            continue;
+        }
+        ++stats.roads;
+        ++stats.roadsByType[road->type];
+        stats.roadLength += road->length;
+        stats.speedLimitsSet += road->speedSetting != 0 ? 1u : 0u;
+        for (uint32_t end = 0u; end < 2u; ++end)
+        {
+            const FoxNode *node = &network->nodes[road->nodes[end]];
+            if (node->roadCount >= 3u && !node->signals)
+            {
+                ++stats.signs[road->sign[end]];
+            }
+            for (uint32_t lane = 0u; lane < road->laneCount[end]; ++lane)
+            {
+                ++stats.lanes;
+                stats.laneLength += network->paths[road->lanes[end][lane]].length;
+            }
+        }
+    }
+    for (uint32_t index = 0u; index < network->nodeCapacity; ++index)
+    {
+        const FoxNode *node = &network->nodes[index];
+        if (!node->alive)
+        {
+            continue;
+        }
+        ++stats.nodes;
+        stats.junctions += node->roadCount >= 3u ? 1u : 0u;
+        stats.bends += node->roadCount == 2u ? 1u : 0u;
+        stats.deadEnds += node->roadCount == 1u ? 1u : 0u;
+        stats.signalled += node->signals ? 1u : 0u;
+        stats.connections += node->connectionCount;
+        for (uint32_t connection = 0u; connection < node->connectionCount; ++connection)
+        {
+            stats.conflicts += network->paths[node->connections[connection]].conflictCount;
+        }
+    }
+    stats.conflicts /= 2u;
+    return stats;
 }
 
 uint64_t FoxNetworkHash(const FoxNetwork *network)

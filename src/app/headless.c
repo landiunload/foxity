@@ -60,6 +60,8 @@ int FoxHeadlessRun(const FoxHeadlessOptions *options)
         .driveSide = options->driveSide,
         .cars = options->cars,
         .demo = true,
+        .gridLines = options->gridLines,
+        .gridSpacing = options->gridSpacing,
         .modules = engine && options->routing ? &modules : NULL,
     };
     if (!FoxCityCreate(&city, &desc))
@@ -77,6 +79,7 @@ int FoxHeadlessRun(const FoxHeadlessOptions *options)
     }
     FoxCityReport(&city, "city founded");
 
+    FoxTickTimer timer = {0};
     const double started = LaiueApplicationMonotonicSeconds();
     double previous = started;
     uint64_t nextReport = FOX_HEADLESS_REPORT_TICKS;
@@ -91,7 +94,12 @@ int FoxHeadlessRun(const FoxHeadlessOptions *options)
         {
             ticks = options->ticks - done;
         }
-        FoxWorldAdvance(city.world, ticks);
+        for (uint64_t tick = 0u; tick < ticks; ++tick)
+        {
+            const double before = LaiueApplicationMonotonicSeconds();
+            FoxWorldAdvance(city.world, 1u);
+            FoxTickTimerRecord(&timer, LaiueApplicationMonotonicSeconds() - before);
+        }
         if (FoxWorldTick(city.world) >= nextReport)
         {
             FoxCityReport(&city, "running");
@@ -106,6 +114,10 @@ int FoxHeadlessRun(const FoxHeadlessOptions *options)
     LaiueApplicationRemoveTerminationHandler();
     FoxLog(FOX_LOG_INFO, "ran %.3f s", LaiueApplicationMonotonicSeconds() - started);
     FoxCityReport(&city, "stopped");
+    if (options->statistics)
+    {
+        FoxCityPrintStatistics(&city, &timer, stdout);
+    }
     FoxCityDestroy(&city);
     if (engine)
     {
