@@ -12,6 +12,9 @@
  * stands there), one uniform value, or a child. */
 #define BLOCK_VOLUME 512u
 #define TOP_SHIFT 9u
+/* Cells along a top node; coordinates are multiplied by it, never shifted, as
+ * shifting negative values is undefined. */
+#define TOP_CELLS (INT64_C(1) << TOP_SHIFT)
 #define MIDDLE_SHIFT 6u
 #define LEAF_SHIFT 3u
 #define LEAF_CELLS 8
@@ -1183,8 +1186,8 @@ bool FoxPlanetBoxMayHaveSurface(const FoxPlanet *planet, FoxVec min, FoxVec max)
         bool overlaps = true;
         for (uint32_t axis = 0u; overlaps && axis < 3u; ++axis)
         {
-            const int64_t low = topCoordinates[axis] << TOP_SHIFT;
-            overlaps = last[axis] >= low && first[axis] < low + (INT64_C(1) << TOP_SHIFT);
+            const int64_t low = topCoordinates[axis] * TOP_CELLS;
+            overlaps = last[axis] >= low && first[axis] < low + TOP_CELLS;
         }
         if (!overlaps)
         {
@@ -1197,9 +1200,9 @@ bool FoxPlanetBoxMayHaveSurface(const FoxPlanet *planet, FoxVec min, FoxVec max)
                 continue;
             }
             const int64_t blockFirst[3] = {
-                (top->x << TOP_SHIFT) + (int64_t)(slot & 7u) * 64,
-                (top->y << TOP_SHIFT) + (int64_t)((slot >> 3u) & 7u) * 64,
-                (top->z << TOP_SHIFT) + (int64_t)(slot >> 6u) * 64,
+                top->x * TOP_CELLS + (int64_t)(slot & 7u) * 64,
+                top->y * TOP_CELLS + (int64_t)((slot >> 3u) & 7u) * 64,
+                top->z * TOP_CELLS + (int64_t)(slot >> 6u) * 64,
             };
             if (last[0] >= blockFirst[0] && first[0] < blockFirst[0] + 64 &&
                 last[1] >= blockFirst[1] && first[1] < blockFirst[1] + 64 &&
@@ -1240,9 +1243,9 @@ uint64_t FoxPlanetHash(const FoxPlanet *planet)
         for (uint32_t upperSlot = 0u; upperSlot < BLOCK_VOLUME; ++upperSlot)
         {
             const Inner *upper = top->node;
-            const int64_t ux = (top->x << TOP_SHIFT) + (int64_t)(upperSlot & 7u) * 64;
-            const int64_t uy = (top->y << TOP_SHIFT) + (int64_t)((upperSlot >> 3u) & 7u) * 64;
-            const int64_t uz = (top->z << TOP_SHIFT) + (int64_t)(upperSlot >> 6u) * 64;
+            const int64_t ux = top->x * TOP_CELLS + (int64_t)(upperSlot & 7u) * 64;
+            const int64_t uy = top->y * TOP_CELLS + (int64_t)((upperSlot >> 3u) & 7u) * 64;
+            const int64_t uz = top->z * TOP_CELLS + (int64_t)(upperSlot >> 6u) * 64;
             if (upper->kind[upperSlot] == SLOT_VALUE)
             {
                 sum += ValueHash(2u, ux, uy, uz, upper->density[upperSlot],

@@ -188,7 +188,8 @@ static uint32_t FindPatch(FoxRoadsView *view, FoxVec point, bool create)
     patch->x = x;
     patch->y = y;
     patch->z = z;
-    patch->origin = (FoxVec){x << PATCH_SHIFT, y << PATCH_SHIFT, z << PATCH_SHIFT};
+    const int64_t size = INT64_C(1) << PATCH_SHIFT;
+    patch->origin = (FoxVec){x * size, y * size, z * size};
     return vacant;
 }
 

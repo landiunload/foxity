@@ -1473,9 +1473,9 @@ uint64_t FoxNetworkHash(const FoxNetwork *network)
         hash = FoxHashCombine(hash, (uint64_t)road->length);
         for (uint32_t point = 0u; point < road->centreCount; ++point)
         {
-            hash = FoxHashCombine(hash, (uint64_t)(road->centre[point].x ^
-                                                    (road->centre[point].y << 21) ^
-                                                    (road->centre[point].z << 42)));
+            hash = FoxHashCombine(hash, (uint64_t)road->centre[point].x);
+            hash = FoxHashCombine(hash, (uint64_t)road->centre[point].y);
+            hash = FoxHashCombine(hash, (uint64_t)road->centre[point].z);
         }
     }
     for (uint32_t index = 0u; index < network->zoneCount; ++index)
