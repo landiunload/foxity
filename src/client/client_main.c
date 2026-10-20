@@ -45,6 +45,11 @@ static int Run(int argumentCount, char **arguments)
             options.demo = false;
             continue;
         }
+        if (strcmp(argument, "--no-vsync") == 0)
+        {
+            options.noVerticalSync = true;
+            continue;
+        }
         /* Every other option takes one value. */
         const char *value = index + 1 < argumentCount ? arguments[++index] : NULL;
         bool parsed = false;
@@ -105,7 +110,7 @@ static int Run(int argumentCount, char **arguments)
         {
             fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] [--camera-distance M] "
                   "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
-                  "[--graphics d3d12|vulkan] [--smoke] "
+                  "[--graphics d3d12|vulkan] [--no-vsync] [--smoke] "
                   "[--capture FILE.bmp] [--capture-frame N]\n",
                   stderr);
             return FOX_CLIENT_EXIT_INVALID_OPTIONS;

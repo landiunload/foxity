@@ -154,9 +154,18 @@ static void OnRawInput(void *opaque, void *rawInput)
 
 /* Keyboard and mouse to player intent. Without input the city still runs and
  * is shown; it just cannot be steered. */
+/* Whether the device lets vertical sync be switched. */
+static bool HasVerticalSync(const LaiueGraphicsDeviceV2 *device)
+{
+    return device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_VERTICAL_SYNC_SIZE &&
+           device->setVerticalSync != NULL && device->getVerticalSync != NULL;
+}
+
 static FoxControls ReadControls(ClientSession *session)
 {
     FoxControls controls = {.tool = -1};
+    LaiueGraphicsDeviceV2 *device = session->device;
+    controls.verticalSync = HasVerticalSync(device) ? (int32_t)device->getVerticalSync(device) : -1;
     const LaiueWindowServiceV1 *window = session->windowService;
     if (window->consumeMouseWheelSteps != NULL)
     {
@@ -205,6 +214,15 @@ static FoxControls ReadControls(ClientSession *session)
     controls.nextRoadType = input->consumeKeyPress(state, INPUT_KEY_T);
     controls.togglePause = input->consumeKeyPress(state, INPUT_KEY_SPACE);
     controls.toggleStatistics = input->consumeKeyPress(state, INPUT_KEY_F3);
+    if (input->consumeKeyPress(state, INPUT_KEY_F7) && controls.verticalSync >= 0)
+    {
+        const uint32_t wanted = controls.verticalSync != 0 ? 0u : 1u;
+        if (device->setVerticalSync(device, wanted) != 0u)
+        {
+            controls.verticalSync = (int32_t)wanted;
+            FoxLog(FOX_LOG_INFO, "vertical sync %s", wanted != 0u ? "on" : "off");
+        }
+    }
     controls.carsChange = (input->consumeKeyPress(state, INPUT_KEY_E) ? 1 : 0) -
                           (input->consumeKeyPress(state, INPUT_KEY_G) ? 1 : 0);
     return controls;
@@ -429,6 +447,18 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         FoxLog(FOX_LOG_WARNING, "input is unavailable; the window cannot be controlled");
     }
 
+    if (options->noVerticalSync)
+    {
+        if (HasVerticalSync(session.device) &&
+            session.device->setVerticalSync(session.device, 0u) != 0u)
+        {
+            FoxLog(FOX_LOG_INFO, "vertical sync off");
+        }
+        else
+        {
+            FoxLog(FOX_LOG_WARNING, "this device cannot switch vertical sync");
+        }
+    }
     /* The sky stays bright: a clear blue behind everything. */
     if (session.device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_CLEAR_COLOR_SIZE &&
         session.device->setClearColor != NULL)

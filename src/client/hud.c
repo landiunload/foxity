@@ -11,22 +11,28 @@
 #define CELL_WIDTH 6.0f
 #define LINE_HEIGHT 9.0f
 #define PADDING 4.0f
+/* Between the text and the graphs, and the size of a graph. */
+#define COLUMN_GAP 10.0f
+#define GRAPH_HEIGHT 28.0f
+#define GRAPH_MIN_WIDTH 160.0f
 /* The view is this many font pixels high. */
-#define VIEW_PIXELS 400.0f
+#define VIEW_PIXELS 460.0f
 #define MARGIN 6.0f
-#define MAX_TEXT 4096u
 
 #define COLOR_PANEL UINT32_C(0xFF1C1C1C)
+#define COLOR_GRAPH UINT32_C(0xFF2E2E2E)
+#define COLOR_GRID UINT32_C(0xFF454545)
 #define COLOR_TEXT UINT32_C(0xFFEEEEEE)
 #define COLOR_HEADING UINT32_C(0xFF30C8F0)
 
 typedef struct Glyph
 {
-    char character;
+    uint32_t code;
     uint8_t rows[GLYPH_HEIGHT];
 } Glyph;
 
-/* Rows top to bottom, the high bit of five on the left. */
+/* Rows top to bottom, the high bit of five on the left; Latin and Cyrillic
+ * capitals, digits and the signs the panel uses. */
 static const Glyph glyphs[] = {
     {'0', {0x0E, 0x11, 0x13, 0x15, 0x19, 0x11, 0x0E}}, {'1', {0x04, 0x0C, 0x04, 0x04, 0x04, 0x04, 0x0E}},
     {'2', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x08, 0x1F}}, {'3', {0x1F, 0x02, 0x04, 0x02, 0x01, 0x11, 0x0E}},
@@ -57,6 +63,24 @@ static const Glyph glyphs[] = {
     {'_', {0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x1F}}, {'|', {0x04, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
     {'\'', {0x04, 0x04, 0x08, 0x00, 0x00, 0x00, 0x00}}, {'!', {0x04, 0x04, 0x04, 0x04, 0x04, 0x00, 0x04}},
     {'?', {0x0E, 0x11, 0x01, 0x02, 0x04, 0x00, 0x04}},
+    {0x00B1, {0x04, 0x04, 0x1F, 0x04, 0x04, 0x00, 0x1F}}, {0x00D7, {0x00, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x00}},
+    {0x0410, {0x0E, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}}, {0x0411, {0x1F, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x1E}},
+    {0x0412, {0x1E, 0x11, 0x11, 0x1E, 0x11, 0x11, 0x1E}}, {0x0413, {0x1F, 0x10, 0x10, 0x10, 0x10, 0x10, 0x10}},
+    {0x0414, {0x06, 0x0A, 0x0A, 0x0A, 0x0A, 0x1F, 0x11}}, {0x0415, {0x1F, 0x10, 0x10, 0x1E, 0x10, 0x10, 0x1F}},
+    {0x0401, {0x0A, 0x00, 0x1F, 0x10, 0x1E, 0x10, 0x1F}}, {0x0416, {0x15, 0x15, 0x15, 0x0E, 0x15, 0x15, 0x15}},
+    {0x0417, {0x0E, 0x11, 0x01, 0x06, 0x01, 0x11, 0x0E}}, {0x0418, {0x11, 0x11, 0x13, 0x15, 0x19, 0x11, 0x11}},
+    {0x0419, {0x0A, 0x04, 0x11, 0x13, 0x15, 0x19, 0x11}}, {0x041A, {0x11, 0x12, 0x14, 0x18, 0x14, 0x12, 0x11}},
+    {0x041B, {0x07, 0x09, 0x09, 0x09, 0x09, 0x09, 0x11}}, {0x041C, {0x11, 0x1B, 0x15, 0x15, 0x11, 0x11, 0x11}},
+    {0x041D, {0x11, 0x11, 0x11, 0x1F, 0x11, 0x11, 0x11}}, {0x041E, {0x0E, 0x11, 0x11, 0x11, 0x11, 0x11, 0x0E}},
+    {0x041F, {0x1F, 0x11, 0x11, 0x11, 0x11, 0x11, 0x11}}, {0x0420, {0x1E, 0x11, 0x11, 0x1E, 0x10, 0x10, 0x10}},
+    {0x0421, {0x0E, 0x11, 0x10, 0x10, 0x10, 0x11, 0x0E}}, {0x0422, {0x1F, 0x04, 0x04, 0x04, 0x04, 0x04, 0x04}},
+    {0x0423, {0x11, 0x11, 0x11, 0x0F, 0x01, 0x11, 0x0E}}, {0x0424, {0x04, 0x0E, 0x15, 0x15, 0x15, 0x0E, 0x04}},
+    {0x0425, {0x11, 0x11, 0x0A, 0x04, 0x0A, 0x11, 0x11}}, {0x0426, {0x12, 0x12, 0x12, 0x12, 0x12, 0x1F, 0x01}},
+    {0x0427, {0x11, 0x11, 0x11, 0x0F, 0x01, 0x01, 0x01}}, {0x0428, {0x15, 0x15, 0x15, 0x15, 0x15, 0x15, 0x1F}},
+    {0x0429, {0x15, 0x15, 0x15, 0x15, 0x15, 0x1F, 0x01}}, {0x042A, {0x18, 0x08, 0x08, 0x0E, 0x09, 0x09, 0x0E}},
+    {0x042B, {0x11, 0x11, 0x11, 0x19, 0x15, 0x15, 0x19}}, {0x042C, {0x10, 0x10, 0x10, 0x1E, 0x11, 0x11, 0x1E}},
+    {0x042D, {0x0E, 0x11, 0x01, 0x07, 0x01, 0x11, 0x0E}}, {0x042E, {0x12, 0x15, 0x15, 0x1D, 0x15, 0x15, 0x12}},
+    {0x042F, {0x0F, 0x11, 0x11, 0x0F, 0x05, 0x09, 0x11}},
 };
 
 struct FoxHud
@@ -64,11 +88,9 @@ struct FoxHud
     LaiueGraphicsDeviceV2 *device;
     LaiueGraphicsHandle buffer;
     uint32_t count;
-    float width;
-    float height;
-    char text[MAX_TEXT];
     LaiueGraphicsVertexV2 *vertices;
     uint32_t capacity;
+    bool failed;
 };
 
 FoxHud *FoxHudCreate(LaiueGraphicsDeviceV2 *device)
@@ -102,12 +124,52 @@ void FoxHudDestroy(FoxHud *hud)
     free(hud);
 }
 
-static const Glyph *Find(char character)
+/* The next code point of UTF-8 text; a broken sequence reads as '?'. */
+static uint32_t NextCode(const char **cursor)
 {
-    const char upper = character >= 'a' && character <= 'z' ? (char)(character - 'a' + 'A') : character;
+    const uint8_t *bytes = (const uint8_t *)*cursor;
+    if (bytes[0] < 0x80u)
+    {
+        *cursor += 1;
+        return bytes[0];
+    }
+    if ((bytes[0] & 0xE0u) == 0xC0u && (bytes[1] & 0xC0u) == 0x80u)
+    {
+        *cursor += 2;
+        return ((uint32_t)(bytes[0] & 0x1Fu) << 6u) | (uint32_t)(bytes[1] & 0x3Fu);
+    }
+    if ((bytes[0] & 0xF0u) == 0xE0u && (bytes[1] & 0xC0u) == 0x80u && (bytes[2] & 0xC0u) == 0x80u)
+    {
+        *cursor += 3;
+        return ((uint32_t)(bytes[0] & 0x0Fu) << 12u) | ((uint32_t)(bytes[1] & 0x3Fu) << 6u) |
+               (uint32_t)(bytes[2] & 0x3Fu);
+    }
+    *cursor += 1;
+    return '?';
+}
+
+static const Glyph *Find(uint32_t code)
+{
+    /* Small letters show as capitals; dashes as the hyphen. */
+    if (code >= 'a' && code <= 'z')
+    {
+        code -= 'a' - 'A';
+    }
+    else if (code >= 0x0430u && code <= 0x044Fu)
+    {
+        code -= 0x20u;
+    }
+    else if (code == 0x0451u)
+    {
+        code = 0x0401u;
+    }
+    else if (code == 0x2013u || code == 0x2014u)
+    {
+        code = '-';
+    }
     for (size_t index = 0u; index < sizeof(glyphs) / sizeof(glyphs[0]); ++index)
     {
-        if (glyphs[index].character == upper)
+        if (glyphs[index].code == code)
         {
             return &glyphs[index];
         }
@@ -116,17 +178,27 @@ static const Glyph *Find(char character)
 }
 
 /* A rectangle in panel space: x to the right, y up, the top left at the
- * origin. */
-static bool Rectangle(FoxHud *hud, float x0, float y0, float x1, float y1, float depth,
+ * origin; depth runs towards the eye. */
+static void Rectangle(FoxHud *hud, float x0, float y0, float x1, float y1, float depth,
                       uint32_t color)
 {
+    if (hud->failed)
+    {
+        return;
+    }
     if (hud->count + 6u > hud->capacity)
     {
-        const uint32_t capacity = hud->capacity < 4096u ? 4096u : hud->capacity * 2u;
+        if (hud->capacity > UINT32_MAX / 4u)
+        {
+            hud->failed = true;
+            return;
+        }
+        const uint32_t capacity = hud->capacity < 4096u ? 8192u : hud->capacity * 2u;
         LaiueGraphicsVertexV2 *grown = realloc(hud->vertices, (size_t)capacity * sizeof(*grown));
         if (grown == NULL)
         {
-            return false;
+            hud->failed = true;
+            return;
         }
         hud->vertices = grown;
         hud->capacity = capacity;
@@ -139,19 +211,17 @@ static bool Rectangle(FoxHud *hud, float x0, float y0, float x1, float y1, float
             .colorRGBA = color,
         };
     }
-    return true;
 }
 
 /* The lit pixels of a glyph, each row's runs merged into one rectangle. */
-static bool Character(FoxHud *hud, const Glyph *glyph, float left, float top, uint32_t color)
+static void Character(FoxHud *hud, const Glyph *glyph, float left, float top, uint32_t color)
 {
     for (uint32_t row = 0u; row < GLYPH_HEIGHT; ++row)
     {
         uint32_t column = 0u;
         while (column < GLYPH_WIDTH)
         {
-            const uint32_t bit = 1u << (GLYPH_WIDTH - 1u - column);
-            if ((glyph->rows[row] & bit) == 0u)
+            if ((glyph->rows[row] & (1u << (GLYPH_WIDTH - 1u - column))) == 0u)
             {
                 ++column;
                 continue;
@@ -161,74 +231,98 @@ static bool Character(FoxHud *hud, const Glyph *glyph, float left, float top, ui
             {
                 ++end;
             }
-            if (!Rectangle(hud, left + (float)column, top - (float)row - 1.0f, left + (float)end,
-                           top - (float)row, 0.0f, color))
-            {
-                return false;
-            }
+            Rectangle(hud, left + (float)column, top - (float)row - 1.0f, left + (float)end,
+                      top - (float)row, 0.0f, color);
             column = end;
         }
     }
-    return true;
 }
 
-void FoxHudSetText(FoxHud *hud, const char *text)
+/* Writes one line from `cursor` up to a newline; returns past it. */
+static const char *Line(FoxHud *hud, const char *cursor, float left, float top, uint32_t color)
 {
-    if (hud == NULL || text == NULL || strncmp(hud->text, text, sizeof(hud->text)) == 0)
+    while (*cursor != '\0' && *cursor != '\n')
     {
-        return;
-    }
-    const size_t length = strlen(text);
-    const size_t kept = length < sizeof(hud->text) - 1u ? length : sizeof(hud->text) - 1u;
-    memcpy(hud->text, text, kept);
-    hud->text[kept] = '\0';
-
-    /* The size of the panel first: the longest line and the line count. */
-    uint32_t lines = 1u;
-    uint32_t longest = 0u;
-    uint32_t current = 0u;
-    for (size_t index = 0u; index < kept; ++index)
-    {
-        if (hud->text[index] == '\n')
-        {
-            ++lines;
-            current = 0u;
-            continue;
-        }
-        ++current;
-        longest = current > longest ? current : longest;
-    }
-    hud->width = (float)longest * CELL_WIDTH + 2.0f * PADDING;
-    hud->height = (float)lines * LINE_HEIGHT + 2.0f * PADDING - (LINE_HEIGHT - (float)GLYPH_HEIGHT);
-    hud->count = 0u;
-    /* The panel sits a little behind the letters, away from the eye. */
-    bool ok = Rectangle(hud, 0.0f, -hud->height, hud->width, 0.0f, -0.5f, COLOR_PANEL);
-    float top = -PADDING;
-    float left = PADDING;
-    bool heading = kept >= 2u && hud->text[0] == '-' && hud->text[1] == '-';
-    for (size_t index = 0u; ok && index < kept; ++index)
-    {
-        const char character = hud->text[index];
-        if (character == '\n')
-        {
-            top -= LINE_HEIGHT;
-            left = PADDING;
-            heading = index + 2u < kept && hud->text[index + 1u] == '-' && hud->text[index + 2u] == '-';
-            continue;
-        }
-        const Glyph *glyph = Find(character);
+        const Glyph *glyph = Find(NextCode(&cursor));
         if (glyph != NULL)
         {
-            ok = Character(hud, glyph, left, top, heading ? COLOR_HEADING : COLOR_TEXT);
+            Character(hud, glyph, left, top, color);
         }
         left += CELL_WIDTH;
     }
+    return *cursor == '\n' ? cursor + 1 : cursor;
+}
+
+/* The longest line in characters and the number of lines. */
+static void Measure(const char *text, uint32_t *outColumns, uint32_t *outLines)
+{
+    uint32_t lines = 1u;
+    uint32_t longest = 0u;
+    uint32_t current = 0u;
+    for (const char *cursor = text; *cursor != '\0';)
+    {
+        if (*cursor == '\n')
+        {
+            ++lines;
+            current = 0u;
+            ++cursor;
+            continue;
+        }
+        (void)NextCode(&cursor);
+        ++current;
+        longest = current > longest ? current : longest;
+    }
+    *outColumns = longest;
+    *outLines = lines;
+}
+
+static void Graph(FoxHud *hud, const FoxHudGraph *graph, float left, float top, float width)
+{
+    Line(hud, graph->title != NULL ? graph->title : "", left, top, COLOR_TEXT);
+    const float bottom = top - LINE_HEIGHT - GRAPH_HEIGHT;
+    const float upper = top - LINE_HEIGHT;
+    Rectangle(hud, left, bottom, left + width, upper, -0.25f, COLOR_GRAPH);
+    /* Quarter lines to read values by. */
+    for (uint32_t quarter = 1u; quarter < 4u; ++quarter)
+    {
+        const float y = bottom + GRAPH_HEIGHT * (float)quarter / 4.0f;
+        Rectangle(hud, left, y, left + width, y + 0.5f, -0.2f, COLOR_GRID);
+    }
+    if (graph->values == NULL || graph->count == 0u || !(graph->maximum > 0.0f))
+    {
+        return;
+    }
+    const float bar = width / (float)graph->count;
+    for (uint32_t index = 0u; index < graph->count; ++index)
+    {
+        const float x0 = left + bar * (float)index;
+        const float x1 = x0 + bar;
+        const float first = fminf(fmaxf(graph->values[index], 0.0f) / graph->maximum, 1.0f);
+        if (first > 0.0f)
+        {
+            Rectangle(hud, x0, bottom, x1, bottom + GRAPH_HEIGHT * first, -0.1f, graph->color);
+        }
+        if (graph->stacked != NULL)
+        {
+            const float second = fminf(fmaxf(graph->stacked[index], 0.0f) / graph->maximum,
+                                       1.0f - first);
+            if (second > 0.0f)
+            {
+                Rectangle(hud, x0, bottom + GRAPH_HEIGHT * first, x1,
+                          bottom + GRAPH_HEIGHT * (first + second), -0.1f, graph->stackedColor);
+            }
+        }
+    }
+}
+
+static void Upload(FoxHud *hud)
+{
     if (hud->buffer != 0u)
     {
         hud->device->destroyHandle(hud->device, hud->buffer);
         hud->buffer = 0u;
     }
-    if (!ok || hud->count == 0u)
+    if (hud->failed || hud->count == 0u)
     {
         hud->count = 0u;
         return;
@@ -258,6 +352,50 @@ void FoxHudSetText(FoxHud *hud, const char *text)
         return;
     }
     hud->buffer = handle;
+}
+
+void FoxHudSetContent(FoxHud *hud, const char *text, const FoxHudGraph *graphs,
+                      uint32_t graphCount)
+{
+    if (hud == NULL || text == NULL || (graphs == NULL && graphCount != 0u))
+    {
+        return;
+    }
+    hud->count = 0u;
+    hud->failed = false;
+    uint32_t columns = 0u;
+    uint32_t lines = 0u;
+    Measure(text, &columns, &lines);
+    const float textWidth = (float)columns * CELL_WIDTH;
+    const float textHeight = (float)lines * LINE_HEIGHT;
+    float graphWidth = 0.0f;
+    for (uint32_t index = 0u; index < graphCount; ++index)
+    {
+        uint32_t titleColumns = 0u;
+        uint32_t titleLines = 0u;
+        Measure(graphs[index].title != NULL ? graphs[index].title : "", &titleColumns, &titleLines);
+        graphWidth = fmaxf(graphWidth, fmaxf(GRAPH_MIN_WIDTH, (float)graphs[index].count));
+        graphWidth = fmaxf(graphWidth, (float)titleColumns * CELL_WIDTH);
+    }
+    const float graphsHeight = (float)graphCount * (LINE_HEIGHT + GRAPH_HEIGHT + 3.0f);
+    const float width = textWidth + (graphCount != 0u ? COLUMN_GAP + graphWidth : 0.0f) +
+                        2.0f * PADDING;
+    const float height = fmaxf(textHeight, graphsHeight) + 2.0f * PADDING;
+    /* The panel sits a little behind everything on it, away from the eye. */
+    Rectangle(hud, 0.0f, -height, width, 0.0f, -0.5f, COLOR_PANEL);
+    float top = -PADDING;
+    for (const char *cursor = text; *cursor != '\0'; top -= LINE_HEIGHT)
+    {
+        const bool heading = cursor[0] == '-' && cursor[1] == '-';
+        cursor = Line(hud, cursor, PADDING, top, heading ? COLOR_HEADING : COLOR_TEXT);
+    }
+    const float graphLeft = PADDING + textWidth + COLUMN_GAP;
+    for (uint32_t index = 0u; index < graphCount; ++index)
+    {
+        Graph(hud, &graphs[index], graphLeft,
+              -PADDING - (float)index * (LINE_HEIGHT + GRAPH_HEIGHT + 3.0f), graphWidth);
+    }
+    Upload(hud);
 }
 
 /* The rotation whose columns are the given axes, as a unit quaternion. */

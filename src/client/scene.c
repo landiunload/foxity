@@ -29,6 +29,8 @@
 /* The statistics panel is refreshed this often. */
 #define STATISTICS_SECONDS 0.25
 #define STATISTICS_TEXT 4096u
+/* The graphs show the last minute. */
+#define HISTORY 240u
 
 static const double speedPresets[] = {1.0, 3.0, 10.0};
 static const char *const toolNames[FOX_TOOL_COUNT] = {
@@ -81,6 +83,15 @@ struct FoxScene
     uint64_t windowTicks;
     double windowTickSeconds;
     double windowSlowestTick;
+    /* The arrivals and the tick at each sample, for a rate over the minute. */
+    uint64_t arrivedAt[HISTORY];
+    uint64_t tickAt[HISTORY];
+    float frameHistory[HISTORY];
+    float tickHistory[HISTORY];
+    float movingHistory[HISTORY];
+    float standingHistory[HISTORY];
+    float speedHistory[HISTORY];
+    float arrivalHistory[HISTORY];
 
     /* Points of the road being placed: start, then for curves the bend. */
     FoxVec placed[2];
@@ -616,8 +627,45 @@ static void Append(char *text, size_t *used, const char *format, ...)
     }
 }
 
-/* Everything about the city and the frame, for the panel. */
-static void BuildStatistics(FoxScene *scene)
+/* Shifts a history left by one and puts the newest value at the end. */
+static void Push(float *history, float value)
+{
+    memmove(history, history + 1, (HISTORY - 1u) * sizeof(*history));
+    history[HISTORY - 1u] = value;
+}
+
+static float Highest(const float *history, const float *stacked, float floor)
+{
+    float highest = floor;
+    for (uint32_t index = 0u; index < HISTORY; ++index)
+    {
+        highest = fmaxf(highest, history[index] + (stacked != NULL ? stacked[index] : 0.0f));
+    }
+    return highest;
+}
+
+static const char *const toolNamesRu[FOX_TOOL_COUNT] = {
+    [FOX_TOOL_ROAD] = "дорога",
+    [FOX_TOOL_CURVE] = "кривая дорога",
+    [FOX_TOOL_BULLDOZE] = "снос",
+    [FOX_TOOL_DIG] = "копать",
+    [FOX_TOOL_RAISE] = "насыпать",
+    [FOX_TOOL_DRIVE_ZONE] = "зона движения",
+    [FOX_TOOL_SIGNALS] = "светофоры",
+    [FOX_TOOL_SIGNS] = "знаки",
+    [FOX_TOOL_SPEED_LIMIT] = "ограничения скорости",
+};
+static const char *const roadNamesRu[FOX_ROAD_TYPE_COUNT] = {
+    [FOX_ROAD_STREET] = "улица",
+    [FOX_ROAD_AVENUE] = "проспект",
+    [FOX_ROAD_BOULEVARD] = "бульвар",
+    [FOX_ROAD_ONE_WAY] = "односторонняя",
+    [FOX_ROAD_HIGHWAY] = "шоссе",
+};
+
+/* Everything about the city and the frame, for the panel, and the graphs of
+ * the last minute. */
+static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
 {
     const FoxWorld *world = scene->city.world;
     const FoxNetwork *network = FoxWorldNetwork(world);
@@ -627,46 +675,77 @@ static void BuildStatistics(FoxScene *scene)
     const uint64_t tick = FoxWorldTick(world);
     const uint64_t seconds = tick / FOX_TRAFFIC_TICKS_PER_SECOND;
     const double frames = (double)scene->windowFrames;
+    const double fps = scene->windowSeconds > 0.0 ? frames / scene->windowSeconds : 0.0;
+    const double frameMs = frames > 0.0 ? scene->windowSeconds * 1000.0 / frames : 0.0;
+    const double tickMs = scene->windowTicks != 0u
+                              ? scene->windowTickSeconds * 1000.0 / (double)scene->windowTicks
+                              : 0.0;
+    const double minutes = (double)tick / FOX_TRAFFIC_TICKS_PER_SECOND / 60.0;
+    /* Arrivals per city minute over the minute the graphs show. */
+    memmove(scene->arrivedAt, scene->arrivedAt + 1, (HISTORY - 1u) * sizeof(*scene->arrivedAt));
+    memmove(scene->tickAt, scene->tickAt + 1, (HISTORY - 1u) * sizeof(*scene->tickAt));
+    scene->arrivedAt[HISTORY - 1u] = cars.arrived;
+    scene->tickAt[HISTORY - 1u] = tick;
+    uint32_t oldest = 0u;
+    while (oldest + 1u < HISTORY && scene->tickAt[oldest] == 0u)
+    {
+        ++oldest;
+    }
+    const double spanMinutes =
+        (double)(tick - scene->tickAt[oldest]) / FOX_TRAFFIC_TICKS_PER_SECOND / 60.0;
+    const double arrivalRate =
+        spanMinutes > 0.0 ? (double)(cars.arrived - scene->arrivedAt[oldest]) / spanMinutes : 0.0;
+
+    Push(scene->frameHistory, (float)frameMs);
+    Push(scene->tickHistory, (float)tickMs);
+    Push(scene->movingHistory, (float)(cars.vehicles - cars.standing));
+    Push(scene->standingHistory, (float)cars.standing);
+    Push(scene->speedHistory, (float)Kmh(cars.meanSpeed));
+    Push(scene->arrivalHistory, (float)arrivalRate);
+
     char *text = scene->statisticsText;
     size_t used = 0u;
     text[0] = '\0';
-    Append(text, &used, "-- FOXITY  (F3 hides)\n");
-    Append(text, &used, "FPS %.0f  frame %.1f ms  worst %.1f ms\n",
-           scene->windowSeconds > 0.0 ? frames / scene->windowSeconds : 0.0,
-           frames > 0.0 ? scene->windowSeconds * 1000.0 / frames : 0.0,
+    Append(text, &used, "-- FOXITY: СТАТИСТИКА (F3 скрыть)\n");
+    Append(text, &used, "Кадр: %.0f к/с, %.1f мс, худший %.1f мс\n", fps, frameMs,
            scene->windowSlowestFrame * 1000.0);
-    Append(text, &used, "tick %.3f ms  worst %.3f ms  %.0f ticks/s\n",
-           scene->windowTicks != 0u ? scene->windowTickSeconds * 1000.0 / (double)scene->windowTicks
-                                    : 0.0,
+    Append(text, &used, "Вертикальная синхронизация (F7): %s\n",
+           verticalSync < 0 ? "недоступна" : (verticalSync != 0 ? "вкл" : "выкл"));
+    Append(text, &used, "Тик: %.3f мс, худший %.3f мс, %.0f тиков/с\n", tickMs,
            scene->windowSlowestTick * 1000.0,
            scene->windowSeconds > 0.0 ? (double)scene->windowTicks / scene->windowSeconds : 0.0);
-    Append(text, &used, "time x%g%s  city %02u:%02u:%02u\n", scene->resumeScale,
-           scene->clock.timeScale == 0.0 ? " PAUSED" : "", (unsigned)(seconds / 3600u),
+    Append(text, &used, "Тик занимает %.2f %% своих 33,3 мс\n",
+           tickMs / (1000.0 / FOX_TRAFFIC_TICKS_PER_SECOND) * 100.0);
+    Append(text, &used, "Время: x%g%s, в городе %02u:%02u:%02u\n", scene->resumeScale,
+           scene->clock.timeScale == 0.0 ? ", ПАУЗА" : "", (unsigned)(seconds / 3600u),
            (unsigned)(seconds / 60u % 60u), (unsigned)(seconds % 60u));
-    Append(text, &used, "tool %s  road %s\n", toolNames[scene->tool],
-           FoxRoadTypeGet(scene->roadType)->name);
-    Append(text, &used, "-- ROADS\n");
-    Append(text, &used, "roads %u  %.2f km  lanes %u  %.2f km\n", roads.roads,
+    Append(text, &used, "Инструмент: %s, тип: %s\n", toolNamesRu[scene->tool],
+           roadNamesRu[scene->roadType]);
+    Append(text, &used, "-- ДОРОГИ\n");
+    Append(text, &used, "Дорог %u, %.2f км; полос %u, %.2f км\n", roads.roads,
            (double)roads.roadLength / FOX_METRES(1000), roads.lanes,
            (double)roads.laneLength / FOX_METRES(1000));
-    Append(text, &used, "street %u  avenue %u  boulevard %u\n",
+    Append(text, &used, "Улиц %u, проспектов %u, бульваров %u\n",
            roads.roadsByType[FOX_ROAD_STREET], roads.roadsByType[FOX_ROAD_AVENUE],
            roads.roadsByType[FOX_ROAD_BOULEVARD]);
-    Append(text, &used, "one-way %u  highway %u  limits set %u\n",
-           roads.roadsByType[FOX_ROAD_ONE_WAY], roads.roadsByType[FOX_ROAD_HIGHWAY],
-           roads.speedLimitsSet);
-    Append(text, &used, "junctions %u  lights %u  bends %u  ends %u\n", roads.junctions,
-           roads.signalled, roads.bends, roads.deadEnds);
-    Append(text, &used, "signs: priority %u  yield %u  stop %u\n", roads.signs[FOX_SIGN_PRIORITY],
-           roads.signs[FOX_SIGN_YIELD], roads.signs[FOX_SIGN_STOP]);
-    Append(text, &used, "turns %u  conflicts %u\n", roads.connections, roads.conflicts);
-    Append(text, &used, "-- TRAFFIC\n");
-    Append(text, &used, "vehicles %u / %u  cars %u  trucks %u\n", cars.vehicles,
+    Append(text, &used, "Односторонних %u, шоссе %u\n", roads.roadsByType[FOX_ROAD_ONE_WAY],
+           roads.roadsByType[FOX_ROAD_HIGHWAY]);
+    Append(text, &used, "Ограничений скорости вручную: %u\n", roads.speedLimitsSet);
+    Append(text, &used, "Узлов %u: перекрёстков %u, изгибов %u, тупиков %u\n", roads.nodes,
+           roads.junctions, roads.bends, roads.deadEnds);
+    Append(text, &used, "Светофоров: %u\n", roads.signalled);
+    Append(text, &used, "Знаки: главная %u, уступи %u, стоп %u, нет %u\n",
+           roads.signs[FOX_SIGN_PRIORITY], roads.signs[FOX_SIGN_YIELD], roads.signs[FOX_SIGN_STOP],
+           roads.signs[FOX_SIGN_NONE]);
+    Append(text, &used, "Поворотов %u, пересечений между ними %u\n", roads.connections,
+           roads.conflicts);
+    Append(text, &used, "-- ТРАНСПОРТ\n");
+    Append(text, &used, "Машин %u из %u: легковых %u, грузовиков %u\n", cars.vehicles,
            FoxTrafficTarget(traffic), cars.vehicles - cars.trucks, cars.trucks);
-    Append(text, &used, "moving %u  standing %u (%.0f%%)  >30s %u\n",
+    Append(text, &used, "Едут %u, стоят %u (%.0f %%), дольше 30 с: %u\n",
            cars.vehicles - cars.standing, cars.standing,
            cars.vehicles != 0u ? 100.0 * cars.standing / cars.vehicles : 0.0, cars.waitingLong);
-    Append(text, &used, "speed mean %.1f  max %.1f km/h\n", Kmh(cars.meanSpeed),
+    Append(text, &used, "Скорость: средняя %.1f, наибольшая %.1f км/ч\n", Kmh(cars.meanSpeed),
            Kmh(cars.maxSpeed));
     uint32_t bands[8] = {0u};
     for (uint32_t slot = 0u; slot < FoxTrafficCapacity(traffic); ++slot)
@@ -680,29 +759,54 @@ static void BuildStatistics(FoxScene *scene)
     }
     for (uint32_t band = 0u; band < 8u; ++band)
     {
-        /* A bar of up to thirty cells, scaled to all vehicles. */
+        /* A bar of up to twenty-four cells, scaled to all vehicles. */
         const uint32_t cells =
-            cars.vehicles != 0u ? (uint32_t)((uint64_t)bands[band] * 30u / cars.vehicles) : 0u;
+            cars.vehicles != 0u ? (uint32_t)((uint64_t)bands[band] * 24u / cars.vehicles) : 0u;
         char bar[32];
         memset(bar, '#', cells);
         bar[cells] = '\0';
         if (band < 7u)
         {
-            Append(text, &used, "%3u-%-3u %-30s %u\n", band * 10u, band * 10u + 10u, bar,
+            Append(text, &used, "%3u-%-3u км/ч %-24s %u\n", band * 10u, band * 10u + 10u, bar,
                    bands[band]);
         }
         else
         {
-            Append(text, &used, "%3u+    %-30s %u\n", band * 10u, bar, bands[band]);
+            Append(text, &used, "%3u+    км/ч %-24s %u\n", band * 10u, bar, bands[band]);
         }
     }
-    const double minutes = (double)tick / FOX_TRAFFIC_TICKS_PER_SECOND / 60.0;
-    Append(text, &used, "arrived %llu (%.0f/min)\n", (unsigned long long)cars.arrived,
+    Append(text, &used, "Появилось %llu, доехало %llu (%.0f в мин.)\n",
+           (unsigned long long)cars.spawned, (unsigned long long)cars.arrived,
            minutes > 0.0 ? (double)cars.arrived / minutes : 0.0);
-    Append(text, &used, "spawned %llu  stuck %llu (%.1f/min)\n", (unsigned long long)cars.spawned,
-           (unsigned long long)cars.stuck, minutes > 0.0 ? (double)cars.stuck / minutes : 0.0);
-    Append(text, &used, "E/G cars +-50  Shift x10   V speed  Space pause");
-    FoxHudSetText(scene->hud, text);
+    Append(text, &used, "Снято застрявших %llu (%.1f в мин.)\n", (unsigned long long)cars.stuck,
+           minutes > 0.0 ? (double)cars.stuck / minutes : 0.0);
+    Append(text, &used, "-- КЛАВИШИ\n");
+    Append(text, &used, "1-9 инструменты, T тип дороги, V скорость\n");
+    Append(text, &used, "Пробел пауза, E/G ±50 машин, с Shift ×10\n");
+    Append(text, &used, "F3 панель, F7 синхронизация");
+
+    char titles[5][96];
+    (void)snprintf(titles[0], sizeof(titles[0]), "Кадр, мс: %.1f", frameMs);
+    (void)snprintf(titles[1], sizeof(titles[1]), "Тик, мс: %.3f", tickMs);
+    (void)snprintf(titles[2], sizeof(titles[2]), "Едут (зел.) и стоят (красн.): %u / %u",
+                   cars.vehicles - cars.standing, cars.standing);
+    (void)snprintf(titles[3], sizeof(titles[3]), "Средняя скорость, км/ч: %.1f",
+                   Kmh(cars.meanSpeed));
+    (void)snprintf(titles[4], sizeof(titles[4]), "Доезжают в минуту: %.0f", arrivalRate);
+    const FoxHudGraph graphs[] = {
+        {titles[0], scene->frameHistory, NULL, HISTORY,
+         Highest(scene->frameHistory, NULL, 33.4f), UINT32_C(0xFF50C8F0), 0u},
+        {titles[1], scene->tickHistory, NULL, HISTORY, Highest(scene->tickHistory, NULL, 1.0f),
+         UINT32_C(0xFFE0A050), 0u},
+        {titles[2], scene->movingHistory, scene->standingHistory, HISTORY,
+         Highest(scene->movingHistory, scene->standingHistory, 10.0f), UINT32_C(0xFF50D050),
+         UINT32_C(0xFF4040E0)},
+        {titles[3], scene->speedHistory, NULL, HISTORY, Highest(scene->speedHistory, NULL, 10.0f),
+         UINT32_C(0xFFF0F0F0), 0u},
+        {titles[4], scene->arrivalHistory, NULL, HISTORY,
+         Highest(scene->arrivalHistory, NULL, 10.0f), UINT32_C(0xFFD080D0), 0u},
+    };
+    FoxHudSetContent(scene->hud, text, graphs, (uint32_t)(sizeof(graphs) / sizeof(graphs[0])));
     scene->windowSeconds = 0.0;
     scene->windowFrames = 0u;
     scene->windowSlowestFrame = 0.0;
@@ -734,7 +838,7 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
     scene->windowSlowestFrame = fmax(scene->windowSlowestFrame, realSeconds);
     if (scene->hud != NULL && scene->statistics && scene->windowSeconds >= STATISTICS_SECONDS)
     {
-        BuildStatistics(scene);
+        BuildStatistics(scene, controls->verticalSync);
     }
     scene->reportTimer += realSeconds;
     if (scene->reportTimer >= REPORT_SECONDS)

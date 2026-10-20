@@ -90,6 +90,9 @@ typedef struct FoxControls
      * many. */
     int32_t carsChange;
     bool toggleStatistics;
+    /* Whether presenting waits for the display: 1 on, 0 off, -1 the device
+     * cannot tell; shown on the statistics panel. */
+    int32_t verticalSync;
 } FoxControls;
 
 FoxScene *FoxSceneCreate(const FoxSceneDesc *desc);

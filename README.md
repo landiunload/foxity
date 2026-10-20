@@ -53,7 +53,8 @@ technology instead of failing to start.
 | V | Time at one, three or ten times real time |
 | Space | Pause |
 | E, G | Fifty cars more or fewer; with Shift five hundred |
-| F3 | Statistics panel: frame and tick times, roads, signs, vehicles, speeds, arrivals |
+| F3 | Statistics panel in Russian: frame and tick times, roads, junctions, signs, vehicles, speeds, arrivals, with graphs of the last minute |
+| F7 | Vertical sync on or off |
 | Esc | Drop the road being placed, or quit |
 
 ## Running
@@ -72,6 +73,7 @@ Foxity --drive left
 | `--camera-distance M` | The camera's distance to its focus |
 | `--focus-east M`, `--focus-north M` | Where the camera looks first, from the pole |
 | `--graphics d3d12\|vulkan` | Choose the graphics provider |
+| `--no-vsync` | Start with vertical sync off |
 | `--capture FILE.bmp`, `--capture-frame N` | Save frame N as a picture and quit |
 | `--smoke` | Present three frames and exit |
 

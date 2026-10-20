@@ -19,7 +19,7 @@ env:
   # evolve; it is the branch with laiue.navigation and the sky colour until they
   # reach main. Tags and release/* branches build the reviewed immutable SHA
   # that engine.lock holds instead; engine-revision below picks between them.
-  LAIUE_REF: engine-sky-color
+  LAIUE_REF: engine-vertical-sync
   LLVM_VERSION: '22'
 
 jobs:
