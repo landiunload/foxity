@@ -10,13 +10,20 @@ Early development. Space is unbounded; in it hangs one planet, a ball a
 kilometre in radius under an always bright sky. The planet is solid through
 and through: it can be dug down to its core and piled up anywhere. Roads are
 drawn as straight lines or curves draped over the ground; where they meet or
-cross, intersections form by themselves. Cars drive their lanes, keep their
-distance, wait their turn at intersections, take the fastest route and avoid
-jams. Each city chooses whether it keeps right or left when it is founded,
-and districts can be laid over it that drive on the other side.
+cross, intersections form by themselves, paved up to curved curbs, and the
+roads are marked and signed on their own: lane lines that turn solid before
+junctions, arrows for where each lane leads, priority and give-way signs
+where a bigger road meets a smaller one, speed limits. Traffic lights, other
+signs and limits can be put up by hand. Cars and slower, longer trucks drive
+their lanes at real speeds, slow down for bends as their grip allows, keep
+their distance, wait their turn at intersections, take the fastest route and
+avoid jams. Each city chooses whether it keeps right or left when it is
+founded, and districts can be laid over it that drive on the other side.
 
 The simulation uses only integer arithmetic at a fixed tick rate, so the same
 commands give the same city on every machine.
+
+![An intersection with lights](docs/junction.png)
 
 ![The planet](docs/planet.png)
 
@@ -29,7 +36,7 @@ technology instead of failing to start.
 | Input | Action |
 |---|---|
 | Mouse wheel | Zoom from 4 m to 9 km |
-| Right mouse button | Rotate |
+| Right mouse button | Rotate: the view turns the way the mouse moves |
 | W A S D, Shift | Move, faster |
 | Left mouse button | Use the tool |
 | 1 | Road: click a start and an end; the next road continues from the end |
@@ -37,8 +44,11 @@ technology instead of failing to start.
 | 3 | Bulldoze a road |
 | 4, 5 | Dig the ground away or pile it up, held |
 | 6 | Turn the district around the point to the other drive side |
-| T | Next road type: street, avenue, boulevard, one-way street, highway |
-| 7, 8, 9 | Time at one, three or ten times real time |
+| 7 | Traffic lights on or off at an intersection |
+| 8 | Next sign at the nearer end of a road: priority, give way, stop, none, automatic |
+| 9 | Raise a road's speed limit; with Shift lower it; past either end back to the road's own |
+| T | Next road type: street 50 km/h, avenue 60, boulevard 70, one-way 50, highway 110 |
+| V | Time at one, three or ten times real time |
 | Space | Pause |
 | E, G | Fifty cars more or fewer |
 | Esc | Drop the road being placed, or quit |
@@ -56,6 +66,7 @@ Foxity --drive left
 | `--empty` | Start on bare ground instead of the demo town |
 | `--seed N` | The city's seed |
 | `--camera-distance M` | The camera's distance to its focus |
+| `--focus-east M`, `--focus-north M` | Where the camera looks first, from the pole |
 | `--graphics d3d12\|vulkan` | Choose the graphics provider |
 | `--capture FILE.bmp`, `--capture-frame N` | Save frame N as a picture and quit |
 | `--smoke` | Present three frames and exit |

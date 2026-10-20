@@ -43,10 +43,14 @@ uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetB
 FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan);
 bool FoxWorldRemoveRoad(FoxWorld *world, uint32_t road);
 bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDriveSide side);
+bool FoxWorldSetSpeedLimit(FoxWorld *world, uint32_t road, int32_t speed);
+bool FoxWorldSetSign(FoxWorld *world, uint32_t road, uint32_t end, FoxSign sign);
+bool FoxWorldSetSignals(FoxWorld *world, uint32_t node, bool on);
 void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles);
 
 /* A small grid town around the north pole: what the headless run, the
- * tests and a client started with --demo drive on. False if a road could
+ * tests and a client started with --demo drive on. The avenues cross at
+ * traffic lights and a quiet corner has stop signs. False if a road could
  * not be built. */
 bool FoxWorldBuildDemoTown(FoxWorld *world);
 

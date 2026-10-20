@@ -156,7 +156,7 @@ static void OnRawInput(void *opaque, void *rawInput)
  * is shown; it just cannot be steered. */
 static FoxControls ReadControls(ClientSession *session)
 {
-    FoxControls controls = {.speedPreset = -1, .tool = -1};
+    FoxControls controls = {.tool = -1};
     const LaiueWindowServiceV1 *window = session->windowService;
     if (window->consumeMouseWheelSteps != NULL)
     {
@@ -192,7 +192,8 @@ static FoxControls ReadControls(ClientSession *session)
                      input->wasMouseButtonPressed(state, INPUT_MOUSE_BUTTON_LEFT);
     controls.held = input->isMouseButtonDown(state, INPUT_MOUSE_BUTTON_LEFT);
     static const InputKey toolKeys[] = {INPUT_KEY_1, INPUT_KEY_2, INPUT_KEY_3,
-                                        INPUT_KEY_4, INPUT_KEY_5, INPUT_KEY_6};
+                                        INPUT_KEY_4, INPUT_KEY_5, INPUT_KEY_6,
+                                        INPUT_KEY_7, INPUT_KEY_8, INPUT_KEY_9};
     for (int32_t index = 0; index < (int32_t)(sizeof(toolKeys) / sizeof(toolKeys[0])); ++index)
     {
         if (input->consumeKeyPress(state, toolKeys[index]))
@@ -200,14 +201,7 @@ static FoxControls ReadControls(ClientSession *session)
             controls.tool = index;
         }
     }
-    static const InputKey speedKeys[] = {INPUT_KEY_7, INPUT_KEY_8, INPUT_KEY_9};
-    for (int32_t index = 0; index < (int32_t)(sizeof(speedKeys) / sizeof(speedKeys[0])); ++index)
-    {
-        if (input->consumeKeyPress(state, speedKeys[index]))
-        {
-            controls.speedPreset = index;
-        }
-    }
+    controls.nextTimeScale = input->consumeKeyPress(state, INPUT_KEY_V);
     controls.nextRoadType = input->consumeKeyPress(state, INPUT_KEY_T);
     controls.togglePause = input->consumeKeyPress(state, INPUT_KEY_SPACE);
     controls.carsChange = (input->consumeKeyPress(state, INPUT_KEY_E) ? 1 : 0) -
@@ -447,6 +441,8 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         .cars = options->cars,
         .demo = options->demo,
         .cameraDistance = options->cameraDistance,
+        .focusEast = options->focusEast,
+        .focusNorth = options->focusNorth,
         .modules = modules,
         .device = session.device,
     };

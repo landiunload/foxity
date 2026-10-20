@@ -133,6 +133,21 @@ bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDri
     return added;
 }
 
+bool FoxWorldSetSpeedLimit(FoxWorld *world, uint32_t road, int32_t speed)
+{
+    return world != NULL && FoxNetworkSetSpeedLimit(world->network, road, speed);
+}
+
+bool FoxWorldSetSign(FoxWorld *world, uint32_t road, uint32_t end, FoxSign sign)
+{
+    return world != NULL && FoxNetworkSetSign(world->network, road, end, sign);
+}
+
+bool FoxWorldSetSignals(FoxWorld *world, uint32_t node, bool on)
+{
+    return world != NULL && FoxNetworkSetSignals(world->network, node, on);
+}
+
 void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles)
 {
     if (world != NULL)
@@ -144,6 +159,14 @@ void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles)
 static FoxVec PoleOffset(const FoxWorld *world, int64_t east, int64_t north)
 {
     return (FoxVec){FOX_METRES(east), FOX_METRES(north), FoxPlanetRadius(world->planet)};
+}
+
+/* The ground under a point of the town. */
+static FoxVec Ground(const FoxWorld *world, int64_t east, int64_t north)
+{
+    FoxVec point = PoleOffset(world, east, north);
+    (void)FoxPlanetGround(world->planet, point, &point);
+    return point;
 }
 
 bool FoxWorldBuildDemoTown(FoxWorld *world)
@@ -183,6 +206,41 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         .type = FOX_ROAD_BOULEVARD,
     };
     ok = FoxWorldBuildRoad(world, &bend) == FOX_ROAD_OK && ok;
+    /* A short street out of town that ends in a turning circle. */
+    const FoxRoadPlan spur = {
+        .start = PoleOffset(world, -120, -200),
+        .end = PoleOffset(world, -120, -260),
+        .type = FOX_ROAD_STREET,
+    };
+    ok = FoxWorldBuildRoad(world, &spur) == FOX_ROAD_OK && ok;
+    /* Lights where the avenues cross, stop signs where two streets meet. */
+    const FoxNetwork *network = world->network;
+    const uint32_t centre =
+        FoxNetworkNearestNode(network, Ground(world, 0, 0), FOX_METRES(4));
+    ok = centre != FOX_NETWORK_NONE && FoxWorldSetSignals(world, centre, true) && ok;
+    const uint32_t corner =
+        FoxNetworkNearestNode(network, Ground(world, -80, -80), FOX_METRES(4));
+    FoxNodeView view;
+    if (corner != FOX_NETWORK_NONE && FoxNetworkNode(network, corner, &view))
+    {
+        for (uint32_t slot = 0u; slot < view.roadCount; ++slot)
+        {
+            FoxRoadView road;
+            if (FoxNetworkRoad(network, view.roads[slot], &road))
+            {
+                const uint32_t end = road.nodes[0] == corner ? 0u : 1u;
+                ok = FoxWorldSetSign(world, view.roads[slot], end, FOX_SIGN_STOP) && ok;
+            }
+        }
+    }
+    else
+    {
+        ok = false;
+    }
+    /* A slow street past the corner. */
+    const uint32_t slow =
+        FoxNetworkNearestRoad(network, Ground(world, -80, -120), FOX_METRES(4), NULL);
+    ok = slow != FOX_NETWORK_NONE && FoxWorldSetSpeedLimit(world, slow, FOX_KMH(30)) && ok;
     return ok;
 }
 

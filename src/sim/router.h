@@ -26,8 +26,8 @@ typedef struct FoxRouter
                           uint32_t capacity);
 } FoxRouter;
 
-/* The fastest any road may be driven, units per second: routing estimates
- * never exceed the real cost. */
-#define FOX_ROUTER_MAX_SPEED (FOX_METRES(25))
+/* The fastest any road may be signed, 130 km/h in units per second: routing
+ * estimates never exceed the real cost. */
+#define FOX_ROUTER_MAX_SPEED (FOX_METRES(130) * 10 / 36)
 
 #endif

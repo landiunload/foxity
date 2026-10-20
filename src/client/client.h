@@ -28,6 +28,9 @@ typedef struct FoxClientOptions
     bool demo;
     /* Metres from the camera to its focus; zero keeps the default. */
     double cameraDistance;
+    /* Where the camera looks first, metres east and north of the pole. */
+    double focusEast;
+    double focusNorth;
     /* Non-NULL saves frame captureFrame as a BMP there and exits. */
     const char *capturePath;
     uint32_t captureFrame;

@@ -30,7 +30,19 @@ static const char *const toolNames[FOX_TOOL_COUNT] = {
     [FOX_TOOL_DIG] = "dig",
     [FOX_TOOL_RAISE] = "raise ground",
     [FOX_TOOL_DRIVE_ZONE] = "drive-side zone",
+    [FOX_TOOL_SIGNALS] = "traffic lights",
+    [FOX_TOOL_SIGNS] = "junction signs",
+    [FOX_TOOL_SPEED_LIMIT] = "speed limits",
 };
+static const char *const signNames[FOX_SIGN_COUNT] = {
+    [FOX_SIGN_AUTO] = "chosen by the roads",
+    [FOX_SIGN_NONE] = "no sign",
+    [FOX_SIGN_PRIORITY] = "priority road",
+    [FOX_SIGN_YIELD] = "give way",
+    [FOX_SIGN_STOP] = "stop",
+};
+/* The limits the speed tool steps through, km/h. */
+static const int32_t speedLimits[] = {20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130};
 static const char *const roadResults[] = {
     [FOX_ROAD_OK] = "built",
     [FOX_ROAD_INVALID] = "not a road",
@@ -47,6 +59,7 @@ struct FoxScene
     FoxCity city;
     FoxClock clock;
     double resumeScale;
+    uint32_t timeScale;
     FoxCamera camera;
     FoxCameraView view;
     bool viewReady;
@@ -137,7 +150,9 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         }
     }
     const FoxPlanet *planet = FoxWorldPlanet(scene->city.world);
-    FoxVec focus = {0, 0, FoxPlanetRadius(planet)};
+    FoxVec focus = {(int64_t)llround(desc->focusEast * FOX_UNITS_PER_METRE),
+                    (int64_t)llround(desc->focusNorth * FOX_UNITS_PER_METRE),
+                    FoxPlanetRadius(planet)};
     (void)FoxPlanetGround(planet, focus, &focus);
     FoxCameraInit(&scene->camera, focus);
     if (desc->cameraDistance > 0.0)
@@ -147,7 +162,9 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
     }
     FoxCityReport(&scene->city, "city founded");
     FoxLog(FOX_LOG_INFO, "tools: 1 road, 2 curved road, 3 bulldoze, 4 dig, 5 raise, 6 drive "
-                         "zone; T road type; 7/8/9 speed, Space pause; E/G more or fewer cars");
+                         "zone, 7 traffic lights, 8 junction signs, 9 speed limits (Shift "
+                         "lowers); T road type; V time speed, Space pause; E/G more or fewer "
+                         "cars");
     return scene;
 }
 
@@ -178,10 +195,11 @@ bool FoxSceneCancel(FoxScene *scene)
 
 static void ApplyTimeControls(FoxScene *scene, const FoxControls *controls)
 {
-    if (controls->speedPreset >= 0 &&
-        (size_t)controls->speedPreset < sizeof(speedPresets) / sizeof(speedPresets[0]))
+    if (controls->nextTimeScale)
     {
-        scene->resumeScale = speedPresets[controls->speedPreset];
+        scene->timeScale =
+            (scene->timeScale + 1u) % (uint32_t)(sizeof(speedPresets) / sizeof(speedPresets[0]));
+        scene->resumeScale = speedPresets[scene->timeScale];
         (void)FoxClockSetTimeScale(&scene->clock, scene->resumeScale);
         FoxLog(FOX_LOG_INFO, "time runs at x%g", scene->resumeScale);
     }
@@ -370,6 +388,95 @@ static void Zone(FoxScene *scene)
     }
 }
 
+static void ToggleSignals(FoxScene *scene)
+{
+    const FoxNetwork *network = FoxWorldNetwork(scene->city.world);
+    const uint32_t node = FoxNetworkNearestNode(network, scene->hit, FOX_METRES(15));
+    FoxNodeView view;
+    if (node == FOX_NETWORK_NONE || !FoxNetworkNode(network, node, &view))
+    {
+        return;
+    }
+    if (FoxWorldSetSignals(scene->city.world, node, !view.signals))
+    {
+        FoxLog(FOX_LOG_INFO, "traffic lights %s", view.signals ? "removed" : "put up");
+    }
+    else
+    {
+        FoxLog(FOX_LOG_WARNING, "traffic lights need three roads or more");
+    }
+}
+
+/* The road under the pointer and which of its ends is nearer. */
+static uint32_t PickRoad(const FoxScene *scene, uint32_t *outEnd, FoxRoadView *outRoad)
+{
+    const FoxNetwork *network = FoxWorldNetwork(scene->city.world);
+    int64_t along = 0;
+    const uint32_t road = FoxNetworkNearestRoad(network, scene->hit, FOX_METRES(8), &along);
+    if (road == FOX_NETWORK_NONE || !FoxNetworkRoad(network, road, outRoad))
+    {
+        return FOX_NETWORK_NONE;
+    }
+    *outEnd = along * 2 < outRoad->length ? 0u : 1u;
+    return road;
+}
+
+static void NextSign(FoxScene *scene)
+{
+    uint32_t end = 0u;
+    FoxRoadView road;
+    const uint32_t index = PickRoad(scene, &end, &road);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return;
+    }
+    static const FoxSign order[FOX_SIGN_COUNT] = {FOX_SIGN_PRIORITY, FOX_SIGN_YIELD, FOX_SIGN_STOP,
+                                                  FOX_SIGN_NONE, FOX_SIGN_AUTO};
+    FoxSign next = FOX_SIGN_PRIORITY;
+    for (uint32_t step = 0u; step < FOX_SIGN_COUNT; ++step)
+    {
+        if (order[step] == road.signSetting[end])
+        {
+            next = order[(step + 1u) % FOX_SIGN_COUNT];
+        }
+    }
+    if (FoxWorldSetSign(scene->city.world, index, end, next) &&
+        FoxNetworkRoad(FoxWorldNetwork(scene->city.world), index, &road))
+    {
+        FoxLog(FOX_LOG_INFO, "sign: %s, in force: %s", signNames[next], signNames[road.sign[end]]);
+    }
+}
+
+static void StepSpeedLimit(FoxScene *scene, bool lower)
+{
+    uint32_t end = 0u;
+    FoxRoadView road;
+    const uint32_t index = PickRoad(scene, &end, &road);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return;
+    }
+    const size_t count = sizeof(speedLimits) / sizeof(speedLimits[0]);
+    /* Past either end of the list the road goes back to its type's limit. */
+    int32_t next = 0;
+    for (size_t step = 0u; step < count; ++step)
+    {
+        const int32_t speed = FOX_KMH(speedLimits[lower ? count - 1u - step : step]);
+        if (lower ? speed < road.speedLimit - 1 : speed > road.speedLimit + 1)
+        {
+            next = speed;
+            break;
+        }
+    }
+    if (FoxWorldSetSpeedLimit(scene->city.world, index, next) &&
+        FoxNetworkRoad(FoxWorldNetwork(scene->city.world), index, &road))
+    {
+        FoxLog(FOX_LOG_INFO, "speed limit %ld km/h%s",
+               (long)lround((double)road.speedLimit * 3.6 / FOX_UNITS_PER_METRE),
+               road.speedSet ? "" : " (the road's own)");
+    }
+}
+
 static void ApplyTools(FoxScene *scene, const FoxControls *controls, double realSeconds)
 {
     if (controls->tool >= 0 && controls->tool < FOX_TOOL_COUNT && controls->tool != (int32_t)scene->tool)
@@ -421,6 +528,24 @@ static void ApplyTools(FoxScene *scene, const FoxControls *controls, double real
             Zone(scene);
         }
         break;
+    case FOX_TOOL_SIGNALS:
+        if (controls->click)
+        {
+            ToggleSignals(scene);
+        }
+        break;
+    case FOX_TOOL_SIGNS:
+        if (controls->click)
+        {
+            NextSign(scene);
+        }
+        break;
+    case FOX_TOOL_SPEED_LIMIT:
+        if (controls->click)
+        {
+            StepSpeedLimit(scene, controls->moveFast);
+        }
+        break;
     case FOX_TOOL_COUNT:
         break;
     }
@@ -467,7 +592,7 @@ void FoxSceneDraw(FoxScene *scene)
         return;
     }
     FoxPlanetViewDraw(scene->planet, &scene->view);
-    FoxRoadsViewDraw(scene->roads, &scene->view);
+    FoxRoadsViewDraw(scene->roads, &scene->view, FoxWorldNetwork(scene->city.world));
     (void)FoxCarsViewDraw(scene->cars, FoxWorldTraffic(scene->city.world),
                           FoxWorldNetwork(scene->city.world), &scene->view,
                           FoxClockInterpolation(&scene->clock));

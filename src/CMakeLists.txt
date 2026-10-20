@@ -7,6 +7,7 @@ add_library(fox_core STATIC
     sim/network.c
     sim/network.h
     sim/network_internal.h
+    sim/signals.c
     sim/planet.c
     sim/planet.h
     sim/random.c
@@ -64,6 +65,8 @@ if(FOX_BUILD_CLIENT)
         client/cars_view.h
         client/planet_view.c
         client/planet_view.h
+        client/road_mesh.c
+        client/road_mesh.h
         client/roads_view.c
         client/roads_view.h
         client/scene.c

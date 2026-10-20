@@ -7,14 +7,17 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* Cars on the road network.
+/* Cars and trucks on the road network.
  *
- * Every car drives a lane, keeps its distance with the intelligent driver
- * model and slows for turns. Each intersection hands out its way in once per
- * tick: in the order cars came, a bigger road and going straight counting as
- * having come earlier, a car may go when no turn crossing its own is claimed
- * or given to a car before it, and when the lane beyond has room. A car held up
- * keeps its turn, so nobody waits forever and no intersection locks itself.
+ * Every vehicle drives a lane, keeps its distance with the intelligent driver
+ * model and slows in time for bends, as fast as its sideways grip allows.
+ * Trucks are longer, slower and gentler. Each intersection hands out its way
+ * in once per tick: in the order vehicles came, the priority road and going
+ * straight counting as having come earlier, a vehicle may go when no turn
+ * crossing its own is claimed or given to one before it, and when the lane
+ * beyond has room. A vehicle held up keeps its turn, so nobody waits forever
+ * and no intersection locks itself. Red and yellow lights stop the traffic
+ * that can still stop; a stop sign makes it stand at the line first.
  * Beyond a lane too short to stop on, the next intersection is claimed at the
  * same time. A car standing for a minute is taken off the road, as city
  * builders do, so an overloaded network cannot stay knotted. Cars take the
@@ -25,8 +28,16 @@
  * network and commands give the same traffic on every machine. */
 
 #define FOX_TRAFFIC_TICKS_PER_SECOND 30
-#define FOX_VEHICLE_LENGTH (FOX_METRES(9) / 2)
+#define FOX_CAR_LENGTH (FOX_METRES(9) / 2)
+#define FOX_TRUCK_LENGTH FOX_METRES(12)
 #define FOX_TRAFFIC_MAX_VEHICLES 1000000u
+
+typedef enum FoxVehicleKind
+{
+    FOX_VEHICLE_CAR = 0,
+    FOX_VEHICLE_TRUCK,
+    FOX_VEHICLE_KIND_COUNT,
+} FoxVehicleKind;
 
 typedef struct FoxTraffic FoxTraffic;
 
@@ -44,6 +55,8 @@ typedef struct FoxVehicleView
     int64_t distance;
     /* Units per second. */
     int32_t speed;
+    FoxVehicleKind kind;
+    int64_t length;
     uint8_t color;
     /* Ticks spent standing still. */
     uint32_t waitTicks;
@@ -80,8 +93,10 @@ void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network);
 uint32_t FoxTrafficCapacity(const FoxTraffic *traffic);
 bool FoxTrafficVehicle(const FoxTraffic *traffic, uint32_t slot, FoxVehicleView *outView);
 
-/* Where a car is drawn: between its last two ticks by `blend` (0..FOX_UNIT),
- * with the direction it faces (FOX_UNIT long). */
+/* Where a vehicle is drawn, between its last two ticks by `blend`
+ * (0..FOX_UNIT): the middle of its body and the direction it faces (FOX_UNIT
+ * long). The body lies between its axles, each following the path the
+ * vehicle drove, so it swings through bends as a real one does. */
 bool FoxTrafficVehiclePose(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t slot,
                            int64_t blend, FoxVec *outPosition, FoxVec *outForward);
 

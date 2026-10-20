@@ -6,9 +6,13 @@
 #include <string.h>
 
 #define COLORS 8u
-/* Two boxes: the body and the cabin, each six faces of two triangles. */
-#define CAR_VERTICES (2u * 36u)
-#define LIFT 0.12f
+#define TRUCK_COLORS 4u
+#define MODELS (COLORS + TRUCK_COLORS)
+/* Boxes of six faces of two triangles: a car has a body, a cabin and four
+ * wheels, a truck a cab, a box and six wheels. */
+#define BOX_VERTICES 36u
+#define MAX_VERTICES (9u * BOX_VERTICES)
+#define LIFT 0.15f
 /* Cars further than this from the eye are too small to matter. */
 #define DRAW_DISTANCE 2500.0f
 
@@ -28,8 +32,10 @@ struct FoxCarsView
 {
     LaiueGraphicsDeviceV2 *device;
     bool instancing;
-    LaiueGraphicsHandle meshes[COLORS];
-    Batch batches[COLORS];
+    /* Cars in every paint, then trucks. */
+    LaiueGraphicsHandle meshes[MODELS];
+    uint32_t vertexCounts[MODELS];
+    Batch batches[MODELS];
 };
 
 static uint32_t Darken(uint32_t color, float factor)
@@ -77,6 +83,47 @@ static uint32_t Box(LaiueGraphicsVertexV2 *out, const float low[3], const float 
     return written;
 }
 
+static uint32_t Wheel(LaiueGraphicsVertexV2 *out, float x, float y, float radius)
+{
+    const float low[3] = {x - radius, y - 0.14f, 0.0f};
+    const float high[3] = {x + radius, y + 0.14f, 2.0f * radius};
+    return Box(out, low, high, UINT32_C(0xFF1A1A1A));
+}
+
+/* About 4.5 m long around its middle. */
+static uint32_t CarModel(LaiueGraphicsVertexV2 *out, uint32_t paint)
+{
+    const float bodyLow[3] = {-2.25f, -0.9f, 0.3f};
+    const float bodyHigh[3] = {2.25f, 0.9f, 1.0f};
+    const float cabinLow[3] = {-1.25f, -0.8f, 1.0f};
+    const float cabinHigh[3] = {0.95f, 0.8f, 1.5f};
+    uint32_t count = Box(out, bodyLow, bodyHigh, paint);
+    count += Box(out + count, cabinLow, cabinHigh, Darken(paint, 0.6f));
+    for (uint32_t wheel = 0u; wheel < 4u; ++wheel)
+    {
+        count += Wheel(out + count, (wheel & 1u) != 0u ? 1.45f : -1.45f,
+                       (wheel & 2u) != 0u ? 0.82f : -0.82f, 0.33f);
+    }
+    return count;
+}
+
+/* About 12 m long: a cab in front of a box. */
+static uint32_t TruckModel(LaiueGraphicsVertexV2 *out, uint32_t paint)
+{
+    const float cabLow[3] = {3.7f, -1.2f, 0.5f};
+    const float cabHigh[3] = {6.0f, 1.2f, 3.0f};
+    const float boxLow[3] = {-6.0f, -1.25f, 0.9f};
+    const float boxHigh[3] = {3.5f, 1.25f, 3.9f};
+    uint32_t count = Box(out, cabLow, cabHigh, paint);
+    count += Box(out + count, boxLow, boxHigh, UINT32_C(0xFFDCDCDC));
+    static const float axles[3] = {4.8f, -3.2f, -4.6f};
+    for (uint32_t wheel = 0u; wheel < 6u; ++wheel)
+    {
+        count += Wheel(out + count, axles[wheel / 2u], (wheel & 1u) != 0u ? 1.05f : -1.05f, 0.5f);
+    }
+    return count;
+}
+
 FoxCarsView *FoxCarsViewCreate(LaiueGraphicsDeviceV2 *device)
 {
     if (device == NULL || device->createBuffer == NULL || device->uploadBuffer == NULL ||
@@ -94,30 +141,27 @@ FoxCarsView *FoxCarsViewCreate(LaiueGraphicsDeviceV2 *device)
         device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_INSTANCES_SIZE &&
         device->getCapabilities != NULL && device->submitInstances != NULL &&
         (device->getCapabilities(device) & LAIUE_GRAPHICS_CAP_GENERIC_INSTANCES) != 0u;
-    for (uint32_t color = 0u; color < COLORS; ++color)
+    for (uint32_t model = 0u; model < MODELS; ++model)
     {
-        LaiueGraphicsVertexV2 vertices[CAR_VERTICES];
-        const float bodyLow[3] = {-2.25f, -0.9f, 0.15f};
-        const float bodyHigh[3] = {2.25f, 0.9f, 0.95f};
-        const float cabinLow[3] = {-1.25f, -0.8f, 0.95f};
-        const float cabinHigh[3] = {0.95f, 0.8f, 1.5f};
-        uint32_t count = Box(vertices, bodyLow, bodyHigh, paints[color]);
-        count += Box(vertices + count, cabinLow, cabinHigh, Darken(paints[color], 0.6f));
+        LaiueGraphicsVertexV2 vertices[MAX_VERTICES];
+        const uint32_t count = model < COLORS ? CarModel(vertices, paints[model])
+                                              : TruckModel(vertices, paints[model - COLORS]);
+        view->vertexCounts[model] = count;
         const uint64_t bytes = (uint64_t)count * sizeof(vertices[0]);
         const LaiueGraphicsBufferDescV1 description = {
             .structSize = sizeof(description),
             .usageFlags = LAIUE_GRAPHICS_BUFFER_USAGE_VERTEX,
             .sizeBytes = bytes,
         };
-        if (device->createBuffer(device, &description, &view->meshes[color]) == 0u)
+        if (device->createBuffer(device, &description, &view->meshes[model]) == 0u)
         {
-            view->meshes[color] = 0u;
+            view->meshes[model] = 0u;
             FoxCarsViewDestroy(view);
             return NULL;
         }
         const LaiueGraphicsBufferUploadV1 upload = {
             .structSize = sizeof(upload),
-            .buffer = view->meshes[color],
+            .buffer = view->meshes[model],
             .data = vertices,
             .sizeBytes = bytes,
         };
@@ -136,13 +180,13 @@ void FoxCarsViewDestroy(FoxCarsView *view)
     {
         return;
     }
-    for (uint32_t color = 0u; color < COLORS; ++color)
+    for (uint32_t model = 0u; model < MODELS; ++model)
     {
-        if (view->meshes[color] != 0u)
+        if (view->meshes[model] != 0u)
         {
-            view->device->destroyHandle(view->device, view->meshes[color]);
+            view->device->destroyHandle(view->device, view->meshes[model]);
         }
-        free(view->batches[color].instances);
+        free(view->batches[model].instances);
     }
     free(view);
 }
@@ -239,9 +283,9 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
     {
         return 0u;
     }
-    for (uint32_t color = 0u; color < COLORS; ++color)
+    for (uint32_t model = 0u; model < MODELS; ++model)
     {
-        view->batches[color].count = 0u;
+        view->batches[model].count = 0u;
     }
     const int64_t mix = (int64_t)lrintf((blend < 0.0f ? 0.0f : (blend > 1.0f ? 1.0f : blend)) *
                                         (float)FOX_UNIT);
@@ -280,7 +324,9 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
         }
         const double ahead[3] = {(double)forward.x, (double)forward.y, (double)forward.z};
         Orientation(ahead, up, instance.rotation);
-        Batch *batch = &view->batches[car.color % COLORS];
+        const uint32_t model = car.kind == FOX_VEHICLE_TRUCK ? COLORS + car.color % TRUCK_COLORS
+                                                             : car.color % COLORS;
+        Batch *batch = &view->batches[model];
         if (view->instancing)
         {
             drawn += Append(batch, &instance) ? 1u : 0u;
@@ -288,8 +334,8 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
         }
         LaiueGraphicsDrawItemV2 draw = {
             .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
-            .vertexBuffer = view->meshes[car.color % COLORS],
-            .indexCount = CAR_VERTICES,
+            .vertexBuffer = view->meshes[model],
+            .indexCount = view->vertexCounts[model],
             .originRelative = {instance.originRelative[0], instance.originRelative[1],
                                instance.originRelative[2]},
             .scale = 1.0f,
@@ -298,17 +344,17 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
     }
     if (view->instancing)
     {
-        for (uint32_t color = 0u; color < COLORS; ++color)
+        for (uint32_t model = 0u; model < MODELS; ++model)
         {
-            const Batch *batch = &view->batches[color];
+            const Batch *batch = &view->batches[model];
             if (batch->count == 0u)
             {
                 continue;
             }
             const LaiueGraphicsDrawItemV2 draw = {
                 .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
-                .vertexBuffer = view->meshes[color],
-                .indexCount = CAR_VERTICES,
+                .vertexBuffer = view->meshes[model],
+                .indexCount = view->vertexCounts[model],
                 .scale = 1.0f,
             };
             (void)view->device->submitInstances(view->device, &draw, batch->instances,

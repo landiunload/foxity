@@ -27,6 +27,12 @@ typedef enum FoxTool
     FOX_TOOL_RAISE,
     /* Click: the district around the point drives on the other side. */
     FOX_TOOL_DRIVE_ZONE,
+    /* Click an intersection: traffic lights on or off. */
+    FOX_TOOL_SIGNALS,
+    /* Click near a road end: the next sign for the traffic arriving there. */
+    FOX_TOOL_SIGNS,
+    /* Click a road: a higher speed limit; with Shift a lower one. */
+    FOX_TOOL_SPEED_LIMIT,
     FOX_TOOL_COUNT,
 } FoxTool;
 
@@ -40,6 +46,9 @@ typedef struct FoxSceneDesc
     bool demo;
     /* Metres from the focus to the eye; zero keeps the default. */
     double cameraDistance;
+    /* Where the camera looks first, metres east and north of the pole. */
+    double focusEast;
+    double focusNorth;
     /* Loaded engine modules: routing comes from them. */
     const FoxModules *modules;
     LaiueGraphicsDeviceV2 *device;
@@ -71,8 +80,8 @@ typedef struct FoxControls
     int32_t tool;
     bool nextRoadType;
     bool togglePause;
-    /* -1 keeps the speed; 0..2 picks one, three or ten times real time. */
-    int32_t speedPreset;
+    /* Steps through one, three and ten times real time. */
+    bool nextTimeScale;
     /* +1 or -1 asks for more or fewer cars. */
     int32_t carsChange;
 } FoxControls;

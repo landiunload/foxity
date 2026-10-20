@@ -8,11 +8,15 @@
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The visible roads: asphalt, markings and the paved areas of
- * intersections. Roads are gathered into meshes per 128 m patch of space, so
- * a city of thousands of roads costs a few hundred draws and GPU handles,
- * and a change rebuilds only the patches it touched, within a time budget. A
- * planned road shows as a preview until it is built. */
+/* The visible roads: asphalt, intersections, markings, signs and traffic
+ * lights. Roads are gathered into meshes per 128 m patch of space, so a city
+ * of thousands of roads costs a few hundred draws and GPU handles, and a
+ * change rebuilds only the patches it touched, within a time budget. Each
+ * patch has two meshes: the asphalt, always drawn, and the details, drawn
+ * only near the eye, where they can be seen and the depth buffer can keep
+ * paint apart from the road under it. The lit lamps of traffic lights follow
+ * the signals every frame. A planned road shows as a preview until it is
+ * built. */
 
 typedef struct FoxRoadsView FoxRoadsView;
 
@@ -27,6 +31,6 @@ void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double bu
 void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t count,
                             FoxRoadType type, bool valid);
 
-void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera);
+void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera, const FoxNetwork *network);
 
 #endif

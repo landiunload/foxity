@@ -2,6 +2,7 @@
 #include "client/client.h"
 #include "sim/traffic.h"
 
+#include <math.h>
 #include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
@@ -64,6 +65,14 @@ static int Run(int argumentCount, char **arguments)
         {
             parsed = FoxParseDouble(value, &options.cameraDistance) && options.cameraDistance > 0.0;
         }
+        else if (strcmp(argument, "--focus-east") == 0)
+        {
+            parsed = FoxParseDouble(value, &options.focusEast) && fabs(options.focusEast) < 1000.0;
+        }
+        else if (strcmp(argument, "--focus-north") == 0)
+        {
+            parsed = FoxParseDouble(value, &options.focusNorth) && fabs(options.focusNorth) < 1000.0;
+        }
         else if (strcmp(argument, "--capture") == 0)
         {
             parsed = value != NULL && value[0] != '\0';
@@ -84,7 +93,8 @@ static int Run(int argumentCount, char **arguments)
         if (!parsed)
         {
             fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] [--camera-distance M] "
-                  "[--graphics d3d12|vulkan] [--smoke] [--capture FILE.bmp] [--capture-frame N]\n",
+                  "[--focus-east M] [--focus-north M] [--graphics d3d12|vulkan] [--smoke] "
+                  "[--capture FILE.bmp] [--capture-frame N]\n",
                   stderr);
             return FOX_CLIENT_EXIT_INVALID_OPTIONS;
         }

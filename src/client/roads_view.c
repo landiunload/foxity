@@ -1,6 +1,7 @@
 #include "client/roads_view.h"
 
 #include "app/log.h"
+#include "client/road_mesh.h"
 #include "mod/application.h"
 
 #include <math.h>
@@ -10,23 +11,19 @@
 
 #define PATCH_SHIFT 17u
 #define NO_PATCH UINT32_MAX
-/* Heights above the ground: asphalt, intersections and markings stack up so
- * they never fight for the same depth. */
-#define ASPHALT_LIFT 0.12
-#define JUNCTION_LIFT 0.13
-#define MARKING_LIFT 0.15
-#define SHOULDER 0.3
-#define MARKING_WIDTH 0.18
-#define DASH 3.0
-#define DASH_GAP 6.0
-#define JUNCTION_SEGMENTS 20u
+/* Details of patches whose middle is further than this from the eye are left
+ * out. */
+#define DETAIL_DISTANCE 700.0
+/* A lit lamp: a small bright box over the dark one. */
+#define LAMP_VERTICES 36u
+#define LAMP_HALF 0.11f
 
-#define COLOR_ASPHALT UINT32_C(0xFF3C3A38)
-#define COLOR_JUNCTION UINT32_C(0xFF44423F)
-#define COLOR_LINE UINT32_C(0xFFE6E6E6)
-#define COLOR_CENTRE UINT32_C(0xFF2AB8E8)
 #define COLOR_PREVIEW UINT32_C(0xFF55C46A)
 #define COLOR_PREVIEW_BAD UINT32_C(0xFF3A3AD8)
+
+/* Red, yellow and green, lit. */
+static const uint32_t lampColors[3] = {UINT32_C(0xFF2828FF), UINT32_C(0xFF14B4FF),
+                                       UINT32_C(0xFF46E650)};
 
 typedef struct Patch
 {
@@ -42,8 +39,12 @@ typedef struct Patch
     uint32_t *nodes;
     uint32_t nodeCount;
     uint32_t nodeCapacity;
-    LaiueGraphicsHandle vertexBuffer;
-    uint32_t vertexCount;
+    LaiueGraphicsHandle baseBuffer;
+    uint32_t baseCount;
+    LaiueGraphicsHandle detailBuffer;
+    uint32_t detailCount;
+    FoxSignalHead *heads;
+    uint32_t headCount;
 } Patch;
 
 typedef struct Tracked
@@ -53,17 +54,17 @@ typedef struct Tracked
     uint32_t patch;
 } Tracked;
 
-typedef struct Mesh
+typedef struct LampBatch
 {
-    LaiueGraphicsVertexV2 *vertices;
+    LaiueGraphicsInstanceV2 *instances;
     uint32_t count;
     uint32_t capacity;
-    bool failed;
-} Mesh;
+} LampBatch;
 
 struct FoxRoadsView
 {
     LaiueGraphicsDeviceV2 *device;
+    bool instancing;
     uint64_t seenRevision;
     bool seenAny;
     Patch *patches;
@@ -72,11 +73,70 @@ struct FoxRoadsView
     uint32_t roadCapacity;
     Tracked *nodes;
     uint32_t nodeCapacity;
-    Mesh mesh;
+    FoxMesh base;
+    FoxMesh detail;
+    FoxSignalHeads heads;
     LaiueGraphicsHandle previewBuffer;
     uint32_t previewCount;
     FoxVec previewOrigin;
+    LaiueGraphicsHandle lamps[3];
+    LampBatch lampBatches[3];
 };
+
+static bool UploadVertices(LaiueGraphicsDeviceV2 *device, const LaiueGraphicsVertexV2 *vertices,
+                           uint32_t count, LaiueGraphicsHandle *outHandle)
+{
+    const uint64_t bytes = (uint64_t)count * sizeof(*vertices);
+    const LaiueGraphicsBufferDescV1 description = {
+        .structSize = sizeof(description),
+        .usageFlags = LAIUE_GRAPHICS_BUFFER_USAGE_VERTEX,
+        .sizeBytes = bytes,
+    };
+    LaiueGraphicsHandle handle = 0u;
+    if (device->createBuffer(device, &description, &handle) == 0u)
+    {
+        return false;
+    }
+    const LaiueGraphicsBufferUploadV1 upload = {
+        .structSize = sizeof(upload),
+        .buffer = handle,
+        .data = vertices,
+        .sizeBytes = bytes,
+    };
+    if (device->uploadBuffer(device, &upload) == 0u)
+    {
+        device->destroyHandle(device, handle);
+        return false;
+    }
+    *outHandle = handle;
+    return true;
+}
+
+/* A cube of lit lamp around the origin. */
+static bool CreateLamp(LaiueGraphicsDeviceV2 *device, uint32_t color, LaiueGraphicsHandle *out)
+{
+    LaiueGraphicsVertexV2 vertices[LAMP_VERTICES];
+    static const uint8_t faces[6][4] = {
+        {4u, 5u, 7u, 6u}, {0u, 2u, 3u, 1u}, {0u, 1u, 5u, 4u},
+        {2u, 6u, 7u, 3u}, {0u, 4u, 6u, 2u}, {1u, 3u, 7u, 5u},
+    };
+    static const uint8_t order[6] = {0u, 1u, 2u, 0u, 2u, 3u};
+    uint32_t written = 0u;
+    for (uint32_t face = 0u; face < 6u; ++face)
+    {
+        for (uint32_t index = 0u; index < 6u; ++index)
+        {
+            const uint32_t corner = faces[face][order[index]];
+            vertices[written++] = (LaiueGraphicsVertexV2){
+                .position = {(corner & 1u) != 0u ? LAMP_HALF : -LAMP_HALF,
+                             (corner & 2u) != 0u ? LAMP_HALF : -LAMP_HALF,
+                             (corner & 4u) != 0u ? LAMP_HALF : -LAMP_HALF},
+                .colorRGBA = color,
+            };
+        }
+    }
+    return UploadVertices(device, vertices, written, out);
+}
 
 FoxRoadsView *FoxRoadsViewCreate(LaiueGraphicsDeviceV2 *device)
 {
@@ -86,9 +146,23 @@ FoxRoadsView *FoxRoadsViewCreate(LaiueGraphicsDeviceV2 *device)
         return NULL;
     }
     FoxRoadsView *view = calloc(1u, sizeof(*view));
-    if (view != NULL)
+    if (view == NULL)
     {
-        view->device = device;
+        return NULL;
+    }
+    view->device = device;
+    view->instancing =
+        device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_INSTANCES_SIZE &&
+        device->getCapabilities != NULL && device->submitInstances != NULL &&
+        (device->getCapabilities(device) & LAIUE_GRAPHICS_CAP_GENERIC_INSTANCES) != 0u;
+    for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
+    {
+        if (!CreateLamp(device, lampColors[lamp], &view->lamps[lamp]))
+        {
+            view->lamps[lamp] = 0u;
+            FoxRoadsViewDestroy(view);
+            return NULL;
+        }
     }
     return view;
 }
@@ -110,15 +184,25 @@ void FoxRoadsViewDestroy(FoxRoadsView *view)
     }
     for (uint32_t index = 0u; index < view->patchCapacity; ++index)
     {
-        ReleaseBuffer(view, &view->patches[index].vertexBuffer);
-        free(view->patches[index].roads);
-        free(view->patches[index].nodes);
+        Patch *patch = &view->patches[index];
+        ReleaseBuffer(view, &patch->baseBuffer);
+        ReleaseBuffer(view, &patch->detailBuffer);
+        free(patch->roads);
+        free(patch->nodes);
+        free(patch->heads);
     }
     ReleaseBuffer(view, &view->previewBuffer);
+    for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
+    {
+        ReleaseBuffer(view, &view->lamps[lamp]);
+        free(view->lampBatches[lamp].instances);
+    }
     free(view->patches);
     free(view->roads);
     free(view->nodes);
-    free(view->mesh.vertices);
+    FoxMeshFree(&view->base);
+    FoxMeshFree(&view->detail);
+    free(view->heads.items);
     free(view);
 }
 
@@ -148,8 +232,7 @@ static bool GrowArray(void **array, uint32_t *capacity, uint32_t needed, size_t 
 
 static int64_t PatchCoordinate(int64_t value)
 {
-    return value >= 0 ? (int64_t)((uint64_t)value >> PATCH_SHIFT)
-                      : -1 - (int64_t)((uint64_t)(-(value + 1)) >> PATCH_SHIFT);
+    return FoxFloorDivide(value, INT64_C(1) << PATCH_SHIFT);
 }
 
 static uint32_t FindPatch(FoxRoadsView *view, FoxVec point, bool create)
@@ -283,292 +366,64 @@ static void Track(FoxRoadsView *view, const FoxNetwork *network)
     }
 }
 
-/* ---- Geometry ----------------------------------------------------------------- */
-
-static void Push(Mesh *mesh, const double position[3], uint32_t color)
+static bool Upload(FoxRoadsView *view, const FoxMesh *mesh, LaiueGraphicsHandle *outHandle)
 {
-    if (!GrowArray((void **)&mesh->vertices, &mesh->capacity, mesh->count + 1u,
-                   sizeof(*mesh->vertices)))
-    {
-        mesh->failed = true;
-        return;
-    }
-    mesh->vertices[mesh->count++] = (LaiueGraphicsVertexV2){
-        .position = {(float)position[0], (float)position[1], (float)position[2]},
-        .colorRGBA = color,
-    };
-}
-
-static void Quad(Mesh *mesh, const double a[3], const double b[3], const double c[3],
-                 const double d[3], uint32_t color)
-{
-    Push(mesh, a, color);
-    Push(mesh, b, color);
-    Push(mesh, c, color);
-    Push(mesh, a, color);
-    Push(mesh, c, color);
-    Push(mesh, d, color);
-}
-
-typedef struct Frame
-{
-    /* Metres relative to the mesh origin. */
-    double point[3];
-    double up[3];
-    double right[3];
-} Frame;
-
-static void Unit(double vector[3])
-{
-    const double length = sqrt(vector[0] * vector[0] + vector[1] * vector[1] + vector[2] * vector[2]);
-    if (length > 0.0)
-    {
-        vector[0] /= length;
-        vector[1] /= length;
-        vector[2] /= length;
-    }
-}
-
-/* The centre point, up and right of a road at each of its points. */
-static Frame FrameAt(const FoxVec *centre, uint32_t count, uint32_t index, FoxVec origin)
-{
-    Frame frame;
-    const FoxVec point = centre[index];
-    frame.point[0] = (double)(point.x - origin.x) / FOX_UNITS_PER_METRE;
-    frame.point[1] = (double)(point.y - origin.y) / FOX_UNITS_PER_METRE;
-    frame.point[2] = (double)(point.z - origin.z) / FOX_UNITS_PER_METRE;
-    frame.up[0] = (double)point.x;
-    frame.up[1] = (double)point.y;
-    frame.up[2] = (double)point.z;
-    Unit(frame.up);
-    const FoxVec before = centre[index == 0u ? 0u : index - 1u];
-    const FoxVec after = centre[index + 1u < count ? index + 1u : index];
-    double tangent[3] = {(double)(after.x - before.x), (double)(after.y - before.y),
-                         (double)(after.z - before.z)};
-    Unit(tangent);
-    frame.right[0] = tangent[1] * frame.up[2] - tangent[2] * frame.up[1];
-    frame.right[1] = tangent[2] * frame.up[0] - tangent[0] * frame.up[2];
-    frame.right[2] = tangent[0] * frame.up[1] - tangent[1] * frame.up[0];
-    Unit(frame.right);
-    return frame;
-}
-
-static void Offset(const Frame *frame, double right, double lift, double out[3])
-{
-    for (uint32_t axis = 0u; axis < 3u; ++axis)
-    {
-        out[axis] = frame->point[axis] + frame->right[axis] * right + frame->up[axis] * lift;
-    }
-}
-
-/* A strip between two offsets from the centre line along [from, to] metres
- * of it, dashed when `dash` is non-zero. */
-static void Strip(Mesh *mesh, const FoxVec *centre, uint32_t count, FoxVec origin, double left,
-                  double right, double lift, double from, double to, double dash, double gap,
-                  uint32_t color)
-{
-    double travelled = 0.0;
-    for (uint32_t index = 0u; index + 1u < count; ++index)
-    {
-        const Frame a = FrameAt(centre, count, index, origin);
-        const Frame b = FrameAt(centre, count, index + 1u, origin);
-        const double dx = b.point[0] - a.point[0];
-        const double dy = b.point[1] - a.point[1];
-        const double dz = b.point[2] - a.point[2];
-        const double length = sqrt(dx * dx + dy * dy + dz * dz);
-        const double start = travelled;
-        travelled += length;
-        if (length <= 0.0 || travelled <= from || start >= to)
-        {
-            continue;
-        }
-        /* The pieces of this segment that are painted. */
-        double piece = fmax(from, start);
-        while (piece < fmin(to, travelled))
-        {
-            double end = fmin(to, travelled);
-            if (dash > 0.0)
-            {
-                const double phase = fmod(piece - from, dash + gap);
-                if (phase >= dash)
-                {
-                    piece += dash + gap - phase;
-                    continue;
-                }
-                end = fmin(end, piece + dash - phase);
-            }
-            const double t0 = (piece - start) / length;
-            const double t1 = (end - start) / length;
-            Frame p0;
-            Frame p1;
-            for (uint32_t axis = 0u; axis < 3u; ++axis)
-            {
-                p0.point[axis] = a.point[axis] + (b.point[axis] - a.point[axis]) * t0;
-                p1.point[axis] = a.point[axis] + (b.point[axis] - a.point[axis]) * t1;
-                p0.up[axis] = a.up[axis] + (b.up[axis] - a.up[axis]) * t0;
-                p1.up[axis] = a.up[axis] + (b.up[axis] - a.up[axis]) * t1;
-                p0.right[axis] = a.right[axis] + (b.right[axis] - a.right[axis]) * t0;
-                p1.right[axis] = a.right[axis] + (b.right[axis] - a.right[axis]) * t1;
-            }
-            double q[4][3];
-            Offset(&p0, left, lift, q[0]);
-            Offset(&p0, right, lift, q[1]);
-            Offset(&p1, right, lift, q[2]);
-            Offset(&p1, left, lift, q[3]);
-            Quad(mesh, q[0], q[1], q[2], q[3], color);
-            piece = end;
-        }
-    }
-}
-
-static double HalfWidth(FoxRoadType type)
-{
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet(type);
-    return (double)(info->forwardLanes + info->backwardLanes) * (double)FOX_LANE_WIDTH / 2.0 /
-           FOX_UNITS_PER_METRE;
-}
-
-static void AddRoad(Mesh *mesh, const FoxRoadView *road, FoxVec origin)
-{
-    const double half = HalfWidth(road->type) + SHOULDER;
-    const double length = (double)road->length / FOX_UNITS_PER_METRE;
-    Strip(mesh, road->centre, road->centreCount, origin, -half, half, ASPHALT_LIFT, 0.0, length,
-          0.0, 0.0, COLOR_ASPHALT);
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet(road->type);
-    const double from = (double)road->trim[0] / FOX_UNITS_PER_METRE;
-    const double to = length - (double)road->trim[1] / FOX_UNITS_PER_METRE;
-    const double lane = (double)FOX_LANE_WIDTH / FOX_UNITS_PER_METRE;
-    const double line = MARKING_WIDTH / 2.0;
-    const double side = road->driveSide == FOX_DRIVE_RIGHT ? 1.0 : -1.0;
-    if (info->backwardLanes != 0u)
-    {
-        Strip(mesh, road->centre, road->centreCount, origin, -line, line, MARKING_LIFT, from, to,
-              0.0, 0.0, COLOR_CENTRE);
-        for (uint32_t index = 1u; index < info->forwardLanes; ++index)
-        {
-            const double at = side * lane * (double)index;
-            Strip(mesh, road->centre, road->centreCount, origin, at - line, at + line,
-                  MARKING_LIFT, from, to, DASH, DASH_GAP, COLOR_LINE);
-        }
-        for (uint32_t index = 1u; index < info->backwardLanes; ++index)
-        {
-            const double at = -side * lane * (double)index;
-            Strip(mesh, road->centre, road->centreCount, origin, at - line, at + line,
-                  MARKING_LIFT, from, to, DASH, DASH_GAP, COLOR_LINE);
-        }
-        return;
-    }
-    for (uint32_t index = 1u; index < info->forwardLanes; ++index)
-    {
-        const double at = lane * ((double)info->forwardLanes / 2.0 - (double)index);
-        Strip(mesh, road->centre, road->centreCount, origin, at - line, at + line, MARKING_LIFT,
-              from, to, DASH, DASH_GAP, COLOR_LINE);
-    }
-}
-
-static void AddJunction(Mesh *mesh, const FoxNodeView *node, FoxVec origin)
-{
-    if (node->roadCount == 2u)
-    {
-        return;
-    }
-    const FoxVec centre[1] = {node->position};
-    Frame frame = FrameAt(centre, 1u, 0u, origin);
-    /* Any tangent pair at the node. */
-    const double axis[3] = {fabs(frame.up[2]) < 0.9 ? 0.0 : 1.0, 0.0,
-                            fabs(frame.up[2]) < 0.9 ? 1.0 : 0.0};
-    double first[3] = {axis[1] * frame.up[2] - axis[2] * frame.up[1],
-                       axis[2] * frame.up[0] - axis[0] * frame.up[2],
-                       axis[0] * frame.up[1] - axis[1] * frame.up[0]};
-    Unit(first);
-    const double second[3] = {frame.up[1] * first[2] - frame.up[2] * first[1],
-                              frame.up[2] * first[0] - frame.up[0] * first[2],
-                              frame.up[0] * first[1] - frame.up[1] * first[0]};
-    const double radius = (double)node->radius / FOX_UNITS_PER_METRE + 0.5;
-    double middle[3];
-    for (uint32_t index = 0u; index < 3u; ++index)
-    {
-        middle[index] = frame.point[index] + frame.up[index] * JUNCTION_LIFT;
-    }
-    for (uint32_t segment = 0u; segment < JUNCTION_SEGMENTS; ++segment)
-    {
-        const double a = 6.283185307179586 * segment / JUNCTION_SEGMENTS;
-        const double b = 6.283185307179586 * (segment + 1u) / JUNCTION_SEGMENTS;
-        double p[3];
-        double q[3];
-        for (uint32_t index = 0u; index < 3u; ++index)
-        {
-            p[index] = middle[index] + (first[index] * cos(a) + second[index] * sin(a)) * radius;
-            q[index] = middle[index] + (first[index] * cos(b) + second[index] * sin(b)) * radius;
-        }
-        Push(mesh, middle, COLOR_JUNCTION);
-        Push(mesh, p, COLOR_JUNCTION);
-        Push(mesh, q, COLOR_JUNCTION);
-    }
-}
-
-static bool UploadMesh(FoxRoadsView *view, const Mesh *mesh, LaiueGraphicsHandle *outHandle)
-{
-    const uint64_t bytes = (uint64_t)mesh->count * sizeof(*mesh->vertices);
-    const LaiueGraphicsBufferDescV1 description = {
-        .structSize = sizeof(description),
-        .usageFlags = LAIUE_GRAPHICS_BUFFER_USAGE_VERTEX,
-        .sizeBytes = bytes,
-    };
-    LaiueGraphicsHandle handle = 0u;
-    if (view->device->createBuffer(view->device, &description, &handle) == 0u)
-    {
-        return false;
-    }
-    const LaiueGraphicsBufferUploadV1 upload = {
-        .structSize = sizeof(upload),
-        .buffer = handle,
-        .data = mesh->vertices,
-        .sizeBytes = bytes,
-    };
-    if (view->device->uploadBuffer(view->device, &upload) == 0u)
-    {
-        view->device->destroyHandle(view->device, handle);
-        return false;
-    }
-    *outHandle = handle;
-    return true;
+    *outHandle = 0u;
+    return mesh->count == 0u ||
+           UploadVertices(view->device, mesh->vertices, mesh->count, outHandle);
 }
 
 static void RebuildPatch(FoxRoadsView *view, const FoxNetwork *network, Patch *patch)
 {
     patch->dirty = false;
-    view->mesh.count = 0u;
-    view->mesh.failed = false;
+    FoxMeshReset(&view->base);
+    FoxMeshReset(&view->detail);
+    view->heads.count = 0u;
+    view->heads.failed = false;
     for (uint32_t index = 0u; index < patch->roadCount; ++index)
     {
-        FoxRoadView road;
-        if (FoxNetworkRoad(network, patch->roads[index], &road))
-        {
-            AddRoad(&view->mesh, &road, patch->origin);
-        }
+        FoxRoadMeshRoad(network, patch->roads[index], patch->origin, &view->base, &view->detail,
+                        &view->heads);
     }
     for (uint32_t index = 0u; index < patch->nodeCount; ++index)
     {
-        FoxNodeView node;
-        if (FoxNetworkNode(network, patch->nodes[index], &node))
-        {
-            AddJunction(&view->mesh, &node, patch->origin);
-        }
+        FoxRoadMeshNode(network, patch->nodes[index], patch->origin, &view->base, &view->detail);
     }
-    LaiueGraphicsHandle fresh = 0u;
-    if (view->mesh.failed || (view->mesh.count != 0u && !UploadMesh(view, &view->mesh, &fresh)))
+    FoxSignalHead *heads = NULL;
+    if (view->heads.count != 0u)
     {
+        heads = malloc((size_t)view->heads.count * sizeof(*heads));
+    }
+    LaiueGraphicsHandle base = 0u;
+    LaiueGraphicsHandle detail = 0u;
+    if (view->base.failed || view->detail.failed || view->heads.failed ||
+        (view->heads.count != 0u && heads == NULL) || !Upload(view, &view->base, &base) ||
+        !Upload(view, &view->detail, &detail))
+    {
+        ReleaseBuffer(view, &base);
+        ReleaseBuffer(view, &detail);
+        free(heads);
         FoxLog(FOX_LOG_WARNING, "a road patch could not be built");
         return;
     }
-    ReleaseBuffer(view, &patch->vertexBuffer);
-    patch->vertexBuffer = fresh;
-    patch->vertexCount = view->mesh.count;
+    if (heads != NULL)
+    {
+        memcpy(heads, view->heads.items, (size_t)view->heads.count * sizeof(*heads));
+    }
+    ReleaseBuffer(view, &patch->baseBuffer);
+    ReleaseBuffer(view, &patch->detailBuffer);
+    free(patch->heads);
+    patch->baseBuffer = base;
+    patch->baseCount = view->base.count;
+    patch->detailBuffer = detail;
+    patch->detailCount = view->detail.count;
+    patch->heads = heads;
+    patch->headCount = view->heads.count;
     if (patch->roadCount == 0u && patch->nodeCount == 0u)
     {
         free(patch->roads);
         free(patch->nodes);
+        free(patch->heads);
         memset(patch, 0, sizeof(*patch));
     }
 }
@@ -617,15 +472,13 @@ void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t c
         return;
     }
     view->previewOrigin = centre[0];
-    view->mesh.count = 0u;
-    view->mesh.failed = false;
-    const double half = HalfWidth(type) + SHOULDER;
-    Strip(&view->mesh, centre, count, view->previewOrigin, -half, half, MARKING_LIFT + 0.05, 0.0,
-          1e9, 0.0, 0.0, valid ? COLOR_PREVIEW : COLOR_PREVIEW_BAD);
-    if (!view->mesh.failed && view->mesh.count != 0u &&
-        UploadMesh(view, &view->mesh, &view->previewBuffer))
+    FoxMeshReset(&view->base);
+    FoxRoadMeshPreview(centre, count, type, valid ? COLOR_PREVIEW : COLOR_PREVIEW_BAD,
+                       view->previewOrigin, &view->base);
+    if (!view->base.failed && view->base.count != 0u &&
+        UploadVertices(view->device, view->base.vertices, view->base.count, &view->previewBuffer))
     {
-        view->previewCount = view->mesh.count;
+        view->previewCount = view->base.count;
     }
 }
 
@@ -642,18 +495,98 @@ static void Submit(FoxRoadsView *view, const FoxCameraView *camera, LaiueGraphic
     (void)view->device->submit(view->device, &draw, 1u);
 }
 
-void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera)
+static void AddLamp(FoxRoadsView *view, const FoxCameraView *camera, uint32_t lamp, FoxVec point)
+{
+    LaiueGraphicsInstanceV2 instance = {.scale = 1.0f, .rotation = {0.0f, 0.0f, 0.0f, 1.0f}};
+    FoxCameraRelative(camera, point, instance.originRelative);
+    if (!view->instancing)
+    {
+        Submit(view, camera, view->lamps[lamp], LAMP_VERTICES, point);
+        return;
+    }
+    LampBatch *batch = &view->lampBatches[lamp];
+    if (batch->count == batch->capacity)
+    {
+        const uint32_t capacity = batch->capacity < 64u ? 64u : batch->capacity * 2u;
+        LaiueGraphicsInstanceV2 *grown =
+            realloc(batch->instances, (size_t)capacity * sizeof(*grown));
+        if (grown == NULL)
+        {
+            return;
+        }
+        batch->instances = grown;
+        batch->capacity = capacity;
+    }
+    batch->instances[batch->count++] = instance;
+}
+
+void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera, const FoxNetwork *network)
 {
     if (view == NULL || camera == NULL)
     {
         return;
     }
+    for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
+    {
+        view->lampBatches[lamp].count = 0u;
+    }
+    const double half = (double)(INT64_C(1) << PATCH_SHIFT) / 2.0;
     for (uint32_t index = 0u; index < view->patchCapacity; ++index)
     {
         const Patch *patch = &view->patches[index];
-        if (patch->used && patch->vertexBuffer != 0u)
+        if (!patch->used)
         {
-            Submit(view, camera, patch->vertexBuffer, patch->vertexCount, patch->origin);
+            continue;
+        }
+        if (patch->baseBuffer != 0u)
+        {
+            Submit(view, camera, patch->baseBuffer, patch->baseCount, patch->origin);
+        }
+        const FoxVec middle = {patch->origin.x + (int64_t)half, patch->origin.y + (int64_t)half,
+                               patch->origin.z + (int64_t)half};
+        float relative[3];
+        FoxCameraRelative(camera, middle, relative);
+        const double dx = (double)relative[0] - (double)camera->eye[0];
+        const double dy = (double)relative[1] - (double)camera->eye[1];
+        const double dz = (double)relative[2] - (double)camera->eye[2];
+        if (sqrt(dx * dx + dy * dy + dz * dz) > DETAIL_DISTANCE)
+        {
+            continue;
+        }
+        if (patch->detailBuffer != 0u)
+        {
+            Submit(view, camera, patch->detailBuffer, patch->detailCount, patch->origin);
+        }
+        for (uint32_t head = 0u; network != NULL && head < patch->headCount; ++head)
+        {
+            const FoxSignalHead *signal = &patch->heads[head];
+            const FoxLight light = FoxNetworkLight(network, signal->road, signal->end);
+            if (light != FOX_LIGHT_NONE)
+            {
+                const uint32_t lamp = light == FOX_LIGHT_RED      ? 0u
+                                      : light == FOX_LIGHT_YELLOW ? 1u
+                                                                  : 2u;
+                AddLamp(view, camera, lamp, signal->lamps[lamp]);
+            }
+        }
+    }
+    if (view->instancing)
+    {
+        for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
+        {
+            const LampBatch *batch = &view->lampBatches[lamp];
+            if (batch->count == 0u)
+            {
+                continue;
+            }
+            const LaiueGraphicsDrawItemV2 draw = {
+                .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
+                .vertexBuffer = view->lamps[lamp],
+                .indexCount = LAMP_VERTICES,
+                .scale = 1.0f,
+            };
+            (void)view->device->submitInstances(view->device, &draw, batch->instances,
+                                                batch->count);
         }
     }
     if (view->previewBuffer != 0u)

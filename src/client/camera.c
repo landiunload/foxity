@@ -97,7 +97,8 @@ void FoxCameraZoom(FoxCamera *camera, float steps)
 
 void FoxCameraRotate(FoxCamera *camera, int32_t deltaX, int32_t deltaY)
 {
-    camera->yaw = fmod(camera->yaw + (double)deltaX * FOX_CAMERA_RADIANS_PER_STEP, 6.283185307179586);
+    /* Moving the mouse right turns the view right, as when looking around. */
+    camera->yaw = fmod(camera->yaw - (double)deltaX * FOX_CAMERA_RADIANS_PER_STEP, 6.283185307179586);
     camera->pitch = fmin(fmax(camera->pitch + (double)deltaY * FOX_CAMERA_RADIANS_PER_STEP, MIN_PITCH),
                          MAX_PITCH);
 }
@@ -154,7 +155,10 @@ bool FoxCameraBuildView(FoxCamera *camera, const LaiueSceneMathServiceV1 *math, 
                              (float)(outView->up[axis] * rise);
         up[axis] = (float)outView->up[axis];
     }
-    outView->nearPlane = (float)fmax(0.1, camera->distance * 0.004);
+    /* The eye is never closer to the ground than its height over the focus,
+     * so the near plane can sit far out, and the depth buffer keeps paint
+     * apart from the asphalt under it even far away. */
+    outView->nearPlane = (float)fmax(0.3, camera->distance * 0.03);
     outView->farPlane = (float)(camera->distance + 4000.0);
     float view[16];
     float projection[16];

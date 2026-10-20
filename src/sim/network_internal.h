@@ -30,6 +30,9 @@ typedef struct FoxConflict
     uint32_t path;
     /* This connection yields to the other one. */
     bool yields;
+    /* How far along the other connection the two meet: past it a car on
+     * the other one no longer stands in this one's way. */
+    int64_t otherAt;
 } FoxConflict;
 
 typedef struct FoxPath
@@ -42,7 +45,10 @@ typedef struct FoxPath
     int64_t *lengths;
     uint32_t count;
     int64_t length;
+    /* The lower of the road's limit and what the path's tightest bend
+     * allows. */
     int32_t speedLimit;
+    int32_t curveSpeed;
 
     /* Lanes: the road, its generation, the direction (0 runs from nodes[0]
      * to nodes[1]), the lane (0 at the curb), the distance along the road's
@@ -65,14 +71,22 @@ typedef struct FoxPath
     uint32_t conflictCount;
 
     /* Owned by the traffic: the cars on the path from front to back; on
-     * connections the cars holding or using it, and on lanes the cars that
-     * have claimed a way in but are not on the lane yet. */
+     * connections the cars holding or using it, and on lanes the length of
+     * the cars that have claimed a way in but are not on the lane yet. */
     uint32_t front;
     uint32_t back;
     uint32_t vehicleCount;
     uint32_t claims;
     uint32_t incoming;
 } FoxPath;
+
+/* Traffic light stages within a phase. */
+typedef enum SignalStage
+{
+    STAGE_GREEN = 0,
+    STAGE_YELLOW,
+    STAGE_ALL_RED,
+} SignalStage;
 
 typedef struct FoxRoad
 {
@@ -89,6 +103,13 @@ typedef struct FoxRoad
     uint32_t lanes[2][FOX_ROAD_MAX_LANES];
     uint8_t laneCount[2];
     uint64_t revision;
+    /* The limit in force and the mayor's, zero for the type's. */
+    int32_t speedLimit;
+    int32_t speedSetting;
+    /* Per end, for the traffic arriving there: the mayor's sign and the one
+     * in force. */
+    uint8_t signSetting[2];
+    uint8_t sign[2];
     FoxVec middle;
     int64_t boundRadius;
     /* Traffic statistics per direction, for routing costs. */
@@ -111,6 +132,14 @@ typedef struct FoxNode
     uint32_t connectionCount;
     int64_t radius;
     uint64_t revision;
+    /* Traffic lights: the phase each road slot belongs to, the phase showing
+     * green, its stage and the ticks spent in it. */
+    bool signals;
+    uint8_t phaseCount;
+    uint8_t phases[FOX_NODE_MAX_ROADS];
+    uint8_t phase;
+    uint8_t stage;
+    uint32_t stageTicks;
 } FoxNode;
 
 /* Where a replaced road went: the part of its centre line in [start, end)
@@ -192,5 +221,25 @@ bool FoxNetworkRetirePath(FoxNetwork *network, uint32_t path);
  * Both directions are monotonic along a lane. */
 int64_t FoxLaneToCentre(const FoxPath *lane, int64_t distance);
 int64_t FoxCentreToLane(const FoxPath *lane, int64_t centre);
+
+/* The signs in force at a node's road ends, from the mayor's and the roads. */
+void FoxLanesResolveSigns(FoxNetwork *network, uint32_t node);
+/* Rebuilds which of a node's connections conflict and who yields. */
+bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t node);
+/* Applies the roads' limits to the lanes of a road / the connections of a
+ * node, in place. */
+void FoxLanesApplyRoadSpeed(FoxNetwork *network, uint32_t road);
+void FoxLanesApplyNodeSpeeds(FoxNetwork *network, uint32_t node);
+/* Which way the end of a road at a node leads, the end index. */
+uint32_t FoxRoadEndAt(const FoxRoad *road, uint32_t node);
+
+/* ---- signals.c ---------------------------------------------------------- */
+
+/* Groups a node's road ends into phases: opposite approaches share one. */
+void FoxSignalsAssign(FoxNetwork *network, uint32_t node);
+/* Advances every traffic light by a tick; phases with cars waiting get
+ * green, empty ones are skipped. */
+void FoxSignalsStep(FoxNetwork *network);
+FoxLight FoxSignalsLight(const FoxNetwork *network, uint32_t road, uint32_t end);
 
 #endif
