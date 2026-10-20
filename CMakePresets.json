@@ -1,0 +1,384 @@
+{
+  "version": 8,
+  "configurePresets": [
+    {
+      "name": "windows-base",
+      "hidden": true,
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      },
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "FOX_WARNINGS_AS_ERRORS": "ON",
+        "FOX_AGGRESSIVE_INLINING": "ON",
+        "FOX_ENABLE_LTO": "ON",
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64",
+        "FOX_X86_64_LEVEL": "avx2",
+        "FOX_X86_64_TUNE": "generic"
+      }
+    },
+    {
+      "name": "windows-msvc",
+      "displayName": "Windows x64 + MSVC",
+      "inherits": "windows-base",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "cl.exe",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Release"
+      }
+    },
+    {
+      "name": "windows-clang",
+      "displayName": "Windows x64 + clang-cl",
+      "inherits": "windows-base",
+      "generator": "Ninja Multi-Config",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang-cl.exe",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Release",
+        "FOX_CLANG_LTO_MODE": "full"
+      }
+    },
+    {
+      "name": "portable-core-base",
+      "hidden": true,
+      "generator": "Ninja Multi-Config",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "cacheVariables": {
+        "BUILD_TESTING": "ON",
+        "CMAKE_DEFAULT_BUILD_TYPE": "Release",
+        "FOX_BUILD_HEADLESS": "ON",
+        "FOX_WARNINGS_AS_ERRORS": "ON",
+        "FOX_ENABLE_LTO": "ON",
+        "FOX_X86_64_TUNE": "generic"
+      }
+    },
+    {
+      "name": "linux-core-base",
+      "hidden": true,
+      "inherits": "portable-core-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      },
+      "cacheVariables": {
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64",
+        "FOX_X86_64_LEVEL": "avx2"
+      }
+    },
+    {
+      "name": "linux-gcc",
+      "displayName": "Linux x64 core + GCC",
+      "inherits": "linux-core-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "gcc"
+      }
+    },
+    {
+      "name": "linux-clang",
+      "displayName": "Linux x64 core + Clang",
+      "inherits": "linux-core-base",
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang"
+      }
+    },
+    {
+      "name": "macos-core-base",
+      "hidden": true,
+      "inherits": "portable-core-base",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      },
+      "cacheVariables": {
+        "CMAKE_C_COMPILER": "clang",
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
+        "FOX_X86_64_LEVEL": "sse2"
+      }
+    },
+    {
+      "name": "macos-clang-arm64",
+      "displayName": "macOS ARM64 core + AppleClang",
+      "inherits": "macos-core-base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "arm64",
+        "FOX_EXPECTED_ARCHITECTURE": "arm64"
+      }
+    },
+    {
+      "name": "macos-clang-x86_64",
+      "displayName": "macOS x64 core + AppleClang",
+      "inherits": "macos-core-base",
+      "cacheVariables": {
+        "CMAKE_OSX_ARCHITECTURES": "x86_64",
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64"
+      }
+    }
+  ],
+  "buildPresets": [
+    {
+      "name": "windows-build-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-build-release",
+      "hidden": true,
+      "configuration": "Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-build-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-build-release",
+      "hidden": true,
+      "configuration": "Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "macos-build-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "macos-build-release",
+      "hidden": true,
+      "configuration": "Release",
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "inherits": "windows-build-debug",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "windows-msvc-release",
+      "inherits": "windows-build-release",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "windows-clang-debug",
+      "inherits": "windows-build-debug",
+      "configurePreset": "windows-clang"
+    },
+    {
+      "name": "windows-clang-release",
+      "inherits": "windows-build-release",
+      "configurePreset": "windows-clang"
+    },
+    {
+      "name": "linux-gcc-debug",
+      "inherits": "linux-build-debug",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-gcc-release",
+      "inherits": "linux-build-release",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-clang-debug",
+      "inherits": "linux-build-debug",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "linux-clang-release",
+      "inherits": "linux-build-release",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "macos-clang-arm64-debug",
+      "inherits": "macos-build-debug",
+      "configurePreset": "macos-clang-arm64"
+    },
+    {
+      "name": "macos-clang-arm64-release",
+      "inherits": "macos-build-release",
+      "configurePreset": "macos-clang-arm64"
+    },
+    {
+      "name": "macos-clang-x86_64-debug",
+      "inherits": "macos-build-debug",
+      "configurePreset": "macos-clang-x86_64"
+    },
+    {
+      "name": "macos-clang-x86_64-release",
+      "inherits": "macos-build-release",
+      "configurePreset": "macos-clang-x86_64"
+    }
+  ],
+  "testPresets": [
+    {
+      "name": "windows-test-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "windows-test-release",
+      "hidden": true,
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Windows"
+      }
+    },
+    {
+      "name": "linux-test-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "linux-test-release",
+      "hidden": true,
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Linux"
+      }
+    },
+    {
+      "name": "macos-test-debug",
+      "hidden": true,
+      "configuration": "Debug",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "macos-test-release",
+      "hidden": true,
+      "configuration": "Release",
+      "output": {
+        "outputOnFailure": true
+      },
+      "condition": {
+        "type": "equals",
+        "lhs": "${hostSystemName}",
+        "rhs": "Darwin"
+      }
+    },
+    {
+      "name": "windows-msvc-debug",
+      "inherits": "windows-test-debug",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "windows-msvc-release",
+      "inherits": "windows-test-release",
+      "configurePreset": "windows-msvc"
+    },
+    {
+      "name": "windows-clang-debug",
+      "inherits": "windows-test-debug",
+      "configurePreset": "windows-clang"
+    },
+    {
+      "name": "windows-clang-release",
+      "inherits": "windows-test-release",
+      "configurePreset": "windows-clang"
+    },
+    {
+      "name": "linux-gcc-debug",
+      "inherits": "linux-test-debug",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-gcc-release",
+      "inherits": "linux-test-release",
+      "configurePreset": "linux-gcc"
+    },
+    {
+      "name": "linux-clang-debug",
+      "inherits": "linux-test-debug",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "linux-clang-release",
+      "inherits": "linux-test-release",
+      "configurePreset": "linux-clang"
+    },
+    {
+      "name": "macos-clang-arm64-debug",
+      "inherits": "macos-test-debug",
+      "configurePreset": "macos-clang-arm64"
+    },
+    {
+      "name": "macos-clang-arm64-release",
+      "inherits": "macos-test-release",
+      "configurePreset": "macos-clang-arm64"
+    },
+    {
+      "name": "macos-clang-x86_64-debug",
+      "inherits": "macos-test-debug",
+      "configurePreset": "macos-clang-x86_64"
+    },
+    {
+      "name": "macos-clang-x86_64-release",
+      "inherits": "macos-test-release",
+      "configurePreset": "macos-clang-x86_64"
+    }
+  ]
+}

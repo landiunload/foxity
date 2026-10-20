@@ -1,0 +1,800 @@
+#include "sim/network_internal.h"
+
+#include <stddef.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define CONNECTION_SAMPLES 12u
+#define U_TURN_SAMPLES 16u
+/* Turning speeds: towards the curb, across traffic and turning around. */
+#define CURB_TURN_SPEED FOX_METRES(7)
+#define FAR_TURN_SPEED FOX_METRES(9)
+#define U_TURN_SPEED FOX_METRES(4)
+/* How far from a node its roads' directions are measured. */
+#define DIRECTION_PROBE FOX_METRES(6)
+
+/* ---- Lane distance mapping -------------------------------------------------- */
+
+int64_t FoxLaneToCentre(const FoxPath *lane, int64_t distance)
+{
+    if (lane == NULL || lane->centre == NULL || lane->count == 0u)
+    {
+        return 0;
+    }
+    if (distance <= 0 || lane->count == 1u)
+    {
+        return lane->centre[0];
+    }
+    if (distance >= lane->length)
+    {
+        return lane->centre[lane->count - 1u];
+    }
+    uint32_t low = 0u;
+    uint32_t high = lane->count - 1u;
+    while (high - low > 1u)
+    {
+        const uint32_t middle = low + (high - low) / 2u;
+        if (lane->lengths[middle] <= distance)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    const int64_t span = lane->lengths[high] - lane->lengths[low];
+    if (span <= 0)
+    {
+        return lane->centre[low];
+    }
+    return lane->centre[low] +
+           (lane->centre[high] - lane->centre[low]) * (distance - lane->lengths[low]) / span;
+}
+
+int64_t FoxCentreToLane(const FoxPath *lane, int64_t centre)
+{
+    if (lane == NULL || lane->centre == NULL || lane->count == 0u)
+    {
+        return 0;
+    }
+    /* Centre distances grow along a forward lane and shrink along a
+     * backward one; flip the sign so the search sees them growing. */
+    const int64_t sign = lane->count > 1u && lane->centre[lane->count - 1u] < lane->centre[0] ? -1 : 1;
+    const int64_t target = centre * sign;
+    if (lane->count == 1u || target <= lane->centre[0] * sign)
+    {
+        return 0;
+    }
+    if (target >= lane->centre[lane->count - 1u] * sign)
+    {
+        return lane->length;
+    }
+    uint32_t low = 0u;
+    uint32_t high = lane->count - 1u;
+    while (high - low > 1u)
+    {
+        const uint32_t middle = low + (high - low) / 2u;
+        if (lane->centre[middle] * sign <= target)
+        {
+            low = middle;
+        }
+        else
+        {
+            high = middle;
+        }
+    }
+    const int64_t span = (lane->centre[high] - lane->centre[low]) * sign;
+    if (span <= 0)
+    {
+        return lane->lengths[low];
+    }
+    return lane->lengths[low] +
+           (lane->lengths[high] - lane->lengths[low]) * (target - lane->centre[low] * sign) / span;
+}
+
+/* ---- Node measurements ------------------------------------------------------ */
+
+static int64_t HalfWidth(const FoxRoad *road)
+{
+    const FoxRoadTypeInfo *type = FoxRoadTypeGet((FoxRoadType)road->type);
+    return (int64_t)(type->forwardLanes + type->backwardLanes) * FOX_LANE_WIDTH / 2;
+}
+
+/* The direction a road leaves a node in, FOX_UNIT long. */
+static FoxVec LeavingDirection(const FoxRoad *road, uint32_t end)
+{
+    const int64_t probe = FoxMin(DIRECTION_PROBE, road->length / 2);
+    const int64_t along = end == 0u ? probe : road->length - probe;
+    const FoxVec point =
+        FoxPolylinePoint(road->centre, road->centreLengths, road->centreCount, along, NULL);
+    const FoxVec origin = end == 0u ? road->centre[0] : road->centre[road->centreCount - 1u];
+    return FoxVecDirection(FoxVecSub(point, origin));
+}
+
+static uint32_t EndAt(const FoxRoad *road, uint32_t node)
+{
+    return road->nodes[0] == node ? 0u : 1u;
+}
+
+void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
+{
+    FoxNode *node = &network->nodes[index];
+    int64_t widest = 0;
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        widest = FoxMax(widest, HalfWidth(&network->roads[node->roads[slot]]));
+    }
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        FoxRoad *road = &network->roads[node->roads[slot]];
+        const uint32_t end = EndAt(road, index);
+        int64_t trim = 0;
+        if (node->roadCount == 2u)
+        {
+            /* A bend: the sharper it is, the more room the connection needs. */
+            const FoxRoad *other = &network->roads[node->roads[1u - slot]];
+            const FoxVec a = LeavingDirection(road, end);
+            const FoxVec b = LeavingDirection(other, EndAt(other, index));
+            const int64_t straightness = -FoxVecDot(a, b) / FOX_UNIT;
+            trim = FOX_METRES(3) / 2 + widest * (FOX_UNIT - straightness) / FOX_UNIT;
+        }
+        else if (node->roadCount >= 3u)
+        {
+            trim = widest + FOX_METRES(2);
+        }
+        road->trim[end] = FoxMin(trim, road->length * 2 / 5);
+    }
+    node->radius = widest + FOX_METRES(1);
+}
+
+/* ---- Lanes ------------------------------------------------------------------- */
+
+static bool AllocatePathArrays(FoxPath *path, uint32_t count, bool centre)
+{
+    path->points = malloc((size_t)count * sizeof(*path->points));
+    path->lengths = malloc((size_t)count * sizeof(*path->lengths));
+    path->centre = centre ? malloc((size_t)count * sizeof(*path->centre)) : NULL;
+    return path->points != NULL && path->lengths != NULL && (!centre || path->centre != NULL);
+}
+
+static void ResetPath(FoxPath *path, uint8_t kind)
+{
+    const uint32_t generation = path->generation;
+    memset(path, 0, sizeof(*path));
+    path->generation = generation;
+    path->kind = kind;
+    path->front = FOX_NETWORK_NONE;
+    path->back = FOX_NETWORK_NONE;
+    path->from = FOX_NETWORK_NONE;
+    path->to = FOX_NETWORK_NONE;
+    path->node = FOX_NETWORK_NONE;
+    path->road = FOX_NETWORK_NONE;
+}
+
+static void FreeNewPath(FoxNetwork *network, uint32_t index)
+{
+    FoxPath *path = &network->paths[index];
+    free(path->points);
+    free(path->lengths);
+    free(path->centre);
+    free(path->outgoing);
+    free(path->conflicts);
+    const uint32_t generation = path->generation + 1u;
+    memset(path, 0, sizeof(*path));
+    path->generation = generation;
+}
+
+/* One lane along a road's centre line between its trims, `offset` units to
+ * the right of the centre (seen from nodes[0] towards nodes[1]). */
+static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direction, uint8_t lane,
+                          int64_t offset)
+{
+    const uint32_t index = FoxNetworkAllocatePath(network);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return FOX_NETWORK_NONE;
+    }
+    const FoxRoad *road = &network->roads[roadIndex];
+    const int64_t first = road->trim[0];
+    const int64_t last = FoxMax(first + FOX_METRES(1), road->length - road->trim[1]);
+    uint32_t count = 2u;
+    for (uint32_t point = 0u; point < road->centreCount; ++point)
+    {
+        count += road->centreLengths[point] > first && road->centreLengths[point] < last ? 1u : 0u;
+    }
+    FoxPath *path = &network->paths[index];
+    ResetPath(path, PATH_LANE);
+    if (!AllocatePathArrays(path, count, true))
+    {
+        FreeNewPath(network, index);
+        return FOX_NETWORK_NONE;
+    }
+    uint32_t written = 0u;
+    for (uint32_t step = 0u; step < count; ++step)
+    {
+        int64_t along = 0;
+        FoxVec point;
+        FoxVec tangent;
+        if (step == 0u || step + 1u == count)
+        {
+            along = step == 0u ? first : last;
+            uint32_t segment = 0u;
+            point = FoxPolylinePoint(road->centre, road->centreLengths, road->centreCount, along,
+                                     &segment);
+            tangent = FoxVecSub(road->centre[segment + 1u], road->centre[segment]);
+        }
+        else
+        {
+            /* The interior samples in order. */
+            uint32_t seen = 0u;
+            uint32_t sample = 0u;
+            for (sample = 0u; sample < road->centreCount; ++sample)
+            {
+                if (road->centreLengths[sample] > first && road->centreLengths[sample] < last &&
+                    ++seen == step)
+                {
+                    break;
+                }
+            }
+            along = road->centreLengths[sample];
+            point = road->centre[sample];
+            const uint32_t before = sample == 0u ? 0u : sample - 1u;
+            const uint32_t after = sample + 1u < road->centreCount ? sample + 1u : sample;
+            tangent = FoxVecSub(road->centre[after], road->centre[before]);
+        }
+        const FoxVec right =
+            FoxVecDirection(FoxVecCross(FoxVecDirection(tangent), FoxPlanetUp(point)));
+        path->points[written] = FoxVecAdd(point, FoxVecScale(right, offset, FOX_UNIT));
+        path->centre[written] = along;
+        ++written;
+    }
+    if (direction == 1u)
+    {
+        for (uint32_t low = 0u, high = count - 1u; low < high; ++low, --high)
+        {
+            const FoxVec point = path->points[low];
+            path->points[low] = path->points[high];
+            path->points[high] = point;
+            const int64_t along = path->centre[low];
+            path->centre[low] = path->centre[high];
+            path->centre[high] = along;
+        }
+    }
+    path->count = count;
+    path->length = FoxPolylineMeasure(path->points, path->lengths, count);
+    path->speedLimit = FoxRoadTypeGet((FoxRoadType)road->type)->speedLimit;
+    path->road = roadIndex;
+    path->roadGeneration = road->generation;
+    path->direction = direction;
+    path->lane = lane;
+    return index;
+}
+
+bool FoxLanesBuildRoad(FoxNetwork *network, uint32_t roadIndex)
+{
+    FoxRoad *road = &network->roads[roadIndex];
+    bool ok = true;
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
+    {
+        for (uint32_t lane = 0u; lane < road->laneCount[direction]; ++lane)
+        {
+            ok = FoxNetworkRetirePath(network, road->lanes[direction][lane]) && ok;
+            road->lanes[direction][lane] = FOX_NETWORK_NONE;
+        }
+        road->laneCount[direction] = 0u;
+    }
+    const FoxRoadTypeInfo *type = FoxRoadTypeGet((FoxRoadType)road->type);
+    const uint8_t counts[2] = {type->forwardLanes, type->backwardLanes};
+    const int64_t side = road->driveSide == FOX_DRIVE_RIGHT ? 1 : -1;
+    const bool twoWay = counts[1] != 0u;
+    for (uint8_t direction = 0u; direction < 2u; ++direction)
+    {
+        for (uint8_t lane = 0u; lane < counts[direction]; ++lane)
+        {
+            /* Twice the offset in lane widths: the curb lane is outermost. A
+             * one-way road is centred on its centre line. */
+            const int64_t doubled = twoWay ? 2 * (int64_t)counts[direction] - (int64_t)lane * 2 - 1
+                                           : (int64_t)counts[direction] - (int64_t)lane * 2 - 1;
+            const int64_t offset =
+                (direction == 0u ? side : -side) * doubled * FOX_LANE_WIDTH / 2;
+            const uint32_t path = BuildLane(network, roadIndex, direction, lane, offset);
+            if (path == FOX_NETWORK_NONE)
+            {
+                ok = false;
+                continue;
+            }
+            road = &network->roads[roadIndex];
+            road->lanes[direction][road->laneCount[direction]++] = path;
+        }
+    }
+    return ok;
+}
+
+/* ---- Connections ------------------------------------------------------------- */
+
+typedef struct NodeEnd
+{
+    /* Into the node along the incoming lanes, and out along the outgoing. */
+    FoxVec approach;
+    FoxVec leave;
+    uint32_t road;
+    uint32_t inCount;
+    uint32_t outCount;
+    uint32_t in[FOX_ROAD_MAX_LANES];
+    uint32_t out[FOX_ROAD_MAX_LANES];
+    uint8_t rank;
+} NodeEnd;
+
+static FoxVec PathEndDirection(const FoxPath *path, bool atEnd)
+{
+    const uint32_t a = atEnd ? path->count - 2u : 0u;
+    return FoxVecDirection(FoxVecSub(path->points[a + 1u], path->points[a]));
+}
+
+/* Order of directions by angle from -pi to pi measured from `reference`. */
+static void PlaneCoordinates(FoxVec direction, FoxVec reference, FoxVec up, int64_t *outX,
+                             int64_t *outY)
+{
+    const FoxVec left = FoxVecScale(FoxVecCross(up, reference), 1, FOX_UNIT);
+    *outX = FoxVecDot(direction, reference) / FOX_UNIT;
+    *outY = FoxVecDot(direction, left) / FOX_UNIT;
+}
+
+static int AngleGroup(int64_t x, int64_t y)
+{
+    if (y < 0)
+    {
+        return 0;
+    }
+    if (y == 0 && x > 0)
+    {
+        return 1;
+    }
+    return y > 0 ? 2 : 3;
+}
+
+/* True when direction a lies at a smaller angle than b, angles in (-pi, pi]. */
+static bool AngleLess(int64_t ax, int64_t ay, int64_t bx, int64_t by)
+{
+    const int groupA = AngleGroup(ax, ay);
+    const int groupB = AngleGroup(bx, by);
+    if (groupA != groupB)
+    {
+        return groupA < groupB;
+    }
+    return ax * by - ay * bx > 0;
+}
+
+static uint8_t Classify(int64_t x, int64_t y, uint8_t side)
+{
+    if (x > 0 && FoxAbs(y) * 10 < x * 7)
+    {
+        return MOVE_STRAIGHT;
+    }
+    const bool right = y < 0;
+    return (right == (side == FOX_DRIVE_RIGHT)) ? MOVE_CURB : MOVE_FAR;
+}
+
+static FoxVec Cubic(FoxVec p0, FoxVec p1, FoxVec p2, FoxVec p3, int64_t t)
+{
+    const FoxVec a = FoxVecLerp(p0, p1, t);
+    const FoxVec b = FoxVecLerp(p1, p2, t);
+    const FoxVec c = FoxVecLerp(p2, p3, t);
+    return FoxVecLerp(FoxVecLerp(a, b, t), FoxVecLerp(b, c, t), t);
+}
+
+static uint32_t BuildConnection(FoxNetwork *network, uint32_t nodeIndex, uint32_t from, uint32_t to,
+                                uint8_t movement)
+{
+    const uint32_t index = FoxNetworkAllocatePath(network);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return FOX_NETWORK_NONE;
+    }
+    const FoxPath *in = &network->paths[from];
+    const FoxPath *out = &network->paths[to];
+    const FoxVec p0 = in->points[in->count - 1u];
+    const FoxVec p3 = out->points[0];
+    const FoxVec t0 = PathEndDirection(in, true);
+    const FoxVec t3 = PathEndDirection(out, false);
+    const int64_t distance = FoxVecDistance(p0, p3);
+    const int64_t reach = movement == MOVE_U_TURN ? FoxMax(distance, FOX_METRES(4))
+                                                  : FoxMax(distance * 2 / 5, FOX_METRES(1));
+    const FoxVec p1 = FoxVecAdd(p0, FoxVecScale(t0, reach, FOX_UNIT));
+    const FoxVec p2 = FoxVecSub(p3, FoxVecScale(t3, reach, FOX_UNIT));
+    const int32_t inSpeed = in->speedLimit;
+    const int32_t outSpeed = out->speedLimit;
+    const uint32_t count = movement == MOVE_U_TURN ? U_TURN_SAMPLES : CONNECTION_SAMPLES;
+
+    FoxPath *path = &network->paths[index];
+    ResetPath(path, PATH_CONNECTION);
+    if (!AllocatePathArrays(path, count, false))
+    {
+        FreeNewPath(network, index);
+        return FOX_NETWORK_NONE;
+    }
+    for (uint32_t sample = 0u; sample < count; ++sample)
+    {
+        path->points[sample] =
+            Cubic(p0, p1, p2, p3, (int64_t)sample * FOX_UNIT / (int64_t)(count - 1u));
+    }
+    path->count = count;
+    path->length = FoxMax(1, FoxPolylineMeasure(path->points, path->lengths, count));
+    int32_t speed = inSpeed < outSpeed ? inSpeed : outSpeed;
+    const int64_t turn = movement == MOVE_CURB  ? CURB_TURN_SPEED
+                         : movement == MOVE_FAR ? FAR_TURN_SPEED
+                         : movement == MOVE_U_TURN ? U_TURN_SPEED
+                                                   : speed;
+    speed = (int32_t)FoxMin(speed, turn);
+    path->speedLimit = speed;
+    path->node = nodeIndex;
+    path->from = from;
+    path->to = to;
+    path->movement = movement;
+    return index;
+}
+
+static bool AddOutgoing(FoxPath *lane, uint32_t connection)
+{
+    uint32_t *grown = realloc(lane->outgoing, (size_t)(lane->outgoingCount + 1u) * sizeof(*grown));
+    if (grown == NULL)
+    {
+        return false;
+    }
+    lane->outgoing = grown;
+    lane->outgoing[lane->outgoingCount++] = connection;
+    return true;
+}
+
+static bool AddNodeConnection(FoxNode *node, uint32_t connection)
+{
+    uint32_t *grown =
+        realloc(node->connections, (size_t)(node->connectionCount + 1u) * sizeof(*grown));
+    if (grown == NULL)
+    {
+        return false;
+    }
+    node->connections = grown;
+    node->connections[node->connectionCount++] = connection;
+    return true;
+}
+
+static bool Connect(FoxNetwork *network, uint32_t nodeIndex, uint32_t from, uint32_t to,
+                    uint8_t movement)
+{
+    const uint32_t connection = BuildConnection(network, nodeIndex, from, to, movement);
+    if (connection == FOX_NETWORK_NONE)
+    {
+        return false;
+    }
+    if (!AddNodeConnection(&network->nodes[nodeIndex], connection))
+    {
+        FreeNewPath(network, connection);
+        return false;
+    }
+    return AddOutgoing(&network->paths[from], connection);
+}
+
+/* Joins incoming lanes [first, first + lanes) to the `targets` outgoing
+ * lanes of one road keeping their order: lane i goes to the targets its
+ * share covers. */
+static bool ConnectGroup(FoxNetwork *network, uint32_t nodeIndex, const uint32_t *incoming,
+                         uint32_t first, uint32_t lanes, const uint32_t *outgoing, uint32_t targets,
+                         uint8_t movement)
+{
+    bool ok = true;
+    for (uint32_t lane = 0u; lane < lanes; ++lane)
+    {
+        uint32_t low = lane * targets / lanes;
+        uint32_t high = (lane + 1u) * targets / lanes;
+        if (high <= low)
+        {
+            high = low + 1u;
+        }
+        for (uint32_t target = low; target < high && target < targets; ++target)
+        {
+            ok = Connect(network, nodeIndex, incoming[first + lane], outgoing[target], movement) &&
+                 ok;
+        }
+    }
+    return ok;
+}
+
+static bool SegmentsCross(const int64_t *ax, const int64_t *ay, uint32_t aCount, const int64_t *bx,
+                          const int64_t *by, uint32_t bCount)
+{
+    for (uint32_t i = 0u; i + 1u < aCount; ++i)
+    {
+        for (uint32_t j = 0u; j + 1u < bCount; ++j)
+        {
+            const int64_t d1x = ax[i + 1u] - ax[i];
+            const int64_t d1y = ay[i + 1u] - ay[i];
+            const int64_t d2x = bx[j + 1u] - bx[j];
+            const int64_t d2y = by[j + 1u] - by[j];
+            const int64_t o1 = d1x * (by[j] - ay[i]) - d1y * (bx[j] - ax[i]);
+            const int64_t o2 = d1x * (by[j + 1u] - ay[i]) - d1y * (bx[j + 1u] - ax[i]);
+            const int64_t o3 = d2x * (ay[i] - by[j]) - d2y * (ax[i] - bx[j]);
+            const int64_t o4 = d2x * (ay[i + 1u] - by[j]) - d2y * (ax[i + 1u] - bx[j]);
+            if (((o1 > 0 && o2 < 0) || (o1 < 0 && o2 > 0)) &&
+                ((o3 > 0 && o4 < 0) || (o3 < 0 && o4 > 0)))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* Whether connection a yields to b; the caller gives b the opposite. */
+static bool Yields(const FoxNetwork *network, const FoxNode *node, const FoxPath *a,
+                   const FoxPath *b, uint32_t aIndex, uint32_t bIndex)
+{
+    const FoxPath *aIn = &network->paths[a->from];
+    const FoxPath *bIn = &network->paths[b->from];
+    const uint8_t aRank = FoxRoadTypeGet((FoxRoadType)network->roads[aIn->road].type)->rank;
+    const uint8_t bRank = FoxRoadTypeGet((FoxRoadType)network->roads[bIn->road].type)->rank;
+    if (aRank != bRank)
+    {
+        return aRank < bRank;
+    }
+    if ((a->movement == MOVE_U_TURN) != (b->movement == MOVE_U_TURN))
+    {
+        return a->movement == MOVE_U_TURN;
+    }
+    const FoxVec aApproach = PathEndDirection(aIn, true);
+    const FoxVec bApproach = PathEndDirection(bIn, true);
+    int64_t x = 0;
+    int64_t y = 0;
+    PlaneCoordinates(bApproach, aApproach, node->up, &x, &y);
+    if (x < -(int64_t)FOX_UNIT * 7 / 10)
+    {
+        /* Head on: the one turning across traffic waits, then the one
+         * turning towards the curb. */
+        if ((a->movement == MOVE_FAR) != (b->movement == MOVE_FAR))
+        {
+            return a->movement == MOVE_FAR;
+        }
+        if ((a->movement == MOVE_CURB) != (b->movement == MOVE_CURB))
+        {
+            return a->movement == MOVE_CURB;
+        }
+        return aIndex > bIndex;
+    }
+    if (x > (int64_t)FOX_UNIT * 7 / 10)
+    {
+        /* From the same direction: the lower path goes first. */
+        return aIndex > bIndex;
+    }
+    /* From the side: yield to whoever comes from the curb side. */
+    const bool fromRight = y > 0;
+    return node->driveSide == FOX_DRIVE_RIGHT ? fromRight : !fromRight;
+}
+
+static bool BuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
+{
+    FoxNode *node = &network->nodes[nodeIndex];
+    const uint32_t count = node->connectionCount;
+    if (count == 0u)
+    {
+        return true;
+    }
+    /* Plane coordinates of every connection, in quarter units. */
+    const FoxVec axis = FoxAbs(node->up.z) < (int64_t)FOX_UNIT * 9 / 10 ? (FoxVec){0, 0, FOX_UNIT}
+                                                                        : (FoxVec){FOX_UNIT, 0, 0};
+    const FoxVec reference = FoxVecDirection(FoxVecCross(node->up, axis));
+    const FoxVec other = FoxVecScale(FoxVecCross(node->up, reference), 1, FOX_UNIT);
+    int64_t *xs = malloc((size_t)count * U_TURN_SAMPLES * sizeof(*xs));
+    int64_t *ys = malloc((size_t)count * U_TURN_SAMPLES * sizeof(*ys));
+    uint8_t *matrix = calloc((size_t)count * count, 1u);
+    bool ok = xs != NULL && ys != NULL && matrix != NULL;
+    for (uint32_t index = 0u; ok && index < count; ++index)
+    {
+        const FoxPath *path = &network->paths[node->connections[index]];
+        /* Every row is filled whole; points past a path's end repeat its last. */
+        for (uint32_t point = 0u; point < U_TURN_SAMPLES; ++point)
+        {
+            const uint32_t source = point < path->count ? point : path->count - 1u;
+            const FoxVec relative = FoxVecSub(path->points[source], node->position);
+            xs[(size_t)index * U_TURN_SAMPLES + point] = FoxVecDot(relative, reference) / (FOX_UNIT * 4);
+            ys[(size_t)index * U_TURN_SAMPLES + point] = FoxVecDot(relative, other) / (FOX_UNIT * 4);
+        }
+    }
+    /* matrix[a * count + b]: 0 no conflict, 1 a yields, 2 b yields. */
+    for (uint32_t a = 0u; ok && a < count; ++a)
+    {
+        const FoxPath *pa = &network->paths[node->connections[a]];
+        for (uint32_t b = a + 1u; b < count; ++b)
+        {
+            const FoxPath *pb = &network->paths[node->connections[b]];
+            if (pa->from == pb->from)
+            {
+                continue;
+            }
+            const bool conflict =
+                pa->to == pb->to ||
+                SegmentsCross(xs + (size_t)a * U_TURN_SAMPLES, ys + (size_t)a * U_TURN_SAMPLES,
+                              U_TURN_SAMPLES, xs + (size_t)b * U_TURN_SAMPLES,
+                              ys + (size_t)b * U_TURN_SAMPLES, U_TURN_SAMPLES);
+            if (!conflict)
+            {
+                continue;
+            }
+            const bool aYields = Yields(network, node, pa, pb, node->connections[a],
+                                        node->connections[b]);
+            matrix[a * count + b] = aYields ? 1u : 2u;
+            matrix[b * count + a] = aYields ? 2u : 1u;
+        }
+    }
+    for (uint32_t a = 0u; ok && a < count; ++a)
+    {
+        uint32_t conflicts = 0u;
+        for (uint32_t b = 0u; b < count; ++b)
+        {
+            conflicts += matrix[a * count + b] != 0u ? 1u : 0u;
+        }
+        FoxPath *path = &network->paths[node->connections[a]];
+        if (conflicts == 0u)
+        {
+            continue;
+        }
+        path->conflicts = malloc((size_t)conflicts * sizeof(*path->conflicts));
+        if (path->conflicts == NULL)
+        {
+            ok = false;
+            break;
+        }
+        for (uint32_t b = 0u; b < count; ++b)
+        {
+            if (matrix[a * count + b] != 0u)
+            {
+                path->conflicts[path->conflictCount++] = (FoxConflict){
+                    .path = node->connections[b],
+                    .yields = matrix[a * count + b] == 1u,
+                };
+            }
+        }
+    }
+    free(xs);
+    free(ys);
+    free(matrix);
+    return ok;
+}
+
+bool FoxLanesBuildNode(FoxNetwork *network, uint32_t nodeIndex)
+{
+    FoxNode *node = &network->nodes[nodeIndex];
+    bool ok = true;
+    for (uint32_t index = 0u; index < node->connectionCount; ++index)
+    {
+        ok = FoxNetworkRetirePath(network, node->connections[index]) && ok;
+    }
+    free(node->connections);
+    node->connections = NULL;
+    node->connectionCount = 0u;
+    if (!node->alive)
+    {
+        return ok;
+    }
+
+    NodeEnd ends[FOX_NODE_MAX_ROADS];
+    uint32_t endCount = 0u;
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        const uint32_t roadIndex = node->roads[slot];
+        const FoxRoad *road = &network->roads[roadIndex];
+        const uint32_t end = EndAt(road, nodeIndex);
+        /* Lanes of direction 0 end at nodes[1]; those of direction 1 at nodes[0]. */
+        const uint32_t inDirection = end == 1u ? 0u : 1u;
+        NodeEnd *entry = &ends[endCount++];
+        *entry = (NodeEnd){
+            .road = roadIndex,
+            .rank = FoxRoadTypeGet((FoxRoadType)road->type)->rank,
+        };
+        for (uint32_t lane = 0u; lane < road->laneCount[inDirection]; ++lane)
+        {
+            entry->in[entry->inCount++] = road->lanes[inDirection][lane];
+            FoxPath *path = &network->paths[road->lanes[inDirection][lane]];
+            free(path->outgoing);
+            path->outgoing = NULL;
+            path->outgoingCount = 0u;
+        }
+        for (uint32_t lane = 0u; lane < road->laneCount[1u - inDirection]; ++lane)
+        {
+            entry->out[entry->outCount++] = road->lanes[1u - inDirection][lane];
+        }
+        const FoxVec leaving = LeavingDirection(road, end);
+        entry->leave = entry->outCount != 0u
+                           ? PathEndDirection(&network->paths[entry->out[0]], false)
+                           : leaving;
+        entry->approach = entry->inCount != 0u
+                              ? PathEndDirection(&network->paths[entry->in[0]], true)
+                              : FoxVecNegate(leaving);
+    }
+
+    for (uint32_t i = 0u; i < endCount; ++i)
+    {
+        const NodeEnd *in = &ends[i];
+        if (in->inCount == 0u)
+        {
+            continue;
+        }
+        /* The other roads one can leave by, ordered from the curb side. */
+        uint32_t order[FOX_NODE_MAX_ROADS];
+        int64_t xs[FOX_NODE_MAX_ROADS];
+        int64_t ys[FOX_NODE_MAX_ROADS];
+        uint32_t outCount = 0u;
+        for (uint32_t j = 0u; j < endCount; ++j)
+        {
+            if (j == i || ends[j].outCount == 0u)
+            {
+                continue;
+            }
+            PlaneCoordinates(ends[j].leave, in->approach, node->up, &xs[j], &ys[j]);
+            uint32_t position = outCount++;
+            while (position > 0u)
+            {
+                const uint32_t previous = order[position - 1u];
+                const bool before = node->driveSide == FOX_DRIVE_RIGHT
+                                        ? AngleLess(xs[j], ys[j], xs[previous], ys[previous])
+                                        : AngleLess(xs[previous], ys[previous], xs[j], ys[j]);
+                if (!before)
+                {
+                    break;
+                }
+                order[position] = previous;
+                --position;
+            }
+            order[position] = j;
+        }
+        if (outCount == 0u)
+        {
+            /* A dead end: every lane turns around. */
+            if (in->outCount != 0u)
+            {
+                ok = ConnectGroup(network, nodeIndex, in->in, 0u, in->inCount, in->out,
+                                  in->outCount, MOVE_U_TURN) &&
+                     ok;
+            }
+            continue;
+        }
+        if (in->inCount >= outCount)
+        {
+            for (uint32_t k = 0u; k < outCount; ++k)
+            {
+                const uint32_t first = k * in->inCount / outCount;
+                const uint32_t last = (k + 1u) * in->inCount / outCount;
+                const NodeEnd *out = &ends[order[k]];
+                ok = ConnectGroup(network, nodeIndex, in->in, first, last - first, out->out,
+                                  out->outCount,
+                                  Classify(xs[order[k]], ys[order[k]], node->driveSide)) &&
+                     ok;
+            }
+        }
+        else
+        {
+            for (uint32_t lane = 0u; lane < in->inCount; ++lane)
+            {
+                const uint32_t first = lane * outCount / in->inCount;
+                const uint32_t last = (lane + 1u) * outCount / in->inCount;
+                for (uint32_t k = first; k < last; ++k)
+                {
+                    const NodeEnd *out = &ends[order[k]];
+                    ok = ConnectGroup(network, nodeIndex, in->in, lane, 1u, out->out,
+                                      out->outCount,
+                                      Classify(xs[order[k]], ys[order[k]], node->driveSide)) &&
+                         ok;
+                }
+            }
+        }
+        /* Turning around from the innermost lane keeps every route
+         * possible. */
+        if (in->outCount != 0u)
+        {
+            ok = Connect(network, nodeIndex, in->in[in->inCount - 1u], in->out[in->outCount - 1u],
+                         MOVE_U_TURN) &&
+                 ok;
+        }
+    }
+    return BuildConflicts(network, nodeIndex) && ok;
+}

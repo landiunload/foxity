@@ -1,0 +1,57 @@
+#ifndef FOX_SIM_WORLD_H
+#define FOX_SIM_WORLD_H
+
+#include "sim/network.h"
+#include "sim/planet.h"
+#include "sim/router.h"
+#include "sim/traffic.h"
+
+#include <stdbool.h>
+#include <stdint.h>
+
+/* The city: the planet, its roads and its cars, advanced in fixed ticks.
+ * Every change goes through the commands below, so a recorded list of
+ * commands with their ticks replays the same city anywhere. */
+
+typedef struct FoxWorld FoxWorld;
+
+typedef struct FoxWorldDesc
+{
+    uint64_t seed;
+    /* The city's own drive side, chosen when it is founded; zones can
+     * override it locally later. */
+    FoxDriveSide driveSide;
+    /* Zero picks FOX_PLANET_DEFAULT_RADIUS. */
+    int64_t planetRadius;
+    uint32_t targetVehicles;
+    /* Optional, see router.h; must outlive the world. */
+    const FoxRouter *router;
+} FoxWorldDesc;
+
+FoxWorld *FoxWorldCreate(const FoxWorldDesc *desc);
+void FoxWorldDestroy(FoxWorld *world);
+
+uint64_t FoxWorldTick(const FoxWorld *world);
+void FoxWorldAdvance(FoxWorld *world, uint64_t ticks);
+
+const FoxPlanet *FoxWorldPlanet(const FoxWorld *world);
+const FoxNetwork *FoxWorldNetwork(const FoxWorld *world);
+const FoxTraffic *FoxWorldTraffic(const FoxWorld *world);
+
+uint32_t FoxWorldDig(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
+uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
+FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan);
+bool FoxWorldRemoveRoad(FoxWorld *world, uint32_t road);
+bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDriveSide side);
+void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles);
+
+/* A small grid town around the north pole: what the headless run, the
+ * tests and a client started with --demo drive on. False if a road could
+ * not be built. */
+bool FoxWorldBuildDemoTown(FoxWorld *world);
+
+/* One value for the whole state: equal on every machine that ran the same
+ * commands. */
+uint64_t FoxWorldHash(const FoxWorld *world);
+
+#endif

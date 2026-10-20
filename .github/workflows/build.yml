@@ -1,0 +1,289 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+permissions:
+  contents: read
+
+env:
+  # Development integration follows an engine branch while both repositories
+  # evolve; it is the branch with laiue.navigation and the sky colour until they
+  # reach main. Tags and release/* branches build the reviewed immutable SHA
+  # that engine.lock holds instead; engine-revision below picks between them.
+  LAIUE_REF: engine-sky-color
+  LLVM_VERSION: '22'
+
+jobs:
+  engine-revision:
+    name: Resolve engine revision
+    runs-on: ubuntu-26.04
+    outputs:
+      ref: ${{ steps.resolve.outputs.ref }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Choose the laiue revision for this run
+        id: resolve
+        shell: bash
+        run: |
+          locked="$(grep -v '^[[:space:]]*#' engine.lock | tr -d '[:space:]')"
+          if ! printf '%s' "$locked" | grep -Eq '^[0-9a-f]{40}$'; then
+            echo "engine.lock must hold one 40-character laiue commit SHA" >&2
+            exit 1
+          fi
+          case "$GITHUB_REF" in
+            refs/tags/*|refs/heads/release/*) ref="$locked" ;;
+            *)
+              if [[ "$LAIUE_REF" =~ ^[0-9a-f]{40}$ ]]; then
+                ref="$LAIUE_REF"
+              else
+                if ! git check-ref-format "refs/heads/$LAIUE_REF"; then
+                  echo "LAIUE_REF must name a valid engine branch or commit SHA" >&2
+                  exit 1
+                fi
+                if ! resolved="$(git ls-remote --exit-code \
+                  https://github.com/landiunload/laiue.git "refs/heads/$LAIUE_REF")"; then
+                  echo "Cannot resolve engine branch: $LAIUE_REF" >&2
+                  exit 1
+                fi
+                IFS=$'\t' read -r ref resolved_ref <<< "$resolved"
+                if [[ "$resolved" != "$ref"$'\t'"refs/heads/$LAIUE_REF" ]]; then
+                  echo "Engine branch lookup returned an unexpected result" >&2
+                  exit 1
+                fi
+              fi
+              ;;
+          esac
+          if [[ ! "$ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Resolved engine revision must be one 40-character commit SHA" >&2
+            exit 1
+          fi
+          # Every matrix job checks out this same SHA even if the branch advances.
+          echo "ref=$ref" >> "$GITHUB_OUTPUT"
+          echo "laiue revision for this run: $ref"
+
+  windows:
+    name: Windows x64 (${{ matrix.preset }})
+    needs: engine-revision
+    runs-on: windows-2025
+    strategy:
+      fail-fast: false
+      matrix:
+        preset: [windows-msvc, windows-clang]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          ref: ${{ needs.engine-revision.outputs.ref }}
+          path: _engine
+      - name: Activate compiler environment
+        shell: pwsh
+        run: |
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} `
+            'Microsoft Visual Studio\Installer\vswhere.exe'
+          $vsRoot = & $vswhere -latest -products * `
+            -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          if (!$vsRoot) { throw "Visual Studio C tools were not found" }
+          $vsRoot = @($vsRoot)[0].Trim()
+          Import-Module (Join-Path $vsRoot 'Common7\Tools\Microsoft.VisualStudio.DevShell.dll')
+          Enter-VsDevShell -VsInstallPath $vsRoot -SkipAutomaticLocation `
+            -DevCmdArguments '-arch=x64 -host_arch=x64'
+          # Visual Studio's bundled CMake lags behind the runner's; both
+          # projects need CMake 4.2 or newer.
+          $env:PATH = ($env:PATH -split ';' |
+            Where-Object { $_ -notlike '*\Microsoft\CMake\*' }) -join ';'
+          cmake --version
+          foreach ($name in 'INCLUDE', 'LIB', 'LIBPATH', 'PATH') {
+            "$name=$([Environment]::GetEnvironmentVariable($name))" |
+              Out-File $env:GITHUB_ENV -Append
+          }
+      - name: Build engine SDK
+        shell: pwsh
+        run: |
+          cmake --preset ${{ matrix.preset }} -S _engine
+          cmake --build "_engine/build/${{ matrix.preset }}" --config Release `
+            --target laiue_engine_bundle --parallel
+      - name: Configure game
+        shell: pwsh
+        run: |
+          $engine = Join-Path $env:GITHUB_WORKSPACE `
+            "_engine/build/${{ matrix.preset }}/bundles/engine/Release/lib/cmake/laiue"
+          $arguments = @('--preset', '${{ matrix.preset }}', "-Dlaiue_DIR=$engine")
+          if ('${{ matrix.preset }}' -eq 'windows-clang') {
+            $arguments += '-DFOX_ENABLE_CLANG_TIDY=ON'
+          }
+          cmake @arguments
+      - name: Build and test Debug
+        run: |
+          cmake --build --preset ${{ matrix.preset }}-debug --parallel
+          ctest --preset ${{ matrix.preset }}-debug --no-tests=error --output-on-failure
+      - name: Build and test Release
+        run: |
+          cmake --build --preset ${{ matrix.preset }}-release --parallel
+          ctest --preset ${{ matrix.preset }}-release --no-tests=error --output-on-failure
+      - name: Build and test the game with the engine from source
+        shell: pwsh
+        run: |
+          $build = "build/source-${{ matrix.preset }}"
+          cmake --preset ${{ matrix.preset }} -B $build `
+            "-DFOX_ENGINE_SOURCE_DIR=$env:GITHUB_WORKSPACE/_engine" `
+            -DFOX_ENGINE_FETCH=OFF -Dlaiue_DIR=
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          foreach ($configuration in 'Debug', 'Release') {
+            cmake --build $build --config $configuration --parallel
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            ctest --test-dir $build -C $configuration --no-tests=error --output-on-failure
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          }
+      - name: Stage and smoke-test the bundle
+        if: matrix.preset == 'windows-msvc'
+        shell: pwsh
+        run: |
+          cmake --build --preset windows-msvc-release --target foxity_bundle
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          $bundle = Join-Path $env:GITHUB_WORKSPACE 'build/windows-msvc/bundles/Foxity/Release'
+          # A windowed program returns to PowerShell at once; wait explicitly.
+          $smoke = Start-Process -PassThru -Wait -NoNewWindow -WorkingDirectory $bundle `
+            -FilePath (Join-Path $bundle 'Foxity.exe') -ArgumentList '--smoke'
+          if ($smoke.ExitCode -ne 0) {
+            throw "Staged bundle smoke failed with exit code $($smoke.ExitCode)"
+          }
+      - name: Upload bundle
+        if: matrix.preset == 'windows-msvc'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: foxity-windows-x86_64
+          path: build/windows-msvc/bundles/Foxity/Release
+          if-no-files-found: error
+      - name: Verify the builds did not modify sources
+        shell: pwsh
+        run: |
+          foreach ($tree in '.', '_engine') {
+            git -C $tree diff --check
+            if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+            $changes = git -C $tree status --porcelain
+            if ($changes) { throw "Build modified sources in ${tree}:`n$changes" }
+          }
+
+  linux:
+    name: Linux x86_64 headless (${{ matrix.preset }}${{ matrix.sanitize && ', sanitizers' || '' }})
+    needs: engine-revision
+    runs-on: ubuntu-26.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - {preset: linux-gcc, sanitize: false}
+          - {preset: linux-clang, sanitize: false}
+          # Address, undefined-behaviour and leak checks over every test.
+          - {preset: linux-gcc, sanitize: true}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          ref: ${{ needs.engine-revision.outputs.ref }}
+          path: _engine
+      - name: Use the pinned Clang
+        if: matrix.preset == 'linux-clang'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-$LLVM_VERSION" "llvm-$LLVM_VERSION" "lld-$LLVM_VERSION"
+          sudo update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-$LLVM_VERSION" 200
+          clang --version
+      - name: Build headless engine SDK
+        run: |
+          cmake --preset "${{ matrix.preset }}" -S _engine -DLAIUE_BUILD_GRAPHICS=OFF
+          cmake --build "_engine/build/${{ matrix.preset }}" --config Release \
+            --target laiue_engine_bundle --parallel
+      - name: Configure game
+        run: |
+          engine="$GITHUB_WORKSPACE/_engine/build/${{ matrix.preset }}/bundles/engine/Release/lib/cmake/laiue"
+          if [ "${{ matrix.sanitize }}" = "true" ]; then
+            cmake --preset "${{ matrix.preset }}" "-Dlaiue_DIR=$engine" -DFOX_ENABLE_LTO=OFF \
+              "-DCMAKE_C_FLAGS=-fsanitize=address,undefined -fno-sanitize-recover=all -fno-omit-frame-pointer" \
+              "-DCMAKE_EXE_LINKER_FLAGS=-fsanitize=address,undefined"
+          else
+            cmake --preset "${{ matrix.preset }}" "-Dlaiue_DIR=$engine"
+          fi
+      - name: Build and test Debug
+        env:
+          ASAN_OPTIONS: detect_leaks=1:abort_on_error=1:strict_string_checks=1
+          UBSAN_OPTIONS: print_stacktrace=1:halt_on_error=1
+        run: |
+          cmake --build --preset "${{ matrix.preset }}-debug" --parallel
+          ctest --preset "${{ matrix.preset }}-debug" --no-tests=error --output-on-failure
+      - name: Build and test Release
+        if: ${{ !matrix.sanitize }}
+        run: |
+          cmake --build --preset "${{ matrix.preset }}-release" --parallel
+          ctest --preset "${{ matrix.preset }}-release" --no-tests=error --output-on-failure
+      - name: Verify the builds did not modify sources
+        run: |
+          for tree in . _engine; do
+            git -C "$tree" diff --check
+            test -z "$(git -C "$tree" status --porcelain)"
+          done
+
+  macos:
+    name: macOS arm64 headless
+    needs: engine-revision
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          ref: ${{ needs.engine-revision.outputs.ref }}
+          path: _engine
+      - name: Install build dependencies
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            brew install ninja
+          fi
+      - name: Build headless engine SDK
+        run: |
+          cmake --preset macos-clang-arm64 -S _engine -DLAIUE_BUILD_GRAPHICS=OFF
+          cmake --build _engine/build/macos-clang-arm64 --config Release \
+            --target laiue_engine_bundle --parallel
+      - name: Configure game
+        run: |
+          engine="$GITHUB_WORKSPACE/_engine/build/macos-clang-arm64/bundles/engine/Release/lib/cmake/laiue"
+          cmake --preset macos-clang-arm64 "-Dlaiue_DIR=$engine"
+      - name: Build and test Debug
+        run: |
+          cmake --build --preset macos-clang-arm64-debug --parallel
+          ctest --preset macos-clang-arm64-debug --no-tests=error --output-on-failure
+      - name: Build and test Release
+        run: |
+          cmake --build --preset macos-clang-arm64-release --parallel
+          ctest --preset macos-clang-arm64-release --no-tests=error --output-on-failure
+      - name: Verify the builds did not modify sources
+        run: |
+          for tree in . _engine; do
+            git -C "$tree" diff --check
+            test -z "$(git -C "$tree" status --porcelain)"
+          done
+
+  ci:
+    name: All checks
+    if: always()
+    needs: [engine-revision, windows, linux, macos]
+    runs-on: ubuntu-slim
+    steps:
+      - name: Require every job to pass
+        if: >
+          contains(needs.*.result, 'failure') ||
+          contains(needs.*.result, 'cancelled') ||
+          contains(needs.*.result, 'skipped')
+        run: exit 1

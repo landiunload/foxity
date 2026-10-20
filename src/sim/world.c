@@ -1,0 +1,198 @@
+#include "sim/world.h"
+
+#include "sim/random.h"
+
+#include <stddef.h>
+#include <stdlib.h>
+
+struct FoxWorld
+{
+    uint64_t tick;
+    FoxPlanet *planet;
+    FoxNetwork *network;
+    FoxTraffic *traffic;
+};
+
+FoxWorld *FoxWorldCreate(const FoxWorldDesc *desc)
+{
+    if (desc == NULL)
+    {
+        return NULL;
+    }
+    FoxWorld *world = calloc(1u, sizeof(*world));
+    if (world == NULL)
+    {
+        return NULL;
+    }
+    const FoxNetworkDesc networkDesc = {.driveSide = desc->driveSide, .router = desc->router};
+    const FoxTrafficDesc trafficDesc = {.seed = desc->seed, .targetVehicles = desc->targetVehicles};
+    world->planet = FoxPlanetCreate(desc->planetRadius != 0 ? desc->planetRadius
+                                                            : FOX_PLANET_DEFAULT_RADIUS);
+    world->network = FoxNetworkCreate(&networkDesc);
+    world->traffic = FoxTrafficCreate(&trafficDesc);
+    if (world->planet == NULL || world->network == NULL || world->traffic == NULL)
+    {
+        FoxWorldDestroy(world);
+        return NULL;
+    }
+    return world;
+}
+
+void FoxWorldDestroy(FoxWorld *world)
+{
+    if (world == NULL)
+    {
+        return;
+    }
+    FoxTrafficDestroy(world->traffic);
+    FoxNetworkDestroy(world->network);
+    FoxPlanetDestroy(world->planet);
+    free(world);
+}
+
+uint64_t FoxWorldTick(const FoxWorld *world)
+{
+    return world == NULL ? 0u : world->tick;
+}
+
+void FoxWorldAdvance(FoxWorld *world, uint64_t ticks)
+{
+    if (world == NULL)
+    {
+        return;
+    }
+    for (uint64_t step = 0u; step < ticks; ++step)
+    {
+        FoxTrafficStep(world->traffic, world->network);
+        ++world->tick;
+    }
+}
+
+const FoxPlanet *FoxWorldPlanet(const FoxWorld *world)
+{
+    return world == NULL ? NULL : world->planet;
+}
+
+const FoxNetwork *FoxWorldNetwork(const FoxWorld *world)
+{
+    return world == NULL ? NULL : world->network;
+}
+
+const FoxTraffic *FoxWorldTraffic(const FoxWorld *world)
+{
+    return world == NULL ? NULL : world->traffic;
+}
+
+uint32_t FoxWorldDig(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
+{
+    return world == NULL ? 0u : FoxPlanetDig(world->planet, center, radius, outChanged);
+}
+
+uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
+{
+    return world == NULL ? 0u : FoxPlanetFill(world->planet, center, radius, outChanged);
+}
+
+/* Cars leave retired paths before the network frees them. */
+static void Settle(FoxWorld *world)
+{
+    FoxTrafficRemap(world->traffic, world->network);
+    FoxNetworkReleaseRetired(world->network);
+}
+
+FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan)
+{
+    if (world == NULL)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    const FoxRoadResult result = FoxNetworkBuildRoad(world->network, world->planet, plan);
+    Settle(world);
+    return result;
+}
+
+bool FoxWorldRemoveRoad(FoxWorld *world, uint32_t road)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    const bool removed = FoxNetworkRemoveRoad(world->network, road);
+    Settle(world);
+    return removed;
+}
+
+bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDriveSide side)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    const bool added = FoxNetworkAddDriveZone(world->network, center, radius, side);
+    Settle(world);
+    return added;
+}
+
+void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles)
+{
+    if (world != NULL)
+    {
+        FoxTrafficSetTarget(world->traffic, vehicles);
+    }
+}
+
+static FoxVec PoleOffset(const FoxWorld *world, int64_t east, int64_t north)
+{
+    return (FoxVec){FOX_METRES(east), FOX_METRES(north), FoxPlanetRadius(world->planet)};
+}
+
+bool FoxWorldBuildDemoTown(FoxWorld *world)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    bool ok = true;
+    /* Five streets each way 80 m apart; the middle ones are avenues. */
+    for (int64_t line = -2; line <= 2; ++line)
+    {
+        const FoxRoadType type = line == 0 ? FOX_ROAD_AVENUE : FOX_ROAD_STREET;
+        const FoxRoadPlan northSouth = {
+            .start = PoleOffset(world, line * 80, -200),
+            .end = PoleOffset(world, line * 80, 200),
+            .type = type,
+        };
+        ok = FoxWorldBuildRoad(world, &northSouth) == FOX_ROAD_OK && ok;
+    }
+    for (int64_t line = -2; line <= 2; ++line)
+    {
+        const FoxRoadType type = line == 0 ? FOX_ROAD_AVENUE : FOX_ROAD_STREET;
+        const FoxRoadPlan eastWest = {
+            .start = PoleOffset(world, -200, line * 80),
+            .end = PoleOffset(world, 200, line * 80),
+            .type = type,
+        };
+        ok = FoxWorldBuildRoad(world, &eastWest) == FOX_ROAD_OK && ok;
+    }
+    /* A curved boulevard round the north-east corner. */
+    const FoxRoadPlan bend = {
+        .start = PoleOffset(world, 200, 160),
+        .end = PoleOffset(world, 160, 200),
+        .control = PoleOffset(world, 250, 250),
+        .curved = true,
+        .type = FOX_ROAD_BOULEVARD,
+    };
+    ok = FoxWorldBuildRoad(world, &bend) == FOX_ROAD_OK && ok;
+    return ok;
+}
+
+uint64_t FoxWorldHash(const FoxWorld *world)
+{
+    if (world == NULL)
+    {
+        return 0u;
+    }
+    uint64_t hash = FoxHashCombine(world->tick, FoxPlanetHash(world->planet));
+    hash = FoxHashCombine(hash, FoxNetworkHash(world->network));
+    return FoxHashCombine(hash, FoxTrafficHash(world->traffic));
+}

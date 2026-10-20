@@ -1,0 +1,7 @@
+# Reviewed laiue revision for reproducible release builds.
+# Local development builds the sibling source tree; downloaded development
+# builds and CI follow main. Only FOX_ENGINE_REVISION=locked, tags and
+# release/* branches use this snapshot. It does not pin local edits.
+#
+# https://github.com/landiunload/laiue
+d0bc593fc57228f4d4e07e11bb8b13d823faccf5

@@ -1,0 +1,18 @@
+# Disabled checks do not fit this portable C codebase:
+# - include-cleaner: C headers are not tracked symbol by symbol.
+# - DeprecatedOrUnsafeBufferHandling: wants Annex K fprintf_s and memcpy_s,
+#   which glibc, musl and Apple libc do not provide.
+# - easily-swappable-parameters: engine callbacks and OS entry points fix
+#   their parameter lists.
+Checks: >
+  -*,
+  bugprone-*,
+  clang-analyzer-*,
+  misc-*,
+  performance-*,
+  portability-*,
+  -bugprone-easily-swappable-parameters,
+  -misc-include-cleaner,
+  -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
+WarningsAsErrors: '*'
+HeaderFilterRegex: '^(.*[/\\])?src[/\\].*'
