@@ -24,8 +24,11 @@ typedef struct FoxClientOptions
     uint32_t cars;
     /* The city's drive side, chosen when it is founded. */
     FoxDriveSide driveSide;
-    /* Starts with the demo town instead of bare ground. */
+    /* Starts with the demo town instead of bare ground, or with gridLines
+     * with a grid of that many roads each way gridSpacing apart. */
     bool demo;
+    uint32_t gridLines;
+    int64_t gridSpacing;
     /* Metres from the camera to its focus; zero keeps the default. */
     double cameraDistance;
     /* Where the camera looks first, metres east and north of the pole. */

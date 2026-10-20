@@ -158,6 +158,15 @@ bool FoxCameraBuildView(FoxCamera *camera, const LaiueSceneMathServiceV1 *math, 
     /* The eye is never closer to the ground than its height over the focus,
      * so the near plane can sit far out, and the depth buffer keeps paint
      * apart from the asphalt under it even far away. */
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        outView->look[axis] = outView->forward[axis] * cos(camera->pitch) -
+                              outView->up[axis] * sin(camera->pitch);
+        outView->screenRight[axis] = outView->right[axis];
+    }
+    Cross(outView->screenRight, outView->look, outView->screenUp);
+    Normalize(outView->screenUp);
+    outView->aspectRatio = aspectRatio;
     outView->nearPlane = (float)fmax(0.3, camera->distance * 0.03);
     outView->farPlane = (float)(camera->distance + 4000.0);
     float view[16];

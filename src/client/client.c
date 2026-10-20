@@ -204,6 +204,7 @@ static FoxControls ReadControls(ClientSession *session)
     controls.nextTimeScale = input->consumeKeyPress(state, INPUT_KEY_V);
     controls.nextRoadType = input->consumeKeyPress(state, INPUT_KEY_T);
     controls.togglePause = input->consumeKeyPress(state, INPUT_KEY_SPACE);
+    controls.toggleStatistics = input->consumeKeyPress(state, INPUT_KEY_F3);
     controls.carsChange = (input->consumeKeyPress(state, INPUT_KEY_E) ? 1 : 0) -
                           (input->consumeKeyPress(state, INPUT_KEY_G) ? 1 : 0);
     return controls;
@@ -440,6 +441,8 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         .driveSide = options->driveSide,
         .cars = options->cars,
         .demo = options->demo,
+        .gridLines = options->gridLines,
+        .gridSpacing = options->gridSpacing,
         .cameraDistance = options->cameraDistance,
         .focusEast = options->focusEast,
         .focusNorth = options->focusNorth,

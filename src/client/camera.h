@@ -47,6 +47,11 @@ typedef struct FoxCameraView
     double up[3];
     double forward[3];
     double right[3];
+    /* Where the eye looks and the screen's up and right, unit vectors. */
+    double look[3];
+    double screenUp[3];
+    double screenRight[3];
+    float aspectRatio;
 } FoxCameraView;
 
 void FoxCameraInit(FoxCamera *camera, FoxVec focus);

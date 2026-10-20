@@ -4,12 +4,17 @@
 #include "app/log.h"
 #include "client/camera.h"
 #include "client/cars_view.h"
+#include "client/hud.h"
 #include "client/planet_view.h"
 #include "client/roads_view.h"
 #include "sim/clock.h"
 
+#include "mod/application.h"
+
 #include <math.h>
+#include <stdarg.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -21,6 +26,9 @@
 #define DRIVE_ZONE_RADIUS FOX_METRES(150)
 #define CARS_STEP 50u
 #define REPORT_SECONDS 30.0
+/* The statistics panel is refreshed this often. */
+#define STATISTICS_SECONDS 0.25
+#define STATISTICS_TEXT 4096u
 
 static const double speedPresets[] = {1.0, 3.0, 10.0};
 static const char *const toolNames[FOX_TOOL_COUNT] = {
@@ -58,30 +66,40 @@ struct FoxScene
 {
     FoxCity city;
     FoxClock clock;
-    double resumeScale;
-    uint32_t timeScale;
     FoxCamera camera;
     FoxCameraView view;
-    bool viewReady;
     const LaiueSceneMathServiceV1 *math;
-    bool picking;
     FoxPlanetView *planet;
     FoxRoadsView *roads;
     FoxCarsView *cars;
+    FoxHud *hud;
+    char *statisticsText;
+    double resumeScale;
+    /* What the panel measures between its refreshes. */
+    double windowSeconds;
+    double windowSlowestFrame;
+    uint64_t windowTicks;
+    double windowTickSeconds;
+    double windowSlowestTick;
 
-    FoxTool tool;
-    FoxRoadType roadType;
     /* Points of the road being placed: start, then for curves the bend. */
     FoxVec placed[2];
-    uint32_t placedCount;
-    bool hasHit;
     FoxVec hit;
-    double groundCooldown;
-    double reportTimer;
     /* The preview shown for, to rebuild it only when it changes. */
     FoxVec previewEnd;
-    uint32_t previewPlaced;
     FoxVec *previewPoints;
+    double groundCooldown;
+    double reportTimer;
+    FoxTool tool;
+    FoxRoadType roadType;
+    uint32_t timeScale;
+    uint32_t windowFrames;
+    uint32_t placedCount;
+    uint32_t previewPlaced;
+    bool viewReady;
+    bool picking;
+    bool statistics;
+    bool hasHit;
 };
 
 FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
@@ -101,9 +119,14 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         .driveSide = desc->driveSide,
         .cars = desc->cars,
         .demo = desc->demo,
+        .gridLines = desc->gridLines,
+        .gridSpacing = desc->gridSpacing,
         .modules = desc->modules,
     };
-    if (scene->previewPoints == NULL || !FoxCityCreate(&scene->city, &cityDesc) ||
+    scene->statisticsText = malloc(STATISTICS_TEXT);
+    scene->statistics = true;
+    if (scene->previewPoints == NULL || scene->statisticsText == NULL ||
+        !FoxCityCreate(&scene->city, &cityDesc) ||
         !FoxClockInit(&scene->clock, FOX_CLOCK_TICKS_PER_SECOND,
                       FOX_CLOCK_DEFAULT_MAX_ADVANCE_SECONDS))
     {
@@ -144,6 +167,11 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         }
         scene->roads = FoxRoadsViewCreate(desc->device);
         scene->cars = FoxCarsViewCreate(desc->device);
+        scene->hud = FoxHudCreate(desc->device);
+        if (scene->hud == NULL)
+        {
+            FoxLog(FOX_LOG_WARNING, "the device cannot show the statistics panel");
+        }
         if (scene->roads == NULL || scene->cars == NULL)
         {
             FoxLog(FOX_LOG_WARNING, "roads or cars cannot be drawn");
@@ -164,7 +192,7 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
     FoxLog(FOX_LOG_INFO, "tools: 1 road, 2 curved road, 3 bulldoze, 4 dig, 5 raise, 6 drive "
                          "zone, 7 traffic lights, 8 junction signs, 9 speed limits (Shift "
                          "lowers); T road type; V time speed, Space pause; E/G more or fewer "
-                         "cars");
+                         "cars (Shift: ten times as many); F3 statistics");
     return scene;
 }
 
@@ -174,6 +202,8 @@ void FoxSceneDestroy(FoxScene *scene)
     {
         return;
     }
+    FoxHudDestroy(scene->hud);
+    free(scene->statisticsText);
     FoxCarsViewDestroy(scene->cars);
     FoxRoadsViewDestroy(scene->roads);
     FoxPlanetViewDestroy(scene->planet);
@@ -209,11 +239,16 @@ static void ApplyTimeControls(FoxScene *scene, const FoxControls *controls)
         (void)FoxClockSetTimeScale(&scene->clock, paused ? scene->resumeScale : 0.0);
         FoxLog(FOX_LOG_INFO, "%s", paused ? "time resumes" : "time is paused");
     }
+    if (controls->toggleStatistics)
+    {
+        scene->statistics = !scene->statistics;
+    }
     if (controls->carsChange != 0)
     {
         const uint32_t target = FoxTrafficTarget(FoxWorldTraffic(scene->city.world));
-        const uint32_t next = controls->carsChange > 0 ? target + CARS_STEP
-                                                       : (target > CARS_STEP ? target - CARS_STEP : 0u);
+        const uint32_t step = controls->moveFast ? CARS_STEP * 10u : CARS_STEP;
+        const uint32_t next = controls->carsChange > 0 ? target + step
+                                                       : (target > step ? target - step : 0u);
         FoxWorldSetTargetVehicles(scene->city.world, next);
         FoxLog(FOX_LOG_INFO, "the city aims for %u cars", next);
     }
@@ -551,6 +586,131 @@ static void ApplyTools(FoxScene *scene, const FoxControls *controls, double real
     }
 }
 
+static double Kmh(int64_t units)
+{
+    return (double)units * 3.6 / FOX_UNITS_PER_METRE;
+}
+
+#if defined(__GNUC__) || defined(__clang__)
+#define FOX_PRINTF_LIKE(string, first) __attribute__((format(printf, string, first)))
+#else
+#define FOX_PRINTF_LIKE(string, first)
+#endif
+
+/* Appends to the panel's text, keeping it terminated. */
+static void Append(char *text, size_t *used, const char *format, ...) FOX_PRINTF_LIKE(3, 4);
+
+static void Append(char *text, size_t *used, const char *format, ...)
+{
+    if (*used + 1u >= STATISTICS_TEXT)
+    {
+        return;
+    }
+    va_list arguments;
+    va_start(arguments, format);
+    const int written = vsnprintf(text + *used, STATISTICS_TEXT - *used, format, arguments);
+    va_end(arguments);
+    if (written > 0)
+    {
+        *used += (size_t)written < STATISTICS_TEXT - *used ? (size_t)written : STATISTICS_TEXT - *used - 1u;
+    }
+}
+
+/* Everything about the city and the frame, for the panel. */
+static void BuildStatistics(FoxScene *scene)
+{
+    const FoxWorld *world = scene->city.world;
+    const FoxNetwork *network = FoxWorldNetwork(world);
+    const FoxTraffic *traffic = FoxWorldTraffic(world);
+    const FoxNetworkStats roads = FoxNetworkGetStats(network);
+    const FoxTrafficStats cars = FoxTrafficGetStats(traffic);
+    const uint64_t tick = FoxWorldTick(world);
+    const uint64_t seconds = tick / FOX_TRAFFIC_TICKS_PER_SECOND;
+    const double frames = (double)scene->windowFrames;
+    char *text = scene->statisticsText;
+    size_t used = 0u;
+    text[0] = '\0';
+    Append(text, &used, "-- FOXITY  (F3 hides)\n");
+    Append(text, &used, "FPS %.0f  frame %.1f ms  worst %.1f ms\n",
+           scene->windowSeconds > 0.0 ? frames / scene->windowSeconds : 0.0,
+           frames > 0.0 ? scene->windowSeconds * 1000.0 / frames : 0.0,
+           scene->windowSlowestFrame * 1000.0);
+    Append(text, &used, "tick %.3f ms  worst %.3f ms  %.0f ticks/s\n",
+           scene->windowTicks != 0u ? scene->windowTickSeconds * 1000.0 / (double)scene->windowTicks
+                                    : 0.0,
+           scene->windowSlowestTick * 1000.0,
+           scene->windowSeconds > 0.0 ? (double)scene->windowTicks / scene->windowSeconds : 0.0);
+    Append(text, &used, "time x%g%s  city %02u:%02u:%02u\n", scene->resumeScale,
+           scene->clock.timeScale == 0.0 ? " PAUSED" : "", (unsigned)(seconds / 3600u),
+           (unsigned)(seconds / 60u % 60u), (unsigned)(seconds % 60u));
+    Append(text, &used, "tool %s  road %s\n", toolNames[scene->tool],
+           FoxRoadTypeGet(scene->roadType)->name);
+    Append(text, &used, "-- ROADS\n");
+    Append(text, &used, "roads %u  %.2f km  lanes %u  %.2f km\n", roads.roads,
+           (double)roads.roadLength / FOX_METRES(1000), roads.lanes,
+           (double)roads.laneLength / FOX_METRES(1000));
+    Append(text, &used, "street %u  avenue %u  boulevard %u\n",
+           roads.roadsByType[FOX_ROAD_STREET], roads.roadsByType[FOX_ROAD_AVENUE],
+           roads.roadsByType[FOX_ROAD_BOULEVARD]);
+    Append(text, &used, "one-way %u  highway %u  limits set %u\n",
+           roads.roadsByType[FOX_ROAD_ONE_WAY], roads.roadsByType[FOX_ROAD_HIGHWAY],
+           roads.speedLimitsSet);
+    Append(text, &used, "junctions %u  lights %u  bends %u  ends %u\n", roads.junctions,
+           roads.signalled, roads.bends, roads.deadEnds);
+    Append(text, &used, "signs: priority %u  yield %u  stop %u\n", roads.signs[FOX_SIGN_PRIORITY],
+           roads.signs[FOX_SIGN_YIELD], roads.signs[FOX_SIGN_STOP]);
+    Append(text, &used, "turns %u  conflicts %u\n", roads.connections, roads.conflicts);
+    Append(text, &used, "-- TRAFFIC\n");
+    Append(text, &used, "vehicles %u / %u  cars %u  trucks %u\n", cars.vehicles,
+           FoxTrafficTarget(traffic), cars.vehicles - cars.trucks, cars.trucks);
+    Append(text, &used, "moving %u  standing %u (%.0f%%)  >30s %u\n",
+           cars.vehicles - cars.standing, cars.standing,
+           cars.vehicles != 0u ? 100.0 * cars.standing / cars.vehicles : 0.0, cars.waitingLong);
+    Append(text, &used, "speed mean %.1f  max %.1f km/h\n", Kmh(cars.meanSpeed),
+           Kmh(cars.maxSpeed));
+    uint32_t bands[8] = {0u};
+    for (uint32_t slot = 0u; slot < FoxTrafficCapacity(traffic); ++slot)
+    {
+        FoxVehicleView vehicle;
+        if (FoxTrafficVehicle(traffic, slot, &vehicle))
+        {
+            const uint32_t band = (uint32_t)(Kmh(vehicle.speed) / 10.0);
+            ++bands[band < 7u ? band : 7u];
+        }
+    }
+    for (uint32_t band = 0u; band < 8u; ++band)
+    {
+        /* A bar of up to thirty cells, scaled to all vehicles. */
+        const uint32_t cells =
+            cars.vehicles != 0u ? (uint32_t)((uint64_t)bands[band] * 30u / cars.vehicles) : 0u;
+        char bar[32];
+        memset(bar, '#', cells);
+        bar[cells] = '\0';
+        if (band < 7u)
+        {
+            Append(text, &used, "%3u-%-3u %-30s %u\n", band * 10u, band * 10u + 10u, bar,
+                   bands[band]);
+        }
+        else
+        {
+            Append(text, &used, "%3u+    %-30s %u\n", band * 10u, bar, bands[band]);
+        }
+    }
+    const double minutes = (double)tick / FOX_TRAFFIC_TICKS_PER_SECOND / 60.0;
+    Append(text, &used, "arrived %llu (%.0f/min)\n", (unsigned long long)cars.arrived,
+           minutes > 0.0 ? (double)cars.arrived / minutes : 0.0);
+    Append(text, &used, "spawned %llu  stuck %llu (%.1f/min)\n", (unsigned long long)cars.spawned,
+           (unsigned long long)cars.stuck, minutes > 0.0 ? (double)cars.stuck / minutes : 0.0);
+    Append(text, &used, "E/G cars +-50  Shift x10   V speed  Space pause");
+    FoxHudSetText(scene->hud, text);
+    scene->windowSeconds = 0.0;
+    scene->windowFrames = 0u;
+    scene->windowSlowestFrame = 0.0;
+    scene->windowTicks = 0u;
+    scene->windowTickSeconds = 0.0;
+    scene->windowSlowestTick = 0.0;
+}
+
 bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSeconds,
                     float aspectRatio, float outViewProjection[16])
 {
@@ -559,7 +719,23 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
         return false;
     }
     ApplyTimeControls(scene, controls);
-    FoxWorldAdvance(scene->city.world, FoxClockAdvance(&scene->clock, realSeconds));
+    const uint64_t ticks = FoxClockAdvance(&scene->clock, realSeconds);
+    for (uint64_t tick = 0u; tick < ticks; ++tick)
+    {
+        const double before = LaiueApplicationMonotonicSeconds();
+        FoxWorldAdvance(scene->city.world, 1u);
+        const double spent = LaiueApplicationMonotonicSeconds() - before;
+        scene->windowTickSeconds += spent;
+        scene->windowSlowestTick = fmax(scene->windowSlowestTick, spent);
+    }
+    scene->windowTicks += ticks;
+    scene->windowSeconds += realSeconds;
+    ++scene->windowFrames;
+    scene->windowSlowestFrame = fmax(scene->windowSlowestFrame, realSeconds);
+    if (scene->hud != NULL && scene->statistics && scene->windowSeconds >= STATISTICS_SECONDS)
+    {
+        BuildStatistics(scene);
+    }
     scene->reportTimer += realSeconds;
     if (scene->reportTimer >= REPORT_SECONDS)
     {
@@ -596,4 +772,8 @@ void FoxSceneDraw(FoxScene *scene)
     (void)FoxCarsViewDraw(scene->cars, FoxWorldTraffic(scene->city.world),
                           FoxWorldNetwork(scene->city.world), &scene->view,
                           FoxClockInterpolation(&scene->clock));
+    if (scene->statistics)
+    {
+        FoxHudDraw(scene->hud, &scene->view);
+    }
 }

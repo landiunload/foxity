@@ -44,6 +44,10 @@ typedef struct FoxSceneDesc
     FoxDriveSide driveSide;
     uint32_t cars;
     bool demo;
+    /* Non-zero builds a grid of this many roads each way instead of the
+     * demo town. */
+    uint32_t gridLines;
+    int64_t gridSpacing;
     /* Metres from the focus to the eye; zero keeps the default. */
     double cameraDistance;
     /* Where the camera looks first, metres east and north of the pole. */
@@ -82,8 +86,10 @@ typedef struct FoxControls
     bool togglePause;
     /* Steps through one, three and ten times real time. */
     bool nextTimeScale;
-    /* +1 or -1 asks for more or fewer cars. */
+    /* +1 or -1 asks for more or fewer cars; with moveFast ten times as
+     * many. */
     int32_t carsChange;
+    bool toggleStatistics;
 } FoxControls;
 
 FoxScene *FoxSceneCreate(const FoxSceneDesc *desc);

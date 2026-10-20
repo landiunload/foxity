@@ -63,6 +63,8 @@ if(FOX_BUILD_CLIENT)
         client/camera.h
         client/cars_view.c
         client/cars_view.h
+        client/hud.c
+        client/hud.h
         client/planet_view.c
         client/planet_view.h
         client/road_mesh.c

@@ -25,6 +25,8 @@ commands give the same city on every machine.
 
 ![An intersection with lights](docs/junction.png)
 
+![The statistics panel over a loaded grid](docs/statistics.png)
+
 ![The planet](docs/planet.png)
 
 The engine's window, input, graphics, camera math, meshing and navigation are
@@ -50,7 +52,8 @@ technology instead of failing to start.
 | T | Next road type: street 50 km/h, avenue 60, boulevard 70, one-way 50, highway 110 |
 | V | Time at one, three or ten times real time |
 | Space | Pause |
-| E, G | Fifty cars more or fewer |
+| E, G | Fifty cars more or fewer; with Shift five hundred |
+| F3 | Statistics panel: frame and tick times, roads, signs, vehicles, speeds, arrivals |
 | Esc | Drop the road being placed, or quit |
 
 ## Running
@@ -64,6 +67,7 @@ Foxity --drive left
 | `--drive right\|left` | The city's drive side |
 | `--cars N` | How many cars the city aims for |
 | `--empty` | Start on bare ground instead of the demo town |
+| `--grid N`, `--spacing M` | Start on a grid of N roads each way M metres apart |
 | `--seed N` | The city's seed |
 | `--camera-distance M` | The camera's distance to its focus |
 | `--focus-east M`, `--focus-north M` | Where the camera looks first, from the pole |

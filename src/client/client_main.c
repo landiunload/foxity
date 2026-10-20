@@ -30,6 +30,7 @@ static int Run(int argumentCount, char **arguments)
         .cars = 150u,
         .driveSide = FOX_DRIVE_RIGHT,
         .demo = true,
+        .gridSpacing = FOX_METRES(80),
     };
     for (int index = 1; index < argumentCount; ++index)
     {
@@ -65,6 +66,16 @@ static int Run(int argumentCount, char **arguments)
         {
             parsed = FoxParseDouble(value, &options.cameraDistance) && options.cameraDistance > 0.0;
         }
+        else if (strcmp(argument, "--grid") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number >= 2u && number <= 64u;
+            options.gridLines = (uint32_t)number;
+        }
+        else if (strcmp(argument, "--spacing") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number >= 20u && number <= 600u;
+            options.gridSpacing = FOX_METRES(number);
+        }
         else if (strcmp(argument, "--focus-east") == 0)
         {
             parsed = FoxParseDouble(value, &options.focusEast) && fabs(options.focusEast) < 1000.0;
@@ -93,7 +104,8 @@ static int Run(int argumentCount, char **arguments)
         if (!parsed)
         {
             fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] [--camera-distance M] "
-                  "[--focus-east M] [--focus-north M] [--graphics d3d12|vulkan] [--smoke] "
+                  "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
+                  "[--graphics d3d12|vulkan] [--smoke] "
                   "[--capture FILE.bmp] [--capture-frame N]\n",
                   stderr);
             return FOX_CLIENT_EXIT_INVALID_OPTIONS;
