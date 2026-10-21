@@ -6,15 +6,21 @@
  * for at least MIN_GREEN, keeps it while its cars come and nobody else waits,
  * and hands over when others do after its share of CYCLE, at least
  * MIN_GREEN, so a junction of many phases keeps nobody at red for long.
- * When cars wait to turn across the oncoming lanes after the yellow, an
- * arrow lets them go by themselves for a while, with a yellow of its own.
+ * The yellow lasts long enough for a car at the limit of the fastest road
+ * in that cannot stop braking firmly to get to its line. When cars wait to
+ * turn across the oncoming lanes after the yellow, an arrow lets them go by
+ * themselves for a while, with a yellow of its own.
  * A short all-red clears the junction between phases. A phase nobody waits
  * for is skipped. */
 
 #define TICKS 30u
 #define MIN_GREEN (8u * TICKS)
 #define CYCLE (40u * TICKS)
-#define YELLOW (3u * TICKS)
+#define MIN_YELLOW (3u * TICKS)
+/* The firm braking of drivers stopping at a yellow, and the second they
+ * take to react, as in the traffic. */
+#define FIRM_BRAKE (FOX_METRES(7) / 2)
+#define REACTION TICKS
 #define ALL_RED (2u * TICKS)
 #define MIN_ARROW (3u * TICKS)
 #define MAX_ARROW (6u * TICKS)
@@ -71,6 +77,19 @@ void FoxSignalsAssign(FoxNetwork *network, uint32_t nodeIndex)
             node->phases[partner] = phase;
         }
     }
+}
+
+/* How long the yellow shows: a reaction and the time to cover the firm
+ * braking distance at the fastest limit in, at least MIN_YELLOW. */
+static uint32_t Yellow(const FoxNetwork *network, const FoxNode *node)
+{
+    int64_t fastest = 0;
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        fastest = FoxMax(fastest, (int64_t)network->roads[node->roads[slot]].speedLimit);
+    }
+    const uint32_t ticks = REACTION + (uint32_t)(fastest * TICKS / (2 * FIRM_BRAKE)) + 1u;
+    return ticks > MIN_YELLOW ? ticks : MIN_YELLOW;
 }
 
 /* The longest green a phase keeps while others wait. */
@@ -168,7 +187,7 @@ void FoxSignalsStep(FoxNetwork *network)
             break;
         }
         case STAGE_YELLOW:
-            if (node->stageTicks >= YELLOW)
+            if (node->stageTicks >= Yellow(network, node))
             {
                 node->stage = turns ? STAGE_ARROW : STAGE_ALL_RED;
                 node->stageTicks = 0u;
@@ -182,7 +201,7 @@ void FoxSignalsStep(FoxNetwork *network)
             }
             break;
         case STAGE_ARROW_YELLOW:
-            if (node->stageTicks >= YELLOW)
+            if (node->stageTicks >= Yellow(network, node))
             {
                 node->stage = STAGE_ALL_RED;
                 node->stageTicks = 0u;
@@ -245,4 +264,16 @@ FoxLight FoxSignalsArrow(const FoxNetwork *network, uint32_t roadIndex, uint32_t
     return node->stage == STAGE_ARROW          ? FOX_LIGHT_GREEN
            : node->stage == STAGE_ARROW_YELLOW ? FOX_LIGHT_YELLOW
                                                : FOX_LIGHT_NONE;
+}
+
+uint32_t FoxSignalsYellowLeft(const FoxNetwork *network, uint32_t nodeIndex)
+{
+    const FoxNode *node = &network->nodes[nodeIndex];
+    if (!node->alive || !node->signals ||
+        (node->stage != STAGE_YELLOW && node->stage != STAGE_ARROW_YELLOW))
+    {
+        return 0u;
+    }
+    const uint32_t yellow = Yellow(network, node);
+    return yellow > node->stageTicks ? yellow - node->stageTicks : 0u;
 }

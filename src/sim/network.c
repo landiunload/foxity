@@ -11,6 +11,8 @@
 #define CURVE_MIN_SAMPLES 9u
 #define MAX_CUTS 64u
 #define MAX_DIRTY (MAX_CUTS * 4u + 8u)
+/* Crossings this close along both roads are the same one. */
+#define SAME_CUT FOX_METRES(1)
 
 static const FoxRoadTypeInfo roadTypes[FOX_ROAD_TYPE_COUNT] = {
     [FOX_ROAD_STREET] = {"street", FOX_KMH(50), 1u, 1u, 1u},
@@ -1053,6 +1055,24 @@ static int CompareCuts(const void *left, const void *right)
     return (a > b) - (a < b);
 }
 
+/* Whether a cut is one found already: where the lines cross at a point both
+ * of them bend at, each pair of pieces meeting there finds it. */
+static bool KnownCut(const Cut *cuts, uint32_t cutCount, const Cut *cut)
+{
+    for (uint32_t index = 0u; index < cutCount; ++index)
+    {
+        const Cut *other = &cuts[index];
+        if (other->kind == cut->kind && FoxAbs(other->along - cut->along) < SAME_CUT &&
+            (cut->kind == CUT_NODE ? other->node == cut->node
+                                   : other->road == cut->road &&
+                                         FoxAbs(other->roadAlong - cut->roadAlong) < SAME_CUT))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* Every place an existing road crosses the new centre line, away from its
  * ends. False when there are more than fit. */
 static bool FindCrossings(const FoxNetwork *network, const FoxVec *points, const int64_t *lengths,
@@ -1116,7 +1136,10 @@ static bool FindCrossings(const FoxNetwork *network, const FoxVec *points, const
                     cut.point = FoxPolylinePoint(road->centre, road->centreLengths,
                                                  road->centreCount, roadAlong, NULL);
                 }
-                cuts[(*cutCount)++] = cut;
+                if (!KnownCut(cuts, *cutCount, &cut))
+                {
+                    cuts[(*cutCount)++] = cut;
+                }
             }
         }
     }

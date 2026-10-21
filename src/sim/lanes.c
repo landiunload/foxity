@@ -969,7 +969,9 @@ static bool Connect(FoxNetwork *network, uint32_t nodeIndex, uint32_t from, uint
 
 /* Joins incoming lanes [first, first + lanes) to the `targets` outgoing
  * lanes of one road keeping their order: lane i goes to the targets its
- * share covers. */
+ * share covers. Turning into a road with more lanes than turn, drivers keep
+ * to the side they turn from, as the rules ask: towards the curb into the
+ * lanes nearest it, across into the innermost. */
 static bool ConnectGroup(FoxNetwork *network, uint32_t nodeIndex, const uint32_t *incoming,
                          uint32_t first, uint32_t lanes, const uint32_t *outgoing, uint32_t targets,
                          uint8_t movement)
@@ -981,6 +983,11 @@ static bool ConnectGroup(FoxNetwork *network, uint32_t nodeIndex, const uint32_t
         uint32_t high = (lane + 1u) * targets / lanes;
         if (high <= low)
         {
+            high = low + 1u;
+        }
+        if (lanes < targets && (movement == MOVE_CURB || movement == MOVE_FAR))
+        {
+            low = movement == MOVE_CURB ? lane : targets - lanes + lane;
             high = low + 1u;
         }
         for (uint32_t target = low; target < high && target < targets; ++target)
@@ -1038,6 +1045,45 @@ static int32_t ClosestPass(const int64_t *ax, const int64_t *ay, const int64_t *
                 best = dx * dx + dy * dy;
                 found = (int32_t)j;
                 *outA = (int32_t)i;
+            }
+        }
+    }
+    return found;
+}
+
+/* The stretch of way a, from `outFirst` to `outLast` along it, where its
+ * middle comes closer to way b than two cars' half widths and a margin, so
+ * that cars there would touch; false where it never does. The ways are
+ * sampled in plane coordinates, a's `count` samples to its own length. */
+static bool TouchingStretch(const FoxPath *a, const int64_t *ax, const int64_t *ay,
+                            const int64_t *bx, const int64_t *by, int64_t *outFirst,
+                            int64_t *outLast)
+{
+    const int64_t reach = (2 * CAR_HALF_WIDTH + CROSS_MARGIN) / 4;
+    bool found = false;
+    for (uint32_t i = 0u; i < a->count && i < CONNECTION_MAX_SAMPLES; ++i)
+    {
+        bool close = false;
+        for (uint32_t j = 0u; j + 1u < CONNECTION_MAX_SAMPLES && !close; ++j)
+        {
+            /* The nearest point of the segment j of b, by projection. */
+            const int64_t sx = bx[j + 1u] - bx[j];
+            const int64_t sy = by[j + 1u] - by[j];
+            const int64_t px = ax[i] - bx[j];
+            const int64_t py = ay[i] - by[j];
+            const int64_t span = sx * sx + sy * sy;
+            const int64_t along = span == 0 ? 0 : FoxClamp(px * sx + py * sy, 0, span);
+            const int64_t dx = span == 0 ? px : px - sx * along / span;
+            const int64_t dy = span == 0 ? py : py - sy * along / span;
+            close = dx * dx + dy * dy < reach * reach;
+        }
+        if (close)
+        {
+            *outLast = a->lengths[i];
+            if (!found)
+            {
+                *outFirst = a->lengths[i];
+                found = true;
             }
         }
     }
@@ -1129,7 +1175,12 @@ static bool Yields(const FoxNetwork *network, const FoxNode *node, const FoxPath
     }
     if (x > (int64_t)FOX_UNIT * 7 / 10)
     {
-        /* From the same direction: the lower path goes first. */
+        /* From the same direction: into one lane the lane nearer the curb
+         * ends and gives way; else the lower path goes first. */
+        if (a->to == b->to && aIn->road == bIn->road && aIn->lane != bIn->lane)
+        {
+            return aIn->lane < bIn->lane;
+        }
         return aIndex > bIndex;
     }
     /* From the side: yield to whoever comes from the curb side. */
@@ -1239,8 +1290,27 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
             int64_t by = 0;
             SampleDirection(xs + rowA, ys + rowA, CONNECTION_MAX_SAMPLES, sampleA, &ax, &ay);
             SampleDirection(xs + rowB, ys + rowB, CONNECTION_MAX_SAMPLES, sampleB, &bx, &by);
-            room[a * count + b] = merge || sampleA < 0 ? MIN_ROOM : CrossRoom(ax, ay, bx, by);
-            room[b * count + a] = room[a * count + b];
+            int64_t keep = merge || sampleA < 0 ? MIN_ROOM : CrossRoom(ax, ay, bx, by);
+            /* Ways that run close together for a while, as into a merge,
+             * meet in the middle of where cars on them would touch, and the
+             * room takes all of it in. */
+            int64_t firstA = 0;
+            int64_t lastA = 0;
+            int64_t firstB = 0;
+            int64_t lastB = 0;
+            if (TouchingStretch(pa, xs + rowA, ys + rowA, xs + rowB, ys + rowB, &firstA, &lastA) &&
+                TouchingStretch(pb, xs + rowB, ys + rowB, xs + rowA, ys + rowA, &firstB, &lastB) &&
+                (meetA - keep > firstA || meetA + keep < lastA || meetB - keep > firstB ||
+                 meetB + keep < lastB))
+            {
+                meetA = (firstA + lastA) / 2;
+                meetB = (firstB + lastB) / 2;
+                keep = FoxMax(keep, FoxMax(lastA - firstA, lastB - firstB) / 2 + CROSS_MARGIN);
+                meet[a * count + b] = meetB;
+                meet[b * count + a] = meetA;
+            }
+            room[a * count + b] = keep;
+            room[b * count + a] = keep;
             const bool aYields =
                 Yields(network, node, pa, pb, node->connections[a], node->connections[b]);
             matrix[a * count + b] = aYields ? 1u : 2u;

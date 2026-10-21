@@ -306,19 +306,27 @@ static FoxVec OnPlanet(const FoxWorld *world, int32_t latitude, int32_t longitud
                     radius * Sine(latitude) / FOX_UNIT};
 }
 
-/* A road all the way round the planet at a latitude, in `pieces` straight
- * pieces of a multiple of 3 degrees each; their corners keep off the
- * meridians the town's roads run down. */
-static bool Ring(FoxWorld *world, int32_t latitude, uint32_t pieces, FoxRoadType type)
+/* A road all the way round the planet at a latitude, in `pieces` pieces of
+ * a multiple of 6 degrees each, the first from the longitude `first`. Each
+ * bends towards where the ring's tangents at its ends meet, so the ring
+ * runs on through its corners without a kink. */
+static bool Ring(FoxWorld *world, int32_t latitude, int32_t first, uint32_t pieces,
+                 FoxRoadType type)
 {
     bool ok = true;
     const int32_t step = 3600 / (int32_t)pieces;
+    const int64_t radius = FoxPlanetRadius(world->planet);
+    const int64_t across = radius * Cosine(latitude) / Cosine(step / 2);
     for (uint32_t piece = 0u; piece < pieces; ++piece)
     {
-        const int32_t from = 90 + (int32_t)piece * step;
+        const int32_t from = first + (int32_t)piece * step;
+        const int32_t middle = from + step / 2;
         const FoxRoadPlan plan = {
             .start = OnPlanet(world, latitude, from),
             .end = OnPlanet(world, latitude, from + step),
+            .control = {across * Cosine(middle) / FOX_UNIT, across * Sine(middle) / FOX_UNIT,
+                        radius * Sine(latitude) / FOX_UNIT},
+            .curved = true,
             .type = type,
         };
         ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
@@ -334,11 +342,13 @@ bool FoxWorldBuildPlanetRoads(FoxWorld *world)
     }
     /* Rings of every kind of road at different latitudes: a street, an
      * avenue, a boulevard and a one-way highway, the bigger ones nearer the
-     * equator. */
-    bool ok = Ring(world, 510, 6u, FOX_ROAD_STREET);
-    ok = Ring(world, 210, 15u, FOX_ROAD_AVENUE) && ok;
-    ok = Ring(world, -90, 15u, FOX_ROAD_BOULEVARD) && ok;
-    ok = Ring(world, -390, 15u, FOX_ROAD_HIGHWAY) && ok;
+     * equator. The street turns its corners where the meridians below cross
+     * it, leaving long stretches to overtake on; the corners of the others
+     * keep off the meridians. */
+    bool ok = Ring(world, 510, 0, 4u, FOX_ROAD_STREET);
+    ok = Ring(world, 210, 90, 15u, FOX_ROAD_AVENUE) && ok;
+    ok = Ring(world, -90, 90, 15u, FOX_ROAD_BOULEVARD) && ok;
+    ok = Ring(world, -390, 90, 15u, FOX_ROAD_HIGHWAY) && ok;
     /* Meridians from the town's avenues down across every ring to the
      * south pole, where they meet. */
     static const struct
@@ -365,7 +375,8 @@ bool FoxWorldBuildPlanetRoads(FoxWorld *world)
             from = to;
         }
     }
-    /* Lights where big roads cross. */
+    /* Lights where roads cross, but for two streets: nobody could get across
+     * the traffic of a big road, let alone a highway, without. */
     for (uint32_t index = 0u; index < FoxNetworkNodeCapacity(world->network); ++index)
     {
         FoxNodeView node;
@@ -378,12 +389,12 @@ bool FoxWorldBuildPlanetRoads(FoxWorld *world)
         {
             FoxRoadView road;
             big += FoxNetworkRoad(world->network, node.roads[slot], &road) &&
-                           road.type != FOX_ROAD_STREET && road.type != FOX_ROAD_HIGHWAY
+                           road.type != FOX_ROAD_STREET
                        ? 1u
                        : 0u;
         }
         /* Away from the town, which has its own. */
-        if (big == node.roadCount && FoxPlanetUp(node.position).z < FOX_UNIT * 9 / 10)
+        if (big != 0u && FoxPlanetUp(node.position).z < FOX_UNIT * 9 / 10)
         {
             ok = FoxWorldSetSignals(world, index, true) && ok;
         }

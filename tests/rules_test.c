@@ -14,7 +14,8 @@
  * for one that should have given way, and cars with right of way and room
  * ahead standing at their line. Everywhere, two cars' bodies must never
  * overlap: changing lanes, overtaking or turning round. Out on the roads
- * round the planet, drivers change lanes and overtake. */
+ * round the planet drivers change lanes, and on a country road they
+ * overtake slow trucks. */
 
 #define TICKS FOX_TRAFFIC_TICKS_PER_SECOND
 #define SECONDS(seconds) ((uint64_t)(seconds) * TICKS)
@@ -391,7 +392,44 @@ static void Watch(const FoxWorld *world, Track *tracks, Tally *tally)
     }
 }
 
-static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed, bool planet,
+/* A street all the way round the planet's equator out in the country, in
+ * six pieces each bent through where the circle's tangents at its ends
+ * meet: long stretches without an intersection where cars catch up with
+ * trucks and overtake them. */
+static bool BuildCountryRoad(FoxWorld *world)
+{
+    const double radius = (double)FoxPlanetRadius(FoxWorldPlanet(world));
+    const double step = 2.0 * acos(-1.0) / 6.0;
+    bool ok = true;
+    for (int piece = 0; piece < 6; ++piece)
+    {
+        const double from = step * piece;
+        const double middle = from + step / 2.0;
+        const double out = radius / cos(step / 2.0);
+        const FoxRoadPlan plan = {
+            .start = {(int64_t)llround(radius * cos(from)), (int64_t)llround(radius * sin(from)),
+                      0},
+            .end = {(int64_t)llround(radius * cos(from + step)),
+                    (int64_t)llround(radius * sin(from + step)), 0},
+            .control = {(int64_t)llround(out * cos(middle)), (int64_t)llround(out * sin(middle)),
+                        0},
+            .curved = true,
+            .type = FOX_ROAD_STREET,
+        };
+        ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+    }
+    return ok;
+}
+
+/* Where a run takes place. */
+typedef enum Place
+{
+    PLACE_TOWN,
+    PLACE_PLANET,
+    PLACE_COUNTRY,
+} Place;
+
+static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed, Place place,
                 uint32_t seconds)
 {
     TestRouterInit(&router);
@@ -400,8 +438,11 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
                                .targetVehicles = cars,
                                .router = routed ? &router.router : NULL};
     FoxWorld *world = FoxWorldCreate(&desc);
-    EXPECT(world != NULL && FoxWorldBuildDemoTown(world), "the demo town is built");
-    EXPECT(!planet || FoxWorldBuildPlanetRoads(world), "the roads round the planet are built");
+    EXPECT(world != NULL, "the world is created");
+    EXPECT(place == PLACE_COUNTRY ? BuildCountryRoad(world) : FoxWorldBuildDemoTown(world),
+           "the roads are built");
+    EXPECT(place != PLACE_PLANET || FoxWorldBuildPlanetRoads(world),
+           "the roads round the planet are built");
     Track *tracks = calloc(SLOTS, sizeof(*tracks));
     Body *bodies = calloc(SLOTS, sizeof(*bodies));
     EXPECT(tracks != NULL && bodies != NULL, "tracks for every car");
@@ -433,11 +474,10 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
     EXPECT(tally.idleStops * 100u <= tally.priorityArrivals,
            "a car with right of way and room goes but for a rare driver squeezing in");
     EXPECT(tally.bodies == 0u, "no two cars' bodies ever overlap");
-    if (planet)
-    {
-        EXPECT(stats.laneChanges != 0u && stats.overtakes != 0u,
-               "drivers change lanes and overtake on the open road");
-    }
+    EXPECT(place != PLACE_PLANET || stats.laneChanges != 0u,
+           "drivers change lanes where roads have more of them");
+    EXPECT(place != PLACE_COUNTRY || stats.overtakes != 0u,
+           "drivers overtake slow trucks on the open road");
     free(bodies);
     free(tracks);
     FoxWorldDestroy(world);
@@ -445,9 +485,10 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
 
 int main(void)
 {
-    Run("keep right, routed", FOX_DRIVE_RIGHT, 220u, true, false, 300u);
-    Run("keep left, random turns", FOX_DRIVE_LEFT, 160u, false, false, 180u);
-    Run("round the planet", FOX_DRIVE_RIGHT, 400u, true, true, 300u);
+    Run("keep right, routed", FOX_DRIVE_RIGHT, 220u, true, PLACE_TOWN, 300u);
+    Run("keep left, random turns", FOX_DRIVE_LEFT, 160u, false, PLACE_TOWN, 180u);
+    Run("round the planet", FOX_DRIVE_RIGHT, 400u, true, PLACE_PLANET, 300u);
+    Run("country road", FOX_DRIVE_RIGHT, 30u, false, PLACE_COUNTRY, 300u);
     puts("rules: ok");
     return 0;
 }

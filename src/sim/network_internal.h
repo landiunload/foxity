@@ -262,5 +262,7 @@ FoxLight FoxSignalsLight(const FoxNetwork *network, uint32_t road, uint32_t end)
 /* The arrow for the turns across the oncoming lanes from a road end:
  * FOX_LIGHT_NONE while it is dark and the main light rules them. */
 FoxLight FoxSignalsArrow(const FoxNetwork *network, uint32_t road, uint32_t end);
+/* Ticks before the yellow showing at a node turns red; zero without one. */
+uint32_t FoxSignalsYellowLeft(const FoxNetwork *network, uint32_t node);
 
 #endif

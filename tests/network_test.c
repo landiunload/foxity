@@ -133,8 +133,8 @@ static void TestCrossing(const FoxPlanet *planet)
         /* The avenue is the bigger road: going straight along it never
          * yields to the street. */
         const FoxPath *in = FoxNetworkPathRecord(network, a->from);
-        if (in->road != FOX_NETWORK_NONE &&
-            network->roads[in->road].type == FOX_ROAD_AVENUE && a->movement == MOVE_STRAIGHT)
+        if (in->road != FOX_NETWORK_NONE && network->roads[in->road].type == FOX_ROAD_AVENUE &&
+            a->movement == MOVE_STRAIGHT)
         {
             for (uint32_t c = 0u; c < a->conflictCount; ++c)
             {
@@ -166,8 +166,7 @@ static void TestCrossing(const FoxPlanet *planet)
     EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OVERLAP,
            "a road over a road is refused");
     plan = Plan(Pole(30, 30), Pole(33, 30), FOX_ROAD_STREET);
-    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_TOO_SHORT,
-           "a stub is refused");
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_TOO_SHORT, "a stub is refused");
     plan = Plan(Pole(4, 3), Pole(1, 50), FOX_ROAD_STREET);
     EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OVERLAP ||
                FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_TOO_SHORT,
@@ -208,7 +207,8 @@ static void TestZones(const FoxPlanet *planet)
     FoxPathView lane;
     EXPECT(FoxNetworkPath(network, road.lanes[0][0], &lane), "the new lane");
     const bool eastward = road.centre[road.centreCount - 1u].x > road.centre[0].x;
-    const int64_t north = eastward ? lane.points[lane.count / 2u].y : -lane.points[lane.count / 2u].y;
+    const int64_t north =
+        eastward ? lane.points[lane.count / 2u].y : -lane.points[lane.count / 2u].y;
     EXPECT(north > 0, "lanes move to the other side");
     FoxNetworkReleaseRetired(network);
     FoxNetworkDestroy(network);
@@ -242,20 +242,45 @@ static void TestCurve(const FoxPlanet *planet)
 static void TestThroughDeadEnd(const FoxPlanet *planet)
 {
     FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
-    EXPECT(FoxNetworkBuildRoad(network, planet, &(FoxRoadPlan){.start = Pole(0, 0),
-                                                                .end = Pole(0, 60),
-                                                                .type = FOX_ROAD_STREET}) ==
+    EXPECT(FoxNetworkBuildRoad(
+               network, planet,
+               &(FoxRoadPlan){.start = Pole(0, 0), .end = Pole(0, 60), .type = FOX_ROAD_STREET}) ==
                FOX_ROAD_OK,
            "a street ending in the open");
-    EXPECT(FoxNetworkBuildRoad(network, planet, &(FoxRoadPlan){.start = Pole(-60, 60),
-                                                                .end = Pole(60, 60),
-                                                                .type = FOX_ROAD_STREET}) ==
-               FOX_ROAD_OK,
+    EXPECT(FoxNetworkBuildRoad(network, planet,
+                               &(FoxRoadPlan){.start = Pole(-60, 60),
+                                              .end = Pole(60, 60),
+                                              .type = FOX_ROAD_STREET}) == FOX_ROAD_OK,
            "a street across its end");
     EXPECT(FoxNetworkRoadCount(network) == 3u, "the crossing street is cut at the end");
     EXPECT(FoxNetworkNodeCount(network) == 4u, "the end became a junction");
     const FoxNetworkStats stats = FoxNetworkGetStats(network);
     EXPECT(stats.junctions == 1u && stats.deadEnds == 3u, "one junction, three dead ends");
+    FoxNetworkDestroy(network);
+}
+
+/* A street laid across a curve right through one of the points the curve
+ * bends at crosses it once, though the curve's pieces on either side of
+ * that point both meet it there. */
+static void TestThroughBend(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    FoxRoadPlan plan = Plan(Pole(-80, 0), Pole(80, 0), FOX_ROAD_STREET);
+    plan.curved = true;
+    plan.control = Pole(0, 80);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a curved street");
+    FoxRoadView road;
+    EXPECT(FoxNetworkRoad(network, FirstRoad(network), &road), "the curve exists");
+    const FoxVec bend = road.centre[road.centreCount / 2u];
+    const FoxRoadPlan across = {
+        .start = {bend.x, bend.y - FOX_METRES(60), RADIUS},
+        .end = {bend.x, bend.y + FOX_METRES(60), RADIUS},
+        .type = FOX_ROAD_STREET,
+    };
+    EXPECT(FoxNetworkBuildRoad(network, planet, &across) == FOX_ROAD_OK,
+           "a street across the bend");
+    EXPECT(FoxNetworkRoadCount(network) == 4u && FoxNetworkNodeCount(network) == 5u,
+           "both roads are cut once where they cross");
     FoxNetworkDestroy(network);
 }
 
@@ -269,6 +294,7 @@ int main(void)
     TestZones(planet);
     TestCurve(planet);
     TestThroughDeadEnd(planet);
+    TestThroughBend(planet);
     FoxPlanetDestroy(planet);
     return 0;
 }
