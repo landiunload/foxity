@@ -187,6 +187,8 @@ static FoxControls ReadControls(ClientSession *session)
     int32_t width = 0;
     int32_t height = 0;
     window->getClientSize(session->window, &width, &height);
+    controls.viewWidth = width > 0 ? (uint32_t)width : 0u;
+    controls.viewHeight = height > 0 ? (uint32_t)height : 0u;
     if (window->getCursorClientPosition != NULL && width > 0 && height > 0)
     {
         int32_t cursorX = 0;
@@ -207,7 +209,8 @@ static FoxControls ReadControls(ClientSession *session)
     {
         if (input->consumeKeyPress(state, toolKeys[index]))
         {
-            controls.tool = index;
+            /* The keys follow the tools after the pointer: 1 is the road. */
+            controls.tool = index + 1;
         }
     }
     controls.nextTimeScale = input->consumeKeyPress(state, INPUT_KEY_V);
@@ -333,7 +336,8 @@ static void OnFrame(void *opaque)
             session->graphicsService->resize(session->device, width, height);
         }
     }
-    /* Escape drops a road being placed, and quits otherwise. */
+    /* Escape drops a road being placed, then puts the tool down, and quits
+     * when there is neither. */
     if (session->input != NULL &&
         session->inputService->consumeKeyPress(session->input, INPUT_KEY_ESCAPE) &&
         !FoxSceneCancel(session->scene))
@@ -476,6 +480,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         .cameraDistance = options->cameraDistance,
         .focusEast = options->focusEast,
         .focusNorth = options->focusNorth,
+        .tool = options->tool,
         .modules = modules,
         .device = session.device,
     };

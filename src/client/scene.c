@@ -2,6 +2,7 @@
 
 #include "app/city.h"
 #include "app/log.h"
+#include "client/assist.h"
 #include "client/camera.h"
 #include "client/cars_view.h"
 #include "client/hud.h"
@@ -31,9 +32,23 @@
 #define STATISTICS_TEXT 4096u
 /* The graphs show the last minute. */
 #define HISTORY 240u
+/* Snaps reach a share of the camera's distance, within bounds, metres. */
+#define SNAP_REACH_SHARE 0.03
+#define SNAP_REACH_MIN 2.5
+#define SNAP_REACH_MAX 30.0
+/* Lines the tools show are laid on the ground in steps about this long,
+ * metres, at most so many points each. */
+#define OVERLAY_STEP 4.0
+#define OVERLAY_POINTS 64u
+#define OVERLAY_LINES (FOX_ASSIST_MAX_LINES)
+
+#define COLOR_SNAP_NETWORK UINT32_C(0xFFFF8A1A)
+#define COLOR_SNAP_GUIDE UINT32_C(0xFF1A9AFF)
+#define COLOR_SNAP_PLAIN UINT32_C(0xFFE8E8E8)
 
 static const double speedPresets[] = {1.0, 3.0, 10.0};
 static const char *const toolNames[FOX_TOOL_COUNT] = {
+    [FOX_TOOL_NONE] = "look around",
     [FOX_TOOL_ROAD] = "road",
     [FOX_TOOL_CURVE] = "curved road",
     [FOX_TOOL_BULLDOZE] = "bulldoze",
@@ -51,8 +66,6 @@ static const char *const signNames[FOX_SIGN_COUNT] = {
     [FOX_SIGN_YIELD] = "give way",
     [FOX_SIGN_STOP] = "stop",
 };
-/* The limits the speed tool steps through, km/h. */
-static const int32_t speedLimits[] = {20, 30, 40, 50, 60, 70, 80, 90, 100, 110, 120, 130};
 static const char *const roadResults[] = {
     [FOX_ROAD_OK] = "built",
     [FOX_ROAD_INVALID] = "not a road",
@@ -93,16 +106,20 @@ struct FoxScene
     float speedHistory[HISTORY];
     float arrivalHistory[HISTORY];
 
+    FoxUi *ui;
+    FoxBuildSettings settings;
     /* Points of the road being placed: start, then for curves the bend. */
     FoxVec placed[2];
     FoxVec hit;
+    /* Where the pointer snaps to, and what the tools show of it. */
+    FoxAssist assist;
+    FoxVec overlayPoints[OVERLAY_LINES][OVERLAY_POINTS];
     /* The preview shown for, to rebuild it only when it changes. */
     FoxVec previewEnd;
     FoxVec *previewPoints;
+    FoxBuildSettings previewSettings;
     double groundCooldown;
     double reportTimer;
-    FoxTool tool;
-    FoxRoadType roadType;
     uint32_t timeScale;
     uint32_t windowFrames;
     uint32_t placedCount;
@@ -111,6 +128,11 @@ struct FoxScene
     bool picking;
     bool statistics;
     bool hasHit;
+    bool hasAssist;
+    /* The pointer is over the interface, or the button went down there. */
+    bool overUi;
+    bool pressOnUi;
+    bool overlayShown;
 };
 
 FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
@@ -145,8 +167,16 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         return NULL;
     }
     scene->resumeScale = 1.0;
-    scene->tool = FOX_TOOL_ROAD;
-    scene->roadType = FOX_ROAD_STREET;
+    scene->settings = (FoxBuildSettings){
+        .tool = desc->tool < FOX_TOOL_COUNT ? (FoxTool)desc->tool : FOX_TOOL_NONE,
+        .roadType = FOX_ROAD_STREET,
+        .snaps = FOX_SNAP_NETWORK | FOX_SNAP_ANGLE | FOX_SNAP_GUIDES | FOX_SNAP_TANGENT,
+        .angleStep = 1u,
+        .lengthStep = 2u,
+        .sign = FOX_SIGN_PRIORITY,
+        .speedChoice = 4u,
+        .brush = 1u,
+    };
 
     if (desc->math != NULL && desc->mathServiceSize >= LAIUE_SCENE_MATH_SERVICE_V1_CAMERA_SIZE &&
         desc->math->structSize >= LAIUE_SCENE_MATH_SERVICE_V1_CAMERA_SIZE &&
@@ -179,6 +209,11 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         scene->roads = FoxRoadsViewCreate(desc->device);
         scene->cars = FoxCarsViewCreate(desc->device);
         scene->hud = FoxHudCreate(desc->device);
+        scene->ui = FoxUiCreate(desc->device);
+        if (scene->ui == NULL)
+        {
+            FoxLog(FOX_LOG_WARNING, "the device has no interface layer; tools are on the keys");
+        }
         if (scene->hud == NULL)
         {
             FoxLog(FOX_LOG_WARNING, "the device cannot show the statistics panel");
@@ -200,10 +235,11 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         FoxCameraZoom(&scene->camera, 0.0f);
     }
     FoxCityReport(&scene->city, "city founded");
-    FoxLog(FOX_LOG_INFO, "tools: 1 road, 2 curved road, 3 bulldoze, 4 dig, 5 raise, 6 drive "
-                         "zone, 7 traffic lights, 8 junction signs, 9 speed limits (Shift "
-                         "lowers); T road type; V time speed, Space pause; E/G more or fewer "
-                         "cars (Shift: ten times as many); F3 statistics");
+    FoxLog(FOX_LOG_INFO, "tools on the dock or the keys: 1 road, 2 curved road, 3 bulldoze, 4 "
+                         "dig, 5 raise, 6 drive zone, 7 traffic lights, 8 junction signs, 9 "
+                         "speed limits, Esc puts the tool down; T road type; V time speed, "
+                         "Space pause; E/G more or fewer cars (Shift: ten times as many); F3 "
+                         "statistics");
     return scene;
 }
 
@@ -213,6 +249,7 @@ void FoxSceneDestroy(FoxScene *scene)
     {
         return;
     }
+    FoxUiDestroy(scene->ui);
     FoxHudDestroy(scene->hud);
     free(scene->statisticsText);
     FoxCarsViewDestroy(scene->cars);
@@ -225,32 +262,60 @@ void FoxSceneDestroy(FoxScene *scene)
 
 bool FoxSceneCancel(FoxScene *scene)
 {
-    if (scene == NULL || scene->placedCount == 0u)
+    if (scene == NULL)
     {
         return false;
     }
-    scene->placedCount = 0u;
-    FoxRoadsViewSetPreview(scene->roads, NULL, 0u, scene->roadType, false);
-    return true;
+    if (scene->placedCount != 0u)
+    {
+        scene->placedCount = 0u;
+        return true;
+    }
+    if (scene->settings.tool != FOX_TOOL_NONE)
+    {
+        scene->settings.tool = FOX_TOOL_NONE;
+        return true;
+    }
+    return false;
 }
 
-static void ApplyTimeControls(FoxScene *scene, const FoxControls *controls)
+static void SetTimeScale(FoxScene *scene, uint32_t index)
+{
+    const uint32_t count = (uint32_t)(sizeof(speedPresets) / sizeof(speedPresets[0]));
+    scene->timeScale = index % count;
+    scene->resumeScale = speedPresets[scene->timeScale];
+    (void)FoxClockSetTimeScale(&scene->clock, scene->resumeScale);
+    FoxLog(FOX_LOG_INFO, "time runs at x%g", scene->resumeScale);
+}
+
+static void TogglePause(FoxScene *scene)
+{
+    const bool paused = scene->clock.timeScale == 0.0;
+    (void)FoxClockSetTimeScale(&scene->clock, paused ? scene->resumeScale : 0.0);
+    FoxLog(FOX_LOG_INFO, "%s", paused ? "time resumes" : "time is paused");
+}
+
+static void ApplyTimeControls(FoxScene *scene, const FoxControls *controls,
+                              const FoxUiRequests *requests)
 {
     if (controls->nextTimeScale)
     {
-        scene->timeScale =
-            (scene->timeScale + 1u) % (uint32_t)(sizeof(speedPresets) / sizeof(speedPresets[0]));
-        scene->resumeScale = speedPresets[scene->timeScale];
-        (void)FoxClockSetTimeScale(&scene->clock, scene->resumeScale);
-        FoxLog(FOX_LOG_INFO, "time runs at x%g", scene->resumeScale);
+        SetTimeScale(scene, scene->timeScale + 1u);
     }
-    if (controls->togglePause)
+    if (requests->timeScale >= 0)
     {
-        const bool paused = scene->clock.timeScale == 0.0;
-        (void)FoxClockSetTimeScale(&scene->clock, paused ? scene->resumeScale : 0.0);
-        FoxLog(FOX_LOG_INFO, "%s", paused ? "time resumes" : "time is paused");
+        /* Choosing a speed also lets time run again. */
+        if (scene->clock.timeScale == 0.0)
+        {
+            TogglePause(scene);
+        }
+        SetTimeScale(scene, (uint32_t)requests->timeScale);
     }
-    if (controls->toggleStatistics)
+    if (controls->togglePause || requests->togglePause)
+    {
+        TogglePause(scene);
+    }
+    if (controls->toggleStatistics || requests->toggleStatistics)
     {
         scene->statistics = !scene->statistics;
     }
@@ -309,13 +374,112 @@ static void Pick(FoxScene *scene, const FoxControls *controls)
                                      FOX_METRES(20000), &scene->hit);
 }
 
-/* A clicked point snaps to a nearby node, so roads join where they meet. */
-static FoxVec Snap(const FoxScene *scene, FoxVec point)
+static bool Building(const FoxScene *scene)
 {
-    const FoxNetwork *network = FoxWorldNetwork(scene->city.world);
-    const uint32_t node = FoxNetworkNearestNode(network, point, FOX_ROAD_SNAP_DISTANCE);
-    FoxNodeView view;
-    return node != FOX_NETWORK_NONE && FoxNetworkNode(network, node, &view) ? view.position : point;
+    return scene->settings.tool == FOX_TOOL_ROAD || scene->settings.tool == FOX_TOOL_CURVE;
+}
+
+/* How far snapping reaches at the camera's distance, metres. */
+static double SnapReach(const FoxScene *scene)
+{
+    return fmin(fmax(scene->camera.distance * SNAP_REACH_SHARE, SNAP_REACH_MIN), SNAP_REACH_MAX);
+}
+
+/* A straight line between two points laid on the ground; the number of
+ * points written. */
+static uint32_t Drape(const FoxScene *scene, FoxVec from, FoxVec to, FoxVec *points)
+{
+    const FoxPlanet *planet = FoxWorldPlanet(scene->city.world);
+    const double metres = (double)FoxVecDistance(from, to) / FOX_UNITS_PER_METRE;
+    const uint32_t steps =
+        (uint32_t)fmin(fmax(ceil(metres / OVERLAY_STEP), 1.0), (double)(OVERLAY_POINTS - 1u));
+    uint32_t count = 0u;
+    for (uint32_t step = 0u; step <= steps; ++step)
+    {
+        const FoxVec point = FoxVecLerp(from, to, (int64_t)step * FOX_UNIT / (int64_t)steps);
+        count += FoxPlanetGround(planet, point, &points[count]) ? 1u : 0u;
+    }
+    return count;
+}
+
+static uint32_t SnapColor(FoxSnapKind kind)
+{
+    switch (kind)
+    {
+    case FOX_SNAPPED_NODE:
+    case FOX_SNAPPED_ROAD:
+        return COLOR_SNAP_NETWORK;
+    case FOX_SNAPPED_GUIDE:
+        return COLOR_SNAP_GUIDE;
+    default:
+        return COLOR_SNAP_PLAIN;
+    }
+}
+
+/* Where the pointer snaps to while a road is drawn, shown on the ground: a
+ * ring at the point and the lines it follows. */
+static void UpdateAssist(FoxScene *scene)
+{
+    const FoxAssist before = scene->assist;
+    const bool had = scene->hasAssist;
+    scene->hasAssist = false;
+    if (Building(scene) && scene->hasHit && !scene->overUi)
+    {
+        const FoxBuildSettings *settings = &scene->settings;
+        const bool started = scene->placedCount != 0u;
+        const FoxAssistRequest request = {
+            .raw = scene->hit,
+            .hasStart = started,
+            .start = started ? scene->placed[scene->placedCount - 1u] : scene->hit,
+            .curveControl = settings->tool == FOX_TOOL_CURVE && scene->placedCount == 1u,
+            .snaps = settings->snaps,
+            .angleStep = FoxSnapAngleDegrees(settings->angleStep),
+            .lengthStep = FoxSnapLengthMetres(settings->lengthStep),
+            .reach = SnapReach(scene),
+        };
+        scene->hasAssist = FoxAssistPoint(FoxWorldNetwork(scene->city.world),
+                                          FoxWorldPlanet(scene->city.world), &request,
+                                          &scene->assist);
+    }
+    if (!scene->hasAssist)
+    {
+        if (scene->overlayShown)
+        {
+            FoxRoadsViewSetOverlay(scene->roads, NULL, 0u, NULL, 0u);
+            scene->overlayShown = false;
+        }
+        return;
+    }
+    /* Rebuilt only when the snap moves. */
+    if (had && scene->overlayShown && FoxVecEqual(before.point, scene->assist.point) &&
+        before.kind == scene->assist.kind && before.lineCount == scene->assist.lineCount)
+    {
+        return;
+    }
+    FoxOverlayLine lines[OVERLAY_LINES];
+    uint32_t lineCount = 0u;
+    for (uint32_t index = 0u; index < scene->assist.lineCount; ++index)
+    {
+        const FoxAssistLine *line = &scene->assist.lines[index];
+        const uint32_t count = Drape(scene, line->from, line->to, scene->overlayPoints[index]);
+        if (count >= 2u)
+        {
+            lines[lineCount++] = (FoxOverlayLine){
+                .points = scene->overlayPoints[index],
+                .count = count,
+                .dashed = true,
+                .color = line->guide ? COLOR_SNAP_GUIDE : COLOR_SNAP_PLAIN,
+            };
+        }
+    }
+    const FoxOverlayRing ring = {
+        .centre = scene->assist.point,
+        .radius = (double)FoxRoadHalfWidth(scene->settings.roadType) / FOX_UNITS_PER_METRE + 0.6,
+        .color = SnapColor(scene->assist.kind),
+    };
+    FoxRoadsViewSetOverlay(scene->roads, lines, lineCount, &ring,
+                           scene->assist.kind != FOX_SNAPPED_FREE ? 1u : 0u);
+    scene->overlayShown = true;
 }
 
 static FoxRoadPlan PlanTo(const FoxScene *scene, FoxVec end)
@@ -323,9 +487,9 @@ static FoxRoadPlan PlanTo(const FoxScene *scene, FoxVec end)
     FoxRoadPlan plan = {
         .start = scene->placed[0],
         .end = end,
-        .type = scene->roadType,
+        .type = scene->settings.roadType,
     };
-    if (scene->tool == FOX_TOOL_CURVE && scene->placedCount == 2u)
+    if (scene->settings.tool == FOX_TOOL_CURVE && scene->placedCount == 2u)
     {
         plan.curved = true;
         plan.control = scene->placed[1];
@@ -333,20 +497,22 @@ static FoxRoadPlan PlanTo(const FoxScene *scene, FoxVec end)
     return plan;
 }
 
+/* The road as it would be built, in the accent colour, or red where the
+ * network would refuse it; its length and angle beside the pointer. */
 static void UpdatePreview(FoxScene *scene)
 {
-    const bool placing = (scene->tool == FOX_TOOL_ROAD || scene->tool == FOX_TOOL_CURVE) &&
-                         scene->placedCount != 0u && scene->hasHit;
+    const bool placing = Building(scene) && scene->placedCount != 0u && scene->hasAssist;
     if (!placing)
     {
         if (scene->previewPlaced != 0u)
         {
-            FoxRoadsViewSetPreview(scene->roads, NULL, 0u, scene->roadType, false);
+            FoxRoadsViewSetPreview(scene->roads, NULL, 0u, scene->settings.roadType, false);
             scene->previewPlaced = 0u;
         }
+        FoxUiSetReadout(scene->ui, false, 0.0, 0.0);
         return;
     }
-    const FoxVec end = Snap(scene, scene->hit);
+    const FoxVec end = scene->assist.point;
     if (scene->previewPlaced == scene->placedCount && FoxVecEqual(end, scene->previewEnd))
     {
         return;
@@ -354,21 +520,30 @@ static void UpdatePreview(FoxScene *scene)
     scene->previewPlaced = scene->placedCount;
     scene->previewEnd = end;
     const FoxRoadPlan plan = PlanTo(scene, end);
-    const uint32_t count = FoxNetworkPlanCentre(FoxWorldPlanet(scene->city.world), &plan,
-                                                scene->previewPoints, FOX_ROAD_MAX_POINTS);
+    const FoxPlanet *planet = FoxWorldPlanet(scene->city.world);
+    const uint32_t count =
+        FoxNetworkPlanCentre(planet, &plan, scene->previewPoints, FOX_ROAD_MAX_POINTS);
     int64_t length = 0;
     for (uint32_t index = 1u; index < count; ++index)
     {
         length += FoxVecDistance(scene->previewPoints[index - 1u], scene->previewPoints[index]);
     }
-    FoxRoadsViewSetPreview(scene->roads, scene->previewPoints, count, scene->roadType,
-                           length >= FOX_ROAD_MIN_LENGTH && length <= FOX_ROAD_MAX_LENGTH);
+    const bool valid =
+        FoxNetworkCheckRoad(FoxWorldNetwork(scene->city.world), planet, &plan) == FOX_ROAD_OK;
+    FoxRoadsViewSetPreview(scene->roads, scene->previewPoints, count, scene->settings.roadType,
+                           valid);
+    FoxUiSetReadout(scene->ui, true, (double)length / FOX_UNITS_PER_METRE, scene->assist.degrees);
 }
 
 static void PlaceRoad(FoxScene *scene)
 {
-    const FoxVec point = Snap(scene, scene->hit);
-    const uint32_t needed = scene->tool == FOX_TOOL_CURVE ? 2u : 1u;
+    if (!scene->hasAssist)
+    {
+        return;
+    }
+    const FoxVec point = scene->assist.point;
+    const uint32_t needed = scene->settings.tool == FOX_TOOL_CURVE ? 2u : 1u;
+    scene->previewPlaced = 0u;
     if (scene->placedCount < needed)
     {
         scene->placed[scene->placedCount++] = point;
@@ -377,14 +552,13 @@ static void PlaceRoad(FoxScene *scene)
     const FoxRoadPlan plan = PlanTo(scene, point);
     const FoxRoadResult result = FoxWorldBuildRoad(scene->city.world, &plan);
     FoxLog(result == FOX_ROAD_OK ? FOX_LOG_INFO : FOX_LOG_WARNING, "%s: %s",
-           FoxRoadTypeGet(scene->roadType)->name, roadResults[result]);
+           FoxRoadTypeGet(scene->settings.roadType)->name, roadResults[result]);
     if (result == FOX_ROAD_OK)
     {
         /* Keep drawing from the end, as city builders do. */
         scene->placed[0] = point;
         scene->placedCount = 1u;
     }
-    scene->previewPlaced = 0u;
 }
 
 static void Bulldoze(FoxScene *scene)
@@ -405,11 +579,13 @@ static void ShapeGround(FoxScene *scene, double realSeconds)
         return;
     }
     scene->groundCooldown = GROUND_INTERVAL_SECONDS;
-    /* The sphere grows with the view, so the hand shows at any zoom. */
-    const double metres = fmin(fmax(scene->camera.distance / 50.0, 2.0), 8.0);
+    /* The sphere grows with the view, so the hand shows at any zoom, and
+     * with the brush chosen. */
+    const double metres = fmin(fmax(scene->camera.distance / 50.0, 2.0), 8.0) *
+                          FoxBrushScale(scene->settings.brush);
     const int64_t radius = (int64_t)(metres * FOX_UNITS_PER_METRE);
     FoxPlanetBox changed;
-    const uint32_t samples = scene->tool == FOX_TOOL_DIG
+    const uint32_t samples = scene->settings.tool == FOX_TOOL_DIG
                                  ? FoxWorldDig(scene->city.world, scene->hit, radius, &changed)
                                  : FoxWorldFill(scene->city.world, scene->hit, radius, &changed);
     if (samples != 0u)
@@ -467,54 +643,27 @@ static uint32_t PickRoad(const FoxScene *scene, uint32_t *outEnd, FoxRoadView *o
     return road;
 }
 
-static void NextSign(FoxScene *scene)
+static void PlaceSign(FoxScene *scene)
 {
     uint32_t end = 0u;
     FoxRoadView road;
     const uint32_t index = PickRoad(scene, &end, &road);
-    if (index == FOX_NETWORK_NONE)
-    {
-        return;
-    }
-    static const FoxSign order[FOX_SIGN_COUNT] = {FOX_SIGN_PRIORITY, FOX_SIGN_YIELD, FOX_SIGN_STOP,
-                                                  FOX_SIGN_NONE, FOX_SIGN_AUTO};
-    FoxSign next = FOX_SIGN_PRIORITY;
-    for (uint32_t step = 0u; step < FOX_SIGN_COUNT; ++step)
-    {
-        if (order[step] == road.signSetting[end])
-        {
-            next = order[(step + 1u) % FOX_SIGN_COUNT];
-        }
-    }
-    if (FoxWorldSetSign(scene->city.world, index, end, next) &&
+    const FoxSign sign = scene->settings.sign;
+    if (index != FOX_NETWORK_NONE && FoxWorldSetSign(scene->city.world, index, end, sign) &&
         FoxNetworkRoad(FoxWorldNetwork(scene->city.world), index, &road))
     {
-        FoxLog(FOX_LOG_INFO, "sign: %s, in force: %s", signNames[next], signNames[road.sign[end]]);
+        FoxLog(FOX_LOG_INFO, "sign: %s, in force: %s", signNames[sign], signNames[road.sign[end]]);
     }
 }
 
-static void StepSpeedLimit(FoxScene *scene, bool lower)
+static void PlaceSpeedLimit(FoxScene *scene)
 {
     uint32_t end = 0u;
     FoxRoadView road;
     const uint32_t index = PickRoad(scene, &end, &road);
-    if (index == FOX_NETWORK_NONE)
-    {
-        return;
-    }
-    const size_t count = sizeof(speedLimits) / sizeof(speedLimits[0]);
-    /* Past either end of the list the road goes back to its type's limit. */
-    int32_t next = 0;
-    for (size_t step = 0u; step < count; ++step)
-    {
-        const int32_t speed = FOX_KMH(speedLimits[lower ? count - 1u - step : step]);
-        if (lower ? speed < road.speedLimit - 1 : speed > road.speedLimit + 1)
-        {
-            next = speed;
-            break;
-        }
-    }
-    if (FoxWorldSetSpeedLimit(scene->city.world, index, next) &&
+    const int32_t kmh = FoxSpeedChoiceKmh(scene->settings.speedChoice);
+    if (index != FOX_NETWORK_NONE &&
+        FoxWorldSetSpeedLimit(scene->city.world, index, kmh == 0 ? 0 : FOX_KMH(kmh)) &&
         FoxNetworkRoad(FoxWorldNetwork(scene->city.world), index, &road))
     {
         FoxLog(FOX_LOG_INFO, "speed limit %ld km/h%s",
@@ -525,24 +674,35 @@ static void StepSpeedLimit(FoxScene *scene, bool lower)
 
 static void ApplyTools(FoxScene *scene, const FoxControls *controls, double realSeconds)
 {
-    if (controls->tool >= 0 && controls->tool < FOX_TOOL_COUNT && controls->tool != (int32_t)scene->tool)
+    FoxBuildSettings *settings = &scene->settings;
+    if (controls->tool >= 0 && controls->tool < FOX_TOOL_COUNT)
     {
-        scene->tool = (FoxTool)controls->tool;
-        scene->placedCount = 0u;
-        FoxLog(FOX_LOG_INFO, "tool: %s", toolNames[scene->tool]);
+        settings->tool = (FoxTool)controls->tool;
     }
     if (controls->nextRoadType)
     {
-        scene->roadType = (FoxRoadType)((scene->roadType + 1) % FOX_ROAD_TYPE_COUNT);
-        scene->previewPlaced = 0u;
-        FoxLog(FOX_LOG_INFO, "road type: %s", FoxRoadTypeGet(scene->roadType)->name);
+        settings->roadType = (FoxRoadType)((settings->roadType + 1) % FOX_ROAD_TYPE_COUNT);
     }
+    /* Whatever changed the tool, the dock or a key, starts it afresh. */
+    if (settings->tool != scene->previewSettings.tool)
+    {
+        scene->placedCount = 0u;
+        FoxLog(FOX_LOG_INFO, "tool: %s", toolNames[settings->tool]);
+    }
+    if (settings->roadType != scene->previewSettings.roadType)
+    {
+        FoxLog(FOX_LOG_INFO, "road type: %s", FoxRoadTypeGet(settings->roadType)->name);
+        /* The preview is stale, whatever it showed. */
+        scene->previewPlaced = UINT32_MAX;
+    }
+    scene->previewSettings = *settings;
+    UpdateAssist(scene);
     UpdatePreview(scene);
-    if (!scene->hasHit)
+    if (!scene->hasHit || scene->overUi)
     {
         return;
     }
-    switch (scene->tool)
+    switch (settings->tool)
     {
     case FOX_TOOL_ROAD:
     case FOX_TOOL_CURVE:
@@ -559,7 +719,7 @@ static void ApplyTools(FoxScene *scene, const FoxControls *controls, double real
         break;
     case FOX_TOOL_DIG:
     case FOX_TOOL_RAISE:
-        if (controls->held)
+        if (controls->held && !scene->pressOnUi)
         {
             ShapeGround(scene, realSeconds);
         }
@@ -583,15 +743,16 @@ static void ApplyTools(FoxScene *scene, const FoxControls *controls, double real
     case FOX_TOOL_SIGNS:
         if (controls->click)
         {
-            NextSign(scene);
+            PlaceSign(scene);
         }
         break;
     case FOX_TOOL_SPEED_LIMIT:
         if (controls->click)
         {
-            StepSpeedLimit(scene, controls->moveFast);
+            PlaceSpeedLimit(scene);
         }
         break;
+    case FOX_TOOL_NONE:
     case FOX_TOOL_COUNT:
         break;
     }
@@ -645,6 +806,7 @@ static float Highest(const float *history, const float *stacked, float floor)
 }
 
 static const char *const toolNamesRu[FOX_TOOL_COUNT] = {
+    [FOX_TOOL_NONE] = "осмотр",
     [FOX_TOOL_ROAD] = "дорога",
     [FOX_TOOL_CURVE] = "кривая дорога",
     [FOX_TOOL_BULLDOZE] = "снос",
@@ -719,8 +881,8 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
     Append(text, &used, "Время: x%g%s, в городе %02u:%02u:%02u\n", scene->resumeScale,
            scene->clock.timeScale == 0.0 ? ", ПАУЗА" : "", (unsigned)(seconds / 3600u),
            (unsigned)(seconds / 60u % 60u), (unsigned)(seconds % 60u));
-    Append(text, &used, "Инструмент: %s, тип: %s\n", toolNamesRu[scene->tool],
-           roadNamesRu[scene->roadType]);
+    Append(text, &used, "Инструмент: %s, тип: %s\n", toolNamesRu[scene->settings.tool],
+           roadNamesRu[scene->settings.roadType]);
     Append(text, &used, "-- ДОРОГИ\n");
     Append(text, &used, "Дорог %u, %.2f км; полос %u, %.2f км\n", roads.roads,
            (double)roads.roadLength / FOX_METRES(1000), roads.lanes,
@@ -781,7 +943,8 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
     Append(text, &used, "Снято застрявших %llu (%.1f в мин.)\n", (unsigned long long)cars.stuck,
            minutes > 0.0 ? (double)cars.stuck / minutes : 0.0);
     Append(text, &used, "-- КЛАВИШИ\n");
-    Append(text, &used, "1-9 инструменты, T тип дороги, V скорость\n");
+    Append(text, &used, "1-9 инструменты, ESC убрать, T тип дороги\n");
+    Append(text, &used, "V скорость времени\n");
     Append(text, &used, "Пробел пауза, E/G ±50 машин, с Shift ×10\n");
     Append(text, &used, "F3 панель, F7 синхронизация");
 
@@ -822,7 +985,32 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
     {
         return false;
     }
-    ApplyTimeControls(scene, controls);
+    /* The interface takes the pointer first; what it covers the world does
+     * not see. */
+    FoxUiRequests requests = {.timeScale = -1};
+    const FoxUiInput input = {
+        .width = controls->viewWidth,
+        .height = controls->viewHeight,
+        .pointer = controls->pointer,
+        .x = (controls->pointerX + 1.0f) / 2.0f * (float)controls->viewWidth,
+        .y = (1.0f - controls->pointerY) / 2.0f * (float)controls->viewHeight,
+        .click = controls->click,
+    };
+    const FoxUiStatus status = {
+        .paused = scene->clock.timeScale == 0.0,
+        .timeScale = scene->timeScale,
+        .statistics = scene->statistics,
+    };
+    scene->overUi = FoxUiUpdate(scene->ui, &input, &status, &scene->settings, &requests);
+    if (controls->click)
+    {
+        scene->pressOnUi = scene->overUi;
+    }
+    else if (!controls->held)
+    {
+        scene->pressOnUi = false;
+    }
+    ApplyTimeControls(scene, controls, &requests);
     const uint64_t ticks = FoxClockAdvance(&scene->clock, realSeconds);
     for (uint64_t tick = 0u; tick < ticks; ++tick)
     {
@@ -880,4 +1068,5 @@ void FoxSceneDraw(FoxScene *scene)
     {
         FoxHudDraw(scene->hud, &scene->view);
     }
+    FoxUiDraw(scene->ui);
 }

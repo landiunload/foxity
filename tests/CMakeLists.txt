@@ -11,6 +11,9 @@ fox_add_unit_test(planet fox_core)
 fox_add_unit_test(network fox_core)
 fox_add_unit_test(traffic fox_core)
 fox_add_unit_test(arguments fox_app)
+# The tools' drawing assistance needs only the simulation.
+fox_add_unit_test(assist fox_core)
+target_sources(fox_assist_test PRIVATE "${PROJECT_SOURCE_DIR}/src/client/assist.c")
 
 if(FOX_BUILD_HEADLESS)
     # An accelerated hour of the demo town, with routing where the engine has it

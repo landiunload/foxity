@@ -63,6 +63,8 @@ if(FOX_BUILD_CLIENT)
         client/camera.h
         client/cars_view.c
         client/cars_view.h
+        client/assist.c
+        client/assist.h
         client/hud.c
         client/hud.h
         client/planet_view.c
@@ -72,7 +74,9 @@ if(FOX_BUILD_CLIENT)
         client/roads_view.c
         client/roads_view.h
         client/scene.c
-        client/scene.h)
+        client/scene.h
+        client/ui.c
+        client/ui.h)
     target_link_libraries(fox_client PUBLIC fox_app)
     fox_configure_c_target(fox_client)
 

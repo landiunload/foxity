@@ -1,5 +1,6 @@
 #include "app/arguments.h"
 #include "client/client.h"
+#include "client/ui.h"
 #include "sim/traffic.h"
 
 #include <math.h>
@@ -100,6 +101,11 @@ static int Run(int argumentCount, char **arguments)
             parsed = FoxParseUint64(value, &number) && number > 0u && number <= 100000u;
             options.captureFrame = (uint32_t)number;
         }
+        else if (strcmp(argument, "--tool") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number < FOX_TOOL_COUNT;
+            options.tool = (uint32_t)number;
+        }
         else if (strcmp(argument, "--drive") == 0)
         {
             parsed = value != NULL && (strcmp(value, "right") == 0 || strcmp(value, "left") == 0);
@@ -110,7 +116,7 @@ static int Run(int argumentCount, char **arguments)
         {
             fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] [--camera-distance M] "
                   "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
-                  "[--graphics d3d12|vulkan] [--no-vsync] [--smoke] "
+                  "[--tool N] [--graphics d3d12|vulkan] [--no-vsync] [--smoke] "
                   "[--capture FILE.bmp] [--capture-frame N]\n",
                   stderr);
             return FOX_CLIENT_EXIT_INVALID_OPTIONS;

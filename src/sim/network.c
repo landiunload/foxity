@@ -1203,39 +1203,60 @@ static void FollowLineage(const FoxNetwork *network, uint32_t *road, uint32_t ge
         }
     }
 }
-FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
-                                  const FoxRoadPlan *plan)
+/* Room for planning a road: its centre line, the cuts along it and a piece
+ * between two cuts. */
+typedef struct RoadWork
 {
-    if (network == NULL || planet == NULL || plan == NULL || FoxRoadTypeGet(plan->type) == NULL)
-    {
-        return FOX_ROAD_INVALID;
-    }
-    FoxVec *points = malloc(FOX_ROAD_MAX_POINTS * sizeof(*points));
-    int64_t *lengths = malloc(FOX_ROAD_MAX_POINTS * sizeof(*lengths));
-    Cut *cuts = malloc(MAX_CUTS * sizeof(*cuts));
-    FoxVec *piece = malloc((FOX_ROAD_MAX_POINTS + 2u) * sizeof(*piece));
-    FoxRoadResult result = FOX_ROAD_OK;
-    if (points == NULL || lengths == NULL || cuts == NULL || piece == NULL)
-    {
-        result = FOX_ROAD_OUT_OF_MEMORY;
-        goto cleanup;
-    }
+    FoxVec *points;
+    int64_t *lengths;
+    Cut *cuts;
+    FoxVec *piece;
+    uint32_t count;
+    uint32_t cutCount;
+} RoadWork;
+
+static bool RoadWorkInit(RoadWork *work)
+{
+    *work = (RoadWork){
+        .points = malloc(FOX_ROAD_MAX_POINTS * sizeof(*work->points)),
+        .lengths = malloc(FOX_ROAD_MAX_POINTS * sizeof(*work->lengths)),
+        .cuts = malloc(MAX_CUTS * sizeof(*work->cuts)),
+        .piece = malloc((FOX_ROAD_MAX_POINTS + 2u) * sizeof(*work->piece)),
+    };
+    return work->points != NULL && work->lengths != NULL && work->cuts != NULL &&
+           work->piece != NULL;
+}
+
+static void RoadWorkFree(RoadWork *work)
+{
+    free(work->points);
+    free(work->lengths);
+    free(work->cuts);
+    free(work->piece);
+}
+
+/* Lays out a road: its centre line with the ends snapped, and every cut it
+ * makes, checked before anything changes. */
+static FoxRoadResult PlanRoad(const FoxNetwork *network, const FoxPlanet *planet,
+                              const FoxRoadPlan *plan, RoadWork *work)
+{
+    FoxVec *points = work->points;
+    int64_t *lengths = work->lengths;
+    Cut *cuts = work->cuts;
     const uint32_t count = FoxNetworkPlanCentre(planet, plan, points, FOX_ROAD_MAX_POINTS);
+    work->count = count;
     if (count < 2u)
     {
-        result = FOX_ROAD_NO_GROUND;
-        goto cleanup;
+        return FOX_ROAD_NO_GROUND;
     }
     int64_t total = FoxPolylineMeasure(points, lengths, count);
     if (total < FOX_ROAD_MIN_LENGTH)
     {
-        result = FOX_ROAD_TOO_SHORT;
-        goto cleanup;
+        return FOX_ROAD_TOO_SHORT;
     }
     if (total > FOX_ROAD_MAX_LENGTH)
     {
-        result = FOX_ROAD_TOO_LONG;
-        goto cleanup;
+        return FOX_ROAD_TOO_LONG;
     }
 
     /* Ends first: they snap to nodes and roads, and the centre line follows. */
@@ -1248,8 +1269,7 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
     end.along = total;
     if (!FindCrossings(network, points, lengths, count, cuts, &cutCount, MAX_CUTS - 1u))
     {
-        result = FOX_ROAD_CROWDED;
-        goto cleanup;
+        return FOX_ROAD_CROWDED;
     }
     cuts[cutCount++] = end;
     qsort(cuts + 1, cutCount - 2u, sizeof(*cuts), CompareCuts);
@@ -1261,20 +1281,17 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
         const Cut *b = &cuts[index + 1u];
         if (b->along - a->along < FOX_ROAD_MIN_LENGTH)
         {
-            result = FOX_ROAD_TOO_SHORT;
-            goto cleanup;
+            return FOX_ROAD_TOO_SHORT;
         }
         if (a->kind == CUT_NODE && b->kind == CUT_NODE &&
             (a->node == b->node || Joined(network, a->node, b->node)))
         {
-            result = FOX_ROAD_OVERLAP;
-            goto cleanup;
+            return FOX_ROAD_OVERLAP;
         }
         if (a->kind == CUT_SPLIT && b->kind == CUT_SPLIT && a->road == b->road)
         {
             /* Running along a road rather than across it. */
-            result = FOX_ROAD_OVERLAP;
-            goto cleanup;
+            return FOX_ROAD_OVERLAP;
         }
     }
     for (uint32_t index = 0u; index < cutCount; ++index)
@@ -1288,14 +1305,12 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
             {
                 if (other != index && cuts[other].kind == CUT_NODE && cuts[other].node == cut->node)
                 {
-                    result = FOX_ROAD_OVERLAP;
-                    goto cleanup;
+                    return FOX_ROAD_OVERLAP;
                 }
             }
             if (network->nodes[cut->node].roadCount + uses > FOX_NODE_MAX_ROADS)
             {
-                result = FOX_ROAD_CROWDED;
-                goto cleanup;
+                return FOX_ROAD_CROWDED;
             }
         }
         if (cut->kind == CUT_SPLIT)
@@ -1309,15 +1324,13 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
                     cuts[other].road == cut->road &&
                     FoxAbs(cuts[other].roadAlong - cut->roadAlong) < FOX_ROAD_MIN_LENGTH)
                 {
-                    result = FOX_ROAD_TOO_SHORT;
-                    goto cleanup;
+                    return FOX_ROAD_TOO_SHORT;
                 }
             }
             if (cut->roadAlong < FOX_ROAD_MIN_LENGTH ||
                 road->length - cut->roadAlong < FOX_ROAD_MIN_LENGTH)
             {
-                result = FOX_ROAD_TOO_SHORT;
-                goto cleanup;
+                return FOX_ROAD_TOO_SHORT;
             }
         }
     }
@@ -1357,10 +1370,48 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
             FoxPolylinePoint(other->centre, other->centreLengths, other->centreCount, along, NULL);
         if (FoxVecDistance(closest, points[point]) < ownHalf + otherHalf)
         {
-            result = FOX_ROAD_OVERLAP;
-            goto cleanup;
+            return FOX_ROAD_OVERLAP;
         }
     }
+    work->cutCount = cutCount;
+    return FOX_ROAD_OK;
+}
+
+FoxRoadResult FoxNetworkCheckRoad(const FoxNetwork *network, const FoxPlanet *planet,
+                                  const FoxRoadPlan *plan)
+{
+    if (network == NULL || planet == NULL || plan == NULL || FoxRoadTypeGet(plan->type) == NULL)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    RoadWork work;
+    const FoxRoadResult result =
+        RoadWorkInit(&work) ? PlanRoad(network, planet, plan, &work) : FOX_ROAD_OUT_OF_MEMORY;
+    RoadWorkFree(&work);
+    return result;
+}
+
+FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
+                                  const FoxRoadPlan *plan)
+{
+    if (network == NULL || planet == NULL || plan == NULL || FoxRoadTypeGet(plan->type) == NULL)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    RoadWork work;
+    FoxRoadResult result =
+        RoadWorkInit(&work) ? PlanRoad(network, planet, plan, &work) : FOX_ROAD_OUT_OF_MEMORY;
+    if (result != FOX_ROAD_OK)
+    {
+        RoadWorkFree(&work);
+        return result;
+    }
+    const FoxVec *points = work.points;
+    const int64_t *lengths = work.lengths;
+    Cut *cuts = work.cuts;
+    FoxVec *piece = work.piece;
+    const uint32_t count = work.count;
+    const uint32_t cutCount = work.cutCount;
 
     /* Build: nodes for every cut, then the pieces between them. */
     DirtySet dirty = {0};
@@ -1393,9 +1444,9 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
         }
         if (cut->resolved == FOX_NETWORK_NONE)
         {
-            result = FOX_ROAD_OUT_OF_MEMORY;
             (void)Refresh(network, &dirty);
-            goto cleanup;
+            RoadWorkFree(&work);
+            return FOX_ROAD_OUT_OF_MEMORY;
         }
         MarkDirty(&dirty, cut->resolved);
         cut->point = network->nodes[cut->resolved].position;
@@ -1425,12 +1476,7 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
     {
         result = FOX_ROAD_OUT_OF_MEMORY;
     }
-
-cleanup:
-    free(points);
-    free(lengths);
-    free(cuts);
-    free(piece);
+    RoadWorkFree(&work);
     return result;
 }
 

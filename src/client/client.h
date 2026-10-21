@@ -34,6 +34,8 @@ typedef struct FoxClientOptions
     /* Where the camera looks first, metres east and north of the pole. */
     double focusEast;
     double focusNorth;
+    /* The tool in hand at the start, as on the keys; zero for none. */
+    uint32_t tool;
     /* Presents without waiting for the display's refresh. */
     bool noVerticalSync;
     /* Non-NULL saves frame captureFrame as a BMP there and exits. */

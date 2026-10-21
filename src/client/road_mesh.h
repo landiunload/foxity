@@ -56,7 +56,14 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t node, FoxVec origin, Fo
 void FoxRoadMeshPreview(const FoxVec *centre, uint32_t count, FoxRoadType type, uint32_t color,
                         FoxVec origin, FoxMesh *mesh);
 
-/* Half the paved width of a road type, metres. */
+/* A line along the ground for the tools, `halfWidth` metres either side of
+ * the points, dashed if asked; and a ring lying on the ground. */
+void FoxRoadMeshLine(const FoxVec *points, uint32_t count, double halfWidth, bool dashed,
+                     uint32_t color, FoxVec origin, FoxMesh *mesh);
+void FoxRoadMeshRing(FoxVec centre, double radius, double width, uint32_t color, FoxVec origin,
+                     FoxMesh *mesh);
+
+/* Half the width of a road type's lanes, metres. */
 double FoxRoadMeshHalfWidth(FoxRoadType type);
 
 #endif

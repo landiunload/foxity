@@ -18,8 +18,13 @@
 #define LAMP_VERTICES 36u
 #define LAMP_HALF 0.11f
 
-#define COLOR_PREVIEW UINT32_C(0xFF55C46A)
-#define COLOR_PREVIEW_BAD UINT32_C(0xFF3A3AD8)
+/* A road that can be built in the accent blue of the interface, one that
+ * cannot in red. */
+#define COLOR_PREVIEW UINT32_C(0xFFFF8A1A)
+#define COLOR_PREVIEW_BAD UINT32_C(0xFF3C46F0)
+/* The width of the tools' lines and rings, metres. */
+#define OVERLAY_LINE_HALF 0.12
+#define OVERLAY_RING_WIDTH 0.35
 
 /* Red, yellow and green, lit. */
 static const uint32_t lampColors[3] = {UINT32_C(0xFF2828FF), UINT32_C(0xFF14B4FF),
@@ -64,23 +69,27 @@ typedef struct LampBatch
 struct FoxRoadsView
 {
     LaiueGraphicsDeviceV2 *device;
-    bool instancing;
     uint64_t seenRevision;
-    bool seenAny;
     Patch *patches;
-    uint32_t patchCapacity;
     Tracked *roads;
-    uint32_t roadCapacity;
     Tracked *nodes;
-    uint32_t nodeCapacity;
+    /* The planned road and the tools' lines, each with its origin. */
+    LaiueGraphicsHandle previewBuffer;
+    LaiueGraphicsHandle overlayBuffer;
     FoxMesh base;
     FoxMesh detail;
     FoxSignalHeads heads;
-    LaiueGraphicsHandle previewBuffer;
-    uint32_t previewCount;
     FoxVec previewOrigin;
+    FoxVec overlayOrigin;
     LaiueGraphicsHandle lamps[3];
     LampBatch lampBatches[3];
+    uint32_t patchCapacity;
+    uint32_t roadCapacity;
+    uint32_t nodeCapacity;
+    uint32_t previewCount;
+    uint32_t overlayCount;
+    bool instancing;
+    bool seenAny;
 };
 
 static bool UploadVertices(LaiueGraphicsDeviceV2 *device, const LaiueGraphicsVertexV2 *vertices,
@@ -192,6 +201,7 @@ void FoxRoadsViewDestroy(FoxRoadsView *view)
         free(patch->heads);
     }
     ReleaseBuffer(view, &view->previewBuffer);
+    ReleaseBuffer(view, &view->overlayBuffer);
     for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
     {
         ReleaseBuffer(view, &view->lamps[lamp]);
@@ -482,6 +492,54 @@ void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t c
     }
 }
 
+void FoxRoadsViewSetOverlay(FoxRoadsView *view, const FoxOverlayLine *lines, uint32_t lineCount,
+                            const FoxOverlayRing *rings, uint32_t ringCount)
+{
+    if (view == NULL)
+    {
+        return;
+    }
+    ReleaseBuffer(view, &view->overlayBuffer);
+    view->overlayCount = 0u;
+    lineCount = lines != NULL ? lineCount : 0u;
+    ringCount = rings != NULL ? ringCount : 0u;
+    /* Any point of the overlay serves as its origin. */
+    bool placed = false;
+    for (uint32_t index = 0u; index < lineCount && !placed; ++index)
+    {
+        if (lines[index].points != NULL && lines[index].count != 0u)
+        {
+            view->overlayOrigin = lines[index].points[0];
+            placed = true;
+        }
+    }
+    if (!placed && ringCount != 0u)
+    {
+        view->overlayOrigin = rings[0].centre;
+        placed = true;
+    }
+    if (!placed)
+    {
+        return;
+    }
+    FoxMeshReset(&view->base);
+    for (uint32_t index = 0u; index < lineCount; ++index)
+    {
+        FoxRoadMeshLine(lines[index].points, lines[index].count, OVERLAY_LINE_HALF,
+                        lines[index].dashed, lines[index].color, view->overlayOrigin, &view->base);
+    }
+    for (uint32_t index = 0u; index < ringCount; ++index)
+    {
+        FoxRoadMeshRing(rings[index].centre, rings[index].radius, OVERLAY_RING_WIDTH,
+                        rings[index].color, view->overlayOrigin, &view->base);
+    }
+    if (!view->base.failed && view->base.count != 0u &&
+        UploadVertices(view->device, view->base.vertices, view->base.count, &view->overlayBuffer))
+    {
+        view->overlayCount = view->base.count;
+    }
+}
+
 static void Submit(FoxRoadsView *view, const FoxCameraView *camera, LaiueGraphicsHandle buffer,
                    uint32_t count, FoxVec origin)
 {
@@ -592,5 +650,9 @@ void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera, const Fox
     if (view->previewBuffer != 0u)
     {
         Submit(view, camera, view->previewBuffer, view->previewCount, view->previewOrigin);
+    }
+    if (view->overlayBuffer != 0u)
+    {
+        Submit(view, camera, view->overlayBuffer, view->overlayCount, view->overlayOrigin);
     }
 }

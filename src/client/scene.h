@@ -2,6 +2,7 @@
 #define FOX_CLIENT_SCENE_H
 
 #include "app/modules.h"
+#include "client/ui.h"
 #include "graphics/graphics_device_v2.h"
 #include "mesh/mesher_service.h"
 #include "scene/math_service.h"
@@ -14,27 +15,6 @@
  * and the views of the planet, the roads and the cars. Every engine technology
  * it uses is optional: without camera math nothing is drawn or picked, without
  * the mesher the ground is missing, and the city keeps running either way. */
-
-typedef enum FoxTool
-{
-    /* Click a start and an end; the next road continues from the end. */
-    FOX_TOOL_ROAD = 0,
-    /* Click a start, a point to bend towards and an end. */
-    FOX_TOOL_CURVE,
-    FOX_TOOL_BULLDOZE,
-    /* Held: dig the ground away or pile it up under the pointer. */
-    FOX_TOOL_DIG,
-    FOX_TOOL_RAISE,
-    /* Click: the district around the point drives on the other side. */
-    FOX_TOOL_DRIVE_ZONE,
-    /* Click an intersection: traffic lights on or off. */
-    FOX_TOOL_SIGNALS,
-    /* Click near a road end: the next sign for the traffic arriving there. */
-    FOX_TOOL_SIGNS,
-    /* Click a road: a higher speed limit; with Shift a lower one. */
-    FOX_TOOL_SPEED_LIMIT,
-    FOX_TOOL_COUNT,
-} FoxTool;
 
 typedef struct FoxScene FoxScene;
 
@@ -53,6 +33,8 @@ typedef struct FoxSceneDesc
     /* Where the camera looks first, metres east and north of the pole. */
     double focusEast;
     double focusNorth;
+    /* The tool in hand at the start. */
+    uint32_t tool;
     /* Loaded engine modules: routing comes from them. */
     const FoxModules *modules;
     LaiueGraphicsDeviceV2 *device;
@@ -72,6 +54,9 @@ typedef struct FoxControls
     float moveForward;
     float moveRight;
     bool moveFast;
+    /* The view in pixels. */
+    uint32_t viewWidth;
+    uint32_t viewHeight;
     /* Where the pointer is, from -1 at the left and bottom of the view to 1
      * at the right and top; `click` is a press this frame, `held` the button
      * being down. */
@@ -105,8 +90,8 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
                     float aspectRatio, float outViewProjection[16]);
 void FoxSceneDraw(FoxScene *scene);
 
-/* Drops a road being placed. False when nothing was being placed, so the
- * caller may treat the key as a request to quit. */
+/* Drops a road being placed, or else puts the tool down. False when there
+ * was neither, so the caller may treat the key as a request to quit. */
 bool FoxSceneCancel(FoxScene *scene);
 
 #endif

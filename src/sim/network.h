@@ -39,8 +39,8 @@
 
 /* 3.5 m. */
 #define FOX_LANE_WIDTH INT64_C(3584)
-/* Paved beyond the outer lanes, 0.4 m. */
-#define FOX_ROAD_SHOULDER (FOX_METRES(2) / 5)
+/* Paved beyond the outer lanes, about 0.4 m. */
+#define FOX_ROAD_SHOULDER INT64_C(410)
 /* At a dead end the lanes turn around on a circle about the end node at
  * least this wide, wider for broad roads. */
 #define FOX_TURNAROUND_MIN_RADIUS (FOX_METRES(13) / 2)
@@ -251,6 +251,10 @@ uint32_t FoxNetworkNearestRoad(const FoxNetwork *network, FoxVec point, int64_t 
 uint32_t FoxNetworkPlanCentre(const FoxPlanet *planet, const FoxRoadPlan *plan, FoxVec *points,
                               uint32_t capacity);
 
+/* Whether a road could be built as planned, and why not: everything
+ * FoxNetworkBuildRoad checks, without changing anything. */
+FoxRoadResult FoxNetworkCheckRoad(const FoxNetwork *network, const FoxPlanet *planet,
+                                  const FoxRoadPlan *plan);
 /* Builds a road. On anything but FOX_ROAD_OK the network is unchanged. */
 FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
                                   const FoxRoadPlan *plan);

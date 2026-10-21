@@ -16,7 +16,7 @@
  * only near the eye, where they can be seen and the depth buffer can keep
  * paint apart from the road under it. The lit lamps of traffic lights follow
  * the signals every frame. A planned road shows as a preview until it is
- * built. */
+ * built, with the tools' guides and snap marks on the ground beside it. */
 
 typedef struct FoxRoadsView FoxRoadsView;
 
@@ -30,6 +30,26 @@ void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double bu
  * colour of a road that can be built or of one that cannot. */
 void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t count,
                             FoxRoadType type, bool valid);
+
+/* What the tools draw on the ground besides the planned road. */
+typedef struct FoxOverlayLine
+{
+    const FoxVec *points;
+    uint32_t count;
+    bool dashed;
+    uint32_t color;
+} FoxOverlayLine;
+
+typedef struct FoxOverlayRing
+{
+    FoxVec centre;
+    double radius;
+    uint32_t color;
+} FoxOverlayRing;
+
+/* Replaces the lines and rings shown; zero counts clear them. */
+void FoxRoadsViewSetOverlay(FoxRoadsView *view, const FoxOverlayLine *lines, uint32_t lineCount,
+                            const FoxOverlayRing *rings, uint32_t ringCount);
 
 void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera, const FoxNetwork *network);
 

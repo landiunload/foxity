@@ -8,6 +8,9 @@
 /* Heights above the ground: the asphalt, then everything painted on it. */
 #define ASPHALT_LIFT 0.15
 #define MARKING_LIFT 0.19
+/* What the tools show lies over the markings. */
+#define OVERLAY_LIFT 0.3
+#define RING_SEGMENTS 32u
 /* Paved beyond the outer lanes. */
 #define SHOULDER ((double)FOX_ROAD_SHOULDER / FOX_UNITS_PER_METRE)
 #define LINE_HALF 0.08
@@ -1219,6 +1222,52 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
         {
             BendCentreLine(&ends[0], &ends[1], up, detail);
         }
+    }
+}
+
+void FoxRoadMeshLine(const FoxVec *points, uint32_t count, double halfWidth, bool dashed,
+                     uint32_t color, FoxVec origin, FoxMesh *mesh)
+{
+    if (points == NULL || count < 2u)
+    {
+        return;
+    }
+    Station *stations = malloc(((size_t)count + 2u) * sizeof(*stations));
+    if (stations == NULL)
+    {
+        mesh->failed = true;
+        return;
+    }
+    double length = 0.0;
+    for (uint32_t index = 1u; index < count; ++index)
+    {
+        length += Length(Sub(Local(points[index], origin), Local(points[index - 1u], origin)));
+    }
+    const uint32_t written = BuildStations(points, count, origin, 0.0, length, stations);
+    Strip(mesh, stations, written, -halfWidth, halfWidth, OVERLAY_LIFT, 0.0, length,
+          dashed ? 2.0 : 0.0, dashed ? 1.5 : 0.0, color);
+    free(stations);
+}
+
+void FoxRoadMeshRing(FoxVec centre, double radius, double width, uint32_t color, FoxVec origin,
+                     FoxMesh *mesh)
+{
+    const V3 middle = Local(centre, origin);
+    const V3 up = UpOf(centre);
+    const V3 axis = fabs(up.z) < 0.9 ? (V3){0.0, 0.0, 1.0} : (V3){1.0, 0.0, 0.0};
+    const V3 ex = Unit(Cross(up, axis));
+    const V3 ey = Cross(up, ex);
+    const V3 lift = Scale(up, OVERLAY_LIFT);
+    for (uint32_t step = 0u; step < RING_SEGMENTS; ++step)
+    {
+        const double a = 2.0 * PI * (double)step / RING_SEGMENTS;
+        const double b = 2.0 * PI * (double)(step + 1u) / RING_SEGMENTS;
+        const double inner = radius - width / 2.0;
+        const double outer = radius + width / 2.0;
+        Quad(mesh, Add(Along(middle, ex, cos(a) * inner, ey, sin(a) * inner), lift),
+             Add(Along(middle, ex, cos(a) * outer, ey, sin(a) * outer), lift),
+             Add(Along(middle, ex, cos(b) * outer, ey, sin(b) * outer), lift),
+             Add(Along(middle, ex, cos(b) * inner, ey, sin(b) * inner), lift), color);
     }
 }
 

@@ -26,6 +26,10 @@ commands give the same city on every machine.
 
 ![An intersection with lights](docs/junction.png)
 
+![A square where five roads meet, and a turning circle](docs/district.png)
+
+![The dock and the road panel](docs/tools.png)
+
 ![The statistics panel over a loaded grid](docs/statistics.png)
 
 ![The planet](docs/planet.png)
@@ -36,27 +40,44 @@ technology instead of failing to start.
 
 ## Controls
 
+The tools sit in a dock of icons along the bottom of the window, without a
+word of text: look around; road, curved road, bulldoze; traffic lights, signs,
+speed limits, drive side; dig, raise; then pause, the three time speeds and the
+statistics. Over the chosen tool opens a panel with its settings; clicking the
+tool again folds it away.
+
+- Roads: the type, and what a road being drawn snaps to: roads and their nodes,
+  angle steps measured from the road it continues (5°, 15°, 30°, 45° or 90°),
+  whole length steps (1, 4, 8 or 16 m), a grid of the same step, guides along
+  the roads at nearby nodes and square to them, and for curves leaving a road's
+  end the way it went. The snap shows as a ring on the ground, a guide followed
+  as a dashed line; the road is blue when it can be built and red when the
+  network would refuse it, with its length and angle beside the pointer.
+- Signs and speed limits: which sign or limit a click puts up, or the
+  automatic choice and the road's own limit back.
+- Digging and raising: the size of the brush.
+
 | Input | Action |
 |---|---|
 | Mouse wheel | Zoom from 4 m to 9 km |
 | Right mouse button | Rotate: the view turns the way the mouse moves |
 | W A S D, Shift | Move, faster |
-| Left mouse button | Use the tool |
+| Left mouse button | Use the tool, or the dock |
 | 1 | Road: click a start and an end; the next road continues from the end |
 | 2 | Curved road: a start, a point to bend towards and an end |
 | 3 | Bulldoze a road |
 | 4, 5 | Dig the ground away or pile it up, held |
 | 6 | Turn the district around the point to the other drive side |
 | 7 | Traffic lights on or off at an intersection |
-| 8 | Next sign at the nearer end of a road: priority, give way, stop, none, automatic |
-| 9 | Raise a road's speed limit; with Shift lower it; past either end back to the road's own |
+| 8 | Put the chosen sign at the nearer end of a road |
+| 9 | Give a road the chosen speed limit |
 | T | Next road type: street 50 km/h, avenue 60, boulevard 70, one-way 50, highway 110 |
 | V | Time at one, three or ten times real time |
 | Space | Pause |
 | E, G | Fifty cars more or fewer; with Shift five hundred |
 | F3 | Statistics panel in Russian: frame and tick times, roads, junctions, signs, vehicles, speeds, arrivals, with graphs of the last minute |
 | F7 | Vertical sync on or off |
-| Esc | Drop the road being placed, or quit |
+| Esc | Drop the road being placed, then put the tool down, then quit |
 
 ## Running
 
@@ -75,6 +96,7 @@ Foxity --drive left
 | `--focus-east M`, `--focus-north M` | Where the camera looks first, from the pole |
 | `--graphics d3d12\|vulkan` | Choose the graphics provider |
 | `--no-vsync` | Start with vertical sync off |
+| `--tool N` | Start with a tool in hand, numbered as on the keys |
 | `--capture FILE.bmp`, `--capture-frame N` | Save frame N as a picture and quit |
 | `--smoke` | Present three frames and exit |
 
