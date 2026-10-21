@@ -30,10 +30,12 @@ void FoxMeshReset(FoxMesh *mesh);
 void FoxMeshFree(FoxMesh *mesh);
 
 /* A traffic light: where its lamps are, red, yellow and green from the top,
+ * where the arrow for turning across the oncoming lanes lights beside them,
  * and the road end whose light it shows. */
 typedef struct FoxSignalHead
 {
     FoxVec lamps[3];
+    FoxVec arrow;
     uint32_t road;
     uint32_t end;
 } FoxSignalHead;

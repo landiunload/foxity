@@ -8,6 +8,10 @@
 
 #define SECONDS(seconds) ((uint64_t)(seconds) * FOX_TRAFFIC_TICKS_PER_SECOND)
 
+/* The town as loaded as the game starts it, with every driver giving way
+ * as the rules ask. */
+#define LOAD 150u
+
 static TestRouter routerA;
 static TestRouter routerB;
 
@@ -53,8 +57,7 @@ static void Report(const char *label, const FoxWorld *world)
            "mean %.1f m/s\n",
            label, stats.vehicles, stats.standing, (unsigned long long)stats.spawned,
            (unsigned long long)stats.arrived, (unsigned long long)stats.removed,
-           (unsigned long long)stats.stuck,
-           (double)stats.meanSpeed / FOX_UNITS_PER_METRE);
+           (unsigned long long)stats.stuck, (double)stats.meanSpeed / FOX_UNITS_PER_METRE);
 }
 
 static void ExpectFlowing(const FoxWorld *world, const char *label)
@@ -74,15 +77,15 @@ static void TestRandomTurns(FoxDriveSide side)
         FoxWorldAdvance(world, SECONDS(60));
         ExpectNoOverlap(world);
     }
-    ExpectFlowing(world, side == FOX_DRIVE_RIGHT ? "keep right, random turns"
-                                                : "keep left, random turns");
+    ExpectFlowing(world,
+                  side == FOX_DRIVE_RIGHT ? "keep right, random turns" : "keep left, random turns");
     FoxWorldDestroy(world);
 }
 
 static void TestRouted(void)
 {
     TestRouterInit(&routerA);
-    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, 200u);
+    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, LOAD);
     for (int minute = 0; minute < 4; ++minute)
     {
         FoxWorldAdvance(world, SECONDS(60));
@@ -113,7 +116,7 @@ static void TestDeterminism(void)
 static void TestEditsUnderTraffic(void)
 {
     TestRouterInit(&routerA);
-    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, 200u);
+    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, LOAD);
     FoxWorldAdvance(world, SECONDS(60));
     const int64_t radius = FoxPlanetRadius(FoxWorldPlanet(world));
     /* A diagonal crossing several roads while cars drive on them. */
@@ -206,7 +209,8 @@ static void TestSpeedLimits(void)
 {
     FoxWorld *world = Town(FOX_DRIVE_RIGHT, NULL, 0u);
     const FoxNetwork *network = FoxWorldNetwork(world);
-    const uint32_t road = FoxNetworkNearestRoad(network, Pole(world, 160, 40), FOX_METRES(12), NULL);
+    const uint32_t road =
+        FoxNetworkNearestRoad(network, Pole(world, 160, 40), FOX_METRES(12), NULL);
     FoxRoadView view;
     EXPECT(road != FOX_NETWORK_NONE && FoxNetworkRoad(network, road, &view), "a street");
     EXPECT(view.speedLimit == FOX_KMH(50) && !view.speedSet, "streets start at 50 km/h");
@@ -233,7 +237,7 @@ static void TestSpeedLimits(void)
 static void TestSignals(void)
 {
     TestRouterInit(&routerA);
-    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, 200u);
+    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, LOAD);
     const FoxNetwork *network = FoxWorldNetwork(world);
     const uint32_t centre = FoxNetworkNearestNode(network, Pole(world, 0, 0), FOX_METRES(12));
     FoxNodeView node;
@@ -290,7 +294,7 @@ static void TestSignals(void)
 static void TestVehicles(void)
 {
     TestRouterInit(&routerA);
-    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, 200u);
+    FoxWorld *world = Town(FOX_DRIVE_RIGHT, &routerA.router, LOAD);
     const FoxTraffic *traffic = FoxWorldTraffic(world);
     const FoxNetwork *network = FoxWorldNetwork(world);
     uint32_t trucks = 0u;
@@ -308,8 +312,8 @@ static void TestVehicles(void)
                 continue;
             }
             trucks += vehicle.kind == FOX_VEHICLE_TRUCK && second == 179u ? 1u : 0u;
-            EXPECT(vehicle.length == (vehicle.kind == FOX_VEHICLE_TRUCK ? FOX_TRUCK_LENGTH
-                                                                        : FOX_CAR_LENGTH),
+            EXPECT(vehicle.length ==
+                       (vehicle.kind == FOX_VEHICLE_TRUCK ? FOX_TRUCK_LENGTH : FOX_CAR_LENGTH),
                    "a vehicle is as long as its kind");
             /* Within a fifth and a walking pace: braking into a turn takes a moment. */
             EXPECT((int64_t)vehicle.speed * 100 <= (int64_t)path.speedLimit * 120 + FOX_METRES(50),

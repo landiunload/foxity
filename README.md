@@ -17,8 +17,13 @@ junctions, arrows for where each lane leads, priority and give-way signs
 where a bigger road meets a smaller one, speed limits. Traffic lights, other
 signs and limits can be put up by hand. Cars and slower, longer trucks drive
 their lanes at real speeds, slow down for bends as their grip allows, keep
-their distance, wait their turn at intersections, take the fastest route and
-avoid jams. Each city chooses whether it keeps right or left when it is
+their distance, take the fastest route and avoid jams. At intersections they
+keep the rules of the road: the road with priority and the green go through
+without stopping, everyone else waits for a gap, cars turning across the
+oncoming traffic pull in and wait for it, and traffic lights give them an
+arrow of their own when they queue. A test watches the town tick by tick for
+anyone running a red light or a stop sign, two cars meeting where their ways
+cross, or a car with right of way having to brake hard. Each city chooses whether it keeps right or left when it is
 founded, and districts can be laid over it that drive on the other side.
 
 The simulation uses only integer arithmetic at a fixed tick rate, so the same

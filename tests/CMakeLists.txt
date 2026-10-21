@@ -10,6 +10,8 @@ fox_add_unit_test(space fox_core)
 fox_add_unit_test(planet fox_core)
 fox_add_unit_test(network fox_core)
 fox_add_unit_test(traffic fox_core)
+# The rules of the road, watched in the demo town tick by tick.
+fox_add_unit_test(rules fox_core)
 fox_add_unit_test(arguments fox_app)
 # The tools' drawing assistance needs only the simulation.
 fox_add_unit_test(assist fox_core)

@@ -137,8 +137,7 @@ static void Vertex(FoxMesh *mesh, V3 position, uint32_t color)
             return;
         }
         const uint32_t capacity = mesh->count < 512u ? 1024u : mesh->count * 2u;
-        LaiueGraphicsVertexV2 *grown =
-            realloc(mesh->vertices, (size_t)capacity * sizeof(*grown));
+        LaiueGraphicsVertexV2 *grown = realloc(mesh->vertices, (size_t)capacity * sizeof(*grown));
         if (grown == NULL)
         {
             mesh->failed = true;
@@ -257,7 +256,8 @@ static Station StationAt(const FoxVec *points, uint32_t count, FoxVec origin, do
         const double length = Length(Sub(b, a));
         if (travelled + length >= along || index + 2u == count)
         {
-            const double t = length > 0.0 ? fmin(fmax((along - travelled) / length, 0.0), 1.0) : 0.0;
+            const double t =
+                length > 0.0 ? fmin(fmax((along - travelled) / length, 0.0), 1.0) : 0.0;
             const V3 point = Add(a, Scale(Sub(b, a), t));
             const FoxVec at = FoxVecLerp(points[index], points[index + 1u],
                                          (int64_t)llround(t * (double)FOX_UNIT));
@@ -309,11 +309,29 @@ static Station Blend(const Station *a, const Station *b, double t)
 }
 
 /* A strip between two offsets from the centre over [from, to] metres of it,
- * dashed when `dash` is non-zero; dashes count from zero along the line. */
-static void Strip(FoxMesh *mesh, const Station *stations, uint32_t count, double left,
-                  double right, double lift, double from, double to, double dash, double gap,
-                  uint32_t color)
+ * dashed when `dash` is non-zero. The dashes are stretched a little to fit
+ * a whole number into the stretch, which begins and ends with half a gap:
+ * where two pieces of a line meet, the pattern runs on unbroken. A stretch
+ * too short for one dash is all gap. */
+static void Strip(FoxMesh *mesh, const Station *stations, uint32_t count, double left, double right,
+                  double lift, double from, double to, double dash, double gap, uint32_t color)
 {
+    if (to <= from)
+    {
+        return;
+    }
+    if (dash > 0.0)
+    {
+        const double period = dash + gap;
+        const double dashes = round((to - from) / period);
+        if (dashes < 1.0)
+        {
+            return;
+        }
+        const double fitted = (to - from) / dashes;
+        dash *= fitted / period;
+        gap *= fitted / period;
+    }
     for (uint32_t index = 0u; index + 1u < count; ++index)
     {
         const Station *a = &stations[index];
@@ -329,13 +347,20 @@ static void Strip(FoxMesh *mesh, const Station *stations, uint32_t count, double
             double end = fmin(to, b->along);
             if (dash > 0.0)
             {
-                const double phase = fmod(piece, dash + gap);
-                if (phase >= dash)
+                /* The dash at or after the piece. */
+                const double period = dash + gap;
+                const double first = from + gap / 2.0;
+                double start = first + floor((piece - first) / period) * period;
+                if (piece >= start + dash)
                 {
-                    piece += dash + gap - phase;
+                    start += period;
+                }
+                if (start > piece)
+                {
+                    piece = start;
                     continue;
                 }
-                end = fmin(end, piece + dash - phase);
+                end = fmin(end, start + dash);
             }
             const Station p0 = Blend(a, b, (piece - a->along) / span);
             const Station p1 = Blend(a, b, (end - a->along) / span);
@@ -462,8 +487,8 @@ static V3 InLane(const LaneFrame *frame, double ahead, double right)
 static void LaneQuad(FoxMesh *mesh, const LaneFrame *frame, double back, double front, double left,
                      double right)
 {
-    Quad(mesh, InLane(frame, back, left), InLane(frame, back, right),
-         InLane(frame, front, right), InLane(frame, front, left), COLOR_LINE);
+    Quad(mesh, InLane(frame, back, left), InLane(frame, back, right), InLane(frame, front, right),
+         InLane(frame, front, left), COLOR_LINE);
 }
 
 /* An arrow for every way a lane leads, painted at its frame. */
@@ -554,8 +579,9 @@ static void Digit(FoxMesh *mesh, V3 centre, V3 right, V3 up, uint32_t digit)
     const double t = 0.03;
     /* a, b, c, d, e, f, g: x0, x1, y0, y1. */
     const double boxes[7][4] = {
-        {-w, w, h - t, h}, {w - t, w, 0.0, h},  {w - t, w, -h, 0.0}, {-w, w, -h, -h + t},
-        {-w, -w + t, -h, 0.0}, {-w, -w + t, 0.0, h}, {-w, w, -t / 2.0, t / 2.0},
+        {-w, w, h - t, h},          {w - t, w, 0.0, h},    {w - t, w, -h, 0.0},
+        {-w, w, -h, -h + t},        {-w, -w + t, -h, 0.0}, {-w, -w + t, 0.0, h},
+        {-w, w, -t / 2.0, t / 2.0},
     };
     for (uint32_t segment = 0u; segment < 7u; ++segment)
     {
@@ -620,9 +646,10 @@ static void JunctionSign(FoxMesh *mesh, const Post *post, FoxSign sign)
 }
 
 /* A traffic light: a pole with a housing whose lamps the view lights as the
- * signal changes. */
+ * signal changes, and beside it on the side of the road a section with an
+ * arrow for turning across the oncoming lanes. */
 static void TrafficLight(FoxMesh *mesh, FoxSignalHeads *heads, const Post *post, FoxVec origin,
-                         uint32_t road, uint32_t end)
+                         FoxDriveSide side, uint32_t road, uint32_t end)
 {
     const double height = 3.3;
     Pole(mesh, post, height);
@@ -632,11 +659,24 @@ static void TrafficLight(FoxMesh *mesh, FoxSignalHeads *heads, const Post *post,
     FoxSignalHead head = {.road = road, .end = end};
     for (uint32_t lamp = 0u; lamp < 3u; ++lamp)
     {
-        const V3 face = Along(housing, post->forward, -depth - 0.005, post->up,
-                              0.3 - 0.3 * (double)lamp);
+        const V3 face =
+            Along(housing, post->forward, -depth - 0.005, post->up, 0.3 - 0.3 * (double)lamp);
         Rectangle(mesh, face, post->right, post->up, -0.1, 0.1, -0.1, 0.1, COLOR_LAMP_OFF);
         head.lamps[lamp] = World(Add(face, Scale(post->forward, -0.04)), origin);
     }
+    /* Towards the middle of the road, where the turn across it goes. */
+    const double inward = side == FOX_DRIVE_RIGHT ? -1.0 : 1.0;
+    const V3 section = Along(housing, post->right, inward * 0.32, post->up, -0.3);
+    Box(mesh, section, post->forward, post->right, post->up, depth, 0.15, 0.15, COLOR_HOUSING);
+    const V3 face = Along(section, post->forward, -depth - 0.005, post->up, 0.0);
+    Rectangle(mesh, face, post->right, post->up, -0.1, 0.1, -0.1, 0.1, COLOR_LAMP_OFF);
+    head.arrow = World(Add(face, Scale(post->forward, -0.04)), origin);
+    /* The arrow itself, dark in front of the lamp: a shaft and a head. */
+    const V3 plate = Add(face, Scale(post->forward, -0.16));
+    Rectangle(mesh, plate, post->right, post->up, inward > 0.0 ? -0.07 : -0.01,
+              inward > 0.0 ? 0.01 : 0.07, -0.02, 0.02, COLOR_BLACK);
+    Polygon(mesh, Along(plate, post->right, inward * 0.03, post->up, 0.0), post->right, post->up,
+            3u, 0.055, inward > 0.0 ? 0.0 : PI, COLOR_BLACK);
     if (heads->count >= heads->capacity)
     {
         const uint32_t capacity = heads->count < 16u ? 16u : heads->count * 2u;
@@ -715,7 +755,7 @@ static void RoadEnd(const FoxNetwork *network, uint32_t roadIndex, const FoxRoad
             const Post post = CurbPost(&frame, road->driveSide, 1.2);
             if (node.signals)
             {
-                TrafficLight(detail, heads, &post, origin, roadIndex, end);
+                TrafficLight(detail, heads, &post, origin, road->driveSide, roadIndex, end);
             }
             else
             {
@@ -782,7 +822,7 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
 #define SWEEP_SEGMENTS 12u
 /* A turning circle: the arc round its far side and each flare into it. */
 #define BULB_SEGMENTS 24u
-#define FLARE_SEGMENTS 6u
+#define FLARE_SEGMENTS 12u
 #define OUTLINE_CAPACITY (FOX_NODE_MAX_ROADS * (SWEEP_SEGMENTS + 2u) + BULB_SEGMENTS + 16u)
 
 /* A road where it meets a node: its station at the trim, the direction away
@@ -837,39 +877,49 @@ static V3 LeftCorner(const RoadEndShape *end)
 
 /* The outline of what a node paves, anticlockwise seen from above: the
  * mouths of its roads and the curbs between them. Corners at the mouths keep
- * the up of their road, so the asphalt meets the road's without a seam. */
+ * the up of their road, so the asphalt meets the road's without a seam, and
+ * the way into the road, so the line along the curb meets the road's edge
+ * line square. */
 typedef struct Outline
 {
     V3 points[OUTLINE_CAPACITY];
     V3 lift[OUTLINE_CAPACITY];
+    /* Into the paving across the road at a mouth's corner; zero elsewhere. */
+    V3 across[OUTLINE_CAPACITY];
     /* Whether the edge from a point to the next one is a curb. */
     bool curb[OUTLINE_CAPACITY];
     uint32_t count;
 } Outline;
 
-static void Put(Outline *outline, V3 point, V3 up, bool curb)
+static void PutCorner(Outline *outline, V3 point, V3 up, V3 across, bool curb)
 {
     if (outline->count < OUTLINE_CAPACITY)
     {
         outline->points[outline->count] = point;
         outline->lift[outline->count] = up;
+        outline->across[outline->count] = across;
         outline->curb[outline->count++] = curb;
     }
+}
+
+static void Put(Outline *outline, V3 point, V3 up, bool curb)
+{
+    PutCorner(outline, point, up, (V3){0.0, 0.0, 0.0}, curb);
 }
 
 /* The mouth of a road: its right corner, then its left, from where the curb
  * goes on. */
 static void Mouth(Outline *outline, const RoadEndShape *end)
 {
-    Put(outline, RightCorner(end), end->station.up, false);
-    Put(outline, LeftCorner(end), end->station.up, true);
+    PutCorner(outline, RightCorner(end), end->station.up, Scale(end->right, -1.0), false);
+    PutCorner(outline, LeftCorner(end), end->station.up, end->right, true);
 }
 
 /* The curb between the left edge of one road and the right edge of the next
  * one round: a curve that leaves both edges smoothly where they would meet,
  * a straight line where they never do. */
-static uint32_t Fillet(V3 from, V3 fromDirection, V3 to, V3 toDirection, V3 ex, V3 ey,
-                       double reach, V3 *out)
+static uint32_t Fillet(V3 from, V3 fromDirection, V3 to, V3 toDirection, V3 ex, V3 ey, double reach,
+                       V3 *out)
 {
     const V3 gap = Sub(from, to);
     const double ax = Dot(fromDirection, ex);
@@ -1007,27 +1057,33 @@ static void PaveOutline(const Outline *outline, V3 centre, V3 up, FoxMesh *base,
         for (uint32_t side = 0u; side < 2u; ++side)
         {
             /* Inside is to the left going round. Between two curb edges the
-             * normals are averaged; where a curb meets a mouth it keeps its
-             * own. */
+             * normals are averaged; where a curb meets a mouth it goes in
+             * square to the road, as the road's own edge line does. */
             const uint32_t at = side == 0u ? index : next;
+            if (Length(outline->across[at]) > 0.0)
+            {
+                inward[side] = outline->across[at];
+                continue;
+            }
             const uint32_t before = (at + count - 1u) % count;
             const uint32_t after = (at + 1u) % count;
-            const V3 own = side == 0u ? Unit(Cross(up, Sub(outline->points[after],
-                                                            outline->points[at])))
-                                      : Unit(Cross(up, Sub(outline->points[at],
-                                                            outline->points[before])));
+            const V3 own = side == 0u
+                               ? Unit(Cross(up, Sub(outline->points[after], outline->points[at])))
+                               : Unit(Cross(up, Sub(outline->points[at], outline->points[before])));
             V3 normal = own;
             if (outline->curb[before] && outline->curb[at])
             {
-                const V3 previous = Unit(Cross(up, Sub(outline->points[at], outline->points[before])));
-                const V3 following = Unit(Cross(up, Sub(outline->points[after], outline->points[at])));
+                const V3 previous =
+                    Unit(Cross(up, Sub(outline->points[at], outline->points[before])));
+                const V3 following =
+                    Unit(Cross(up, Sub(outline->points[after], outline->points[at])));
                 const V3 mean = Unit(Add(previous, following));
                 normal = Scale(mean, 1.0 / fmax(Dot(mean, following), 0.5));
             }
             inward[side] = normal;
         }
-        const V3 a = Lift(outline->points[index], up, MARKING_LIFT);
-        const V3 b = Lift(outline->points[next], up, MARKING_LIFT);
+        const V3 a = Lift(outline->points[index], outline->lift[index], MARKING_LIFT);
+        const V3 b = Lift(outline->points[next], outline->lift[next], MARKING_LIFT);
         Quad(detail, Add(a, Scale(inward[0], SHOULDER)), Add(b, Scale(inward[1], SHOULDER)),
              Add(b, Scale(inward[1], SHOULDER + 2.0 * EDGE_HALF)),
              Add(a, Scale(inward[0], SHOULDER + 2.0 * EDGE_HALF)), COLOR_LINE);
@@ -1088,7 +1144,8 @@ static bool RibbonFits(const RoadEndShape *a, const RoadEndShape *b, V3 up)
 
 /* A bend: a piece of road from one road's end to the other's that carries
  * the asphalt and the markings. */
-static void Bend(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *base, FoxMesh *detail)
+static void Bend(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *base,
+                 FoxMesh *detail)
 {
     Station stations[SWEEP_SEGMENTS + 1u];
     CentreCurve(a, b, up, stations);
@@ -1130,9 +1187,8 @@ static void BendCentreLine(const RoadEndShape *a, const RoadEndShape *b, V3 up, 
  * lanes turn round on. */
 static void Bulb(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
 {
-    const double radius =
-        (double)FoxRoadTurnaroundRadius(end->type) / FOX_UNITS_PER_METRE + LaneWidth() / 2.0 +
-        SHOULDER;
+    const double radius = (double)FoxRoadTurnaroundRadius(end->type) / FOX_UNITS_PER_METRE +
+                          LaneWidth() / 2.0 + SHOULDER;
     const V3 ex = end->outward;
     const V3 ey = Scale(end->right, -1.0);
     const double trim = Dot(Sub(end->station.point, centre), ex);

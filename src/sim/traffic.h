@@ -51,15 +51,18 @@ typedef struct FoxTrafficDesc
 typedef struct FoxVehicleView
 {
     uint64_t serial;
-    uint32_t path;
     int64_t distance;
+    int64_t length;
+    uint32_t path;
+    /* The connection it takes at the end of its lane, or the one it is on;
+     * FOX_NETWORK_NONE at the end of the road. */
+    uint32_t next;
     /* Units per second. */
     int32_t speed;
     FoxVehicleKind kind;
-    int64_t length;
-    uint8_t color;
     /* Ticks spent standing still. */
     uint32_t waitTicks;
+    uint8_t color;
 } FoxVehicleView;
 
 typedef struct FoxTrafficStats

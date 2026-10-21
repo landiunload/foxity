@@ -406,11 +406,12 @@ bool FoxNetworkPathPoint(const FoxNetwork *network, uint32_t path, int64_t dista
     }
     if (outDirection != NULL)
     {
-        FoxVec direction = FoxVecDirection(FoxVecSub(record->points[index + 1u], record->points[index]));
+        FoxVec direction =
+            FoxVecDirection(FoxVecSub(record->points[index + 1u], record->points[index]));
         if (FoxVecIsZero(direction))
         {
-            direction = FoxVecDirection(
-                FoxVecSub(record->points[record->count - 1u], record->points[0]));
+            direction =
+                FoxVecDirection(FoxVecSub(record->points[record->count - 1u], record->points[0]));
         }
         *outDirection = direction;
     }
@@ -463,16 +464,15 @@ uint32_t FoxNetworkNearestRoad(const FoxNetwork *network, FoxVec point, int64_t 
     for (uint32_t index = 0u; network != NULL && index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        if (!road->alive ||
-            FoxVecDistance(point, road->middle) > road->boundRadius + maxDistance)
+        if (!road->alive || FoxVecDistance(point, road->middle) > road->boundRadius + maxDistance)
         {
             continue;
         }
         for (uint32_t segment = 0u; segment + 1u < road->centreCount; ++segment)
         {
             int64_t distance = 0;
-            const int64_t along = ClosestOnSegment(road->centre[segment], road->centre[segment + 1u],
-                                                   point, &distance);
+            const int64_t along = ClosestOnSegment(road->centre[segment],
+                                                   road->centre[segment + 1u], point, &distance);
             if (distance <= bestDistance)
             {
                 best = index;
@@ -552,9 +552,8 @@ static uint32_t NewNode(FoxNetwork *network, FoxVec position)
     {
         ++index;
     }
-    if (index == network->nodeCapacity &&
-        !Grow((void **)&network->nodes, &network->nodeCapacity, index + 1u,
-              sizeof(*network->nodes)))
+    if (index == network->nodeCapacity && !Grow((void **)&network->nodes, &network->nodeCapacity,
+                                                index + 1u, sizeof(*network->nodes)))
     {
         return FOX_NETWORK_NONE;
     }
@@ -641,9 +640,8 @@ static uint32_t NewRoad(FoxNetwork *network, uint32_t from, uint32_t to, uint8_t
     {
         ++index;
     }
-    if (index == network->roadCapacity &&
-        !Grow((void **)&network->roads, &network->roadCapacity, index + 1u,
-              sizeof(*network->roads)))
+    if (index == network->roadCapacity && !Grow((void **)&network->roads, &network->roadCapacity,
+                                                index + 1u, sizeof(*network->roads)))
     {
         return FOX_NETWORK_NONE;
     }
@@ -979,8 +977,7 @@ static Cut ResolveEnd(const FoxNetwork *network, FoxVec point, int64_t along)
         return cut;
     }
     int64_t roadAlong = 0;
-    const uint32_t road =
-        FoxNetworkNearestRoad(network, point, FOX_ROAD_SNAP_DISTANCE, &roadAlong);
+    const uint32_t road = FoxNetworkNearestRoad(network, point, FOX_ROAD_SNAP_DISTANCE, &roadAlong);
     if (road != FOX_NETWORK_NONE)
     {
         const FoxRoad *record = &network->roads[road];
@@ -996,8 +993,8 @@ static Cut ResolveEnd(const FoxNetwork *network, FoxVec point, int64_t along)
             cut.road = road;
             cut.roadGeneration = record->generation;
             cut.roadAlong = roadAlong;
-            cut.point = FoxPolylinePoint(record->centre, record->centreLengths,
-                                         record->centreCount, roadAlong, NULL);
+            cut.point = FoxPolylinePoint(record->centre, record->centreLengths, record->centreCount,
+                                         roadAlong, NULL);
         }
     }
     return cut;
@@ -1149,7 +1146,8 @@ static bool FindCrossings(const FoxNetwork *network, const FoxVec *points, const
         for (uint32_t i = 0u; !known && i + 1u < count; ++i)
         {
             int64_t distance = 0;
-            const int64_t at = ClosestOnSegment(points[i], points[i + 1u], node->position, &distance);
+            const int64_t at =
+                ClosestOnSegment(points[i], points[i + 1u], node->position, &distance);
             if (distance < best)
             {
                 best = distance;
@@ -1357,9 +1355,9 @@ static FoxRoadResult PlanRoad(const FoxNetwork *network, const FoxPlanet *planet
         for (uint32_t index = 0u; index < cutCount && !meets; ++index)
         {
             const Cut *cut = &cuts[index];
-            const bool related =
-                (cut->kind == CUT_SPLIT && cut->road == near) ||
-                (cut->kind == CUT_NODE && (other->nodes[0] == cut->node || other->nodes[1] == cut->node));
+            const bool related = (cut->kind == CUT_SPLIT && cut->road == near) ||
+                                 (cut->kind == CUT_NODE &&
+                                  (other->nodes[0] == cut->node || other->nodes[1] == cut->node));
             meets = related && FoxAbs(lengths[point] - cut->along) < window;
         }
         if (meets)
@@ -1436,9 +1434,10 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
             {
                 FollowLineage(network, &road, cut->roadGeneration, &along);
             }
-            const uint32_t nodes[2] = {network->roads[road].nodes[0], network->roads[road].nodes[1]};
-            cut->resolved = network->roads[road].alive ? SplitRoad(network, road, along)
-                                                       : FOX_NETWORK_NONE;
+            const uint32_t nodes[2] = {network->roads[road].nodes[0],
+                                       network->roads[road].nodes[1]};
+            cut->resolved =
+                network->roads[road].alive ? SplitRoad(network, road, along) : FOX_NETWORK_NONE;
             MarkDirty(&dirty, nodes[0]);
             MarkDirty(&dirty, nodes[1]);
         }
@@ -1501,8 +1500,7 @@ bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road)
     return true;
 }
 
-bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius,
-                            FoxDriveSide side)
+bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius, FoxDriveSide side)
 {
     if (network == NULL || radius <= 0 || (side != FOX_DRIVE_RIGHT && side != FOX_DRIVE_LEFT) ||
         network->zoneCount >= FOX_NETWORK_MAX_DRIVE_ZONES)
@@ -1569,8 +1567,7 @@ bool FoxNetworkSetSpeedLimit(FoxNetwork *network, uint32_t road, int32_t speed)
     }
     FoxRoad *record = &network->roads[road];
     record->speedSetting = speed;
-    record->speedLimit =
-        speed != 0 ? speed : FoxRoadTypeGet((FoxRoadType)record->type)->speedLimit;
+    record->speedLimit = speed != 0 ? speed : FoxRoadTypeGet((FoxRoadType)record->type)->speedLimit;
     FoxLanesApplyRoadSpeed(network, road);
     record->revision = network->revision + 1u;
     for (uint32_t end = 0u; end < 2u; ++end)
@@ -1635,6 +1632,15 @@ FoxLight FoxNetworkLight(const FoxNetwork *network, uint32_t road, uint32_t end)
         return FOX_LIGHT_NONE;
     }
     return FoxSignalsLight(network, road, end);
+}
+
+FoxLight FoxNetworkArrow(const FoxNetwork *network, uint32_t road, uint32_t end)
+{
+    if (network == NULL || road >= network->roadCapacity || !network->roads[road].alive || end > 1u)
+    {
+        return FOX_LIGHT_NONE;
+    }
+    return FoxSignalsArrow(network, road, end);
 }
 
 uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane)

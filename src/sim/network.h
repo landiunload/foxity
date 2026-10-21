@@ -264,8 +264,7 @@ bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road);
 /* Lays a zone with its own drive side over every road whose middle lies
  * within `radius` of `center`; later zones win where zones overlap. False
  * when the zone table is full or the input invalid. */
-bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius,
-                            FoxDriveSide side);
+bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius, FoxDriveSide side);
 uint32_t FoxNetworkDriveZoneCount(const FoxNetwork *network);
 
 /* Sets a road's speed limit, FOX_SPEED_LIMIT_MIN..FOX_SPEED_LIMIT_MAX, or
@@ -278,6 +277,9 @@ bool FoxNetworkSetSign(FoxNetwork *network, uint32_t road, uint32_t end, FoxSign
 bool FoxNetworkSetSignals(FoxNetwork *network, uint32_t node, bool on);
 /* The light shown to the traffic arriving at nodes[end] of a road. */
 FoxLight FoxNetworkLight(const FoxNetwork *network, uint32_t road, uint32_t end);
+/* The arrow shown beside it for turning across the oncoming lanes, which
+ * may go by themselves after the others; FOX_LIGHT_NONE while it is dark. */
+FoxLight FoxNetworkArrow(const FoxNetwork *network, uint32_t road, uint32_t end);
 /* FOX_TURN_* bits of where a lane leads at its end; zero for anything but a
  * live lane. */
 uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane);

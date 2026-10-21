@@ -23,19 +23,34 @@
 /* Cars this close to their line, beyond their braking distance and two
  * seconds of driving, take part in their intersection's rounds. */
 #define DECISION_MARGIN FOX_METRES(15)
-/* Head starts in an intersection's order: per step of right of way the sign
- * gives, and for going straight. Whoever has waited longer than the head
- * start of the road given way to is let in. */
-#define SIGN_PRIORITY_TICKS (INT64_C(8) * TICKS)
-#define STRAIGHT_PRIORITY_TICKS (INT64_C(3) * TICKS / 2)
-/* A car may cross the way another one holds when it is through this long
- * before the other one gets there. */
+/* A car crosses the way of one it gives way to only when it is through a
+ * gap before the other one could get there: this long at first, down to the
+ * shortest after waiting the patience. One passing first must be through
+ * the safety margin before it comes itself. Out of patience a driver also
+ * goes ahead of those that can still stop for it comfortably with room to
+ * spare, at first leaving them time to react, none after twice the
+ * patience. */
+#define REACTION_TICKS (INT64_C(3) * TICKS / 2)
+/* How many lanes back drivers look for those they give way to. */
+#define UPSTREAM_LANES 3u
+#define UPSTREAM_PENDING 64u
+#define SPARE_ROOM FOX_METRES(5)
 #define GAP_TICKS (INT64_C(2) * TICKS)
-/* A car's rear this far past where two ways meet leaves the other one free. */
-#define PASSED_MARGIN FOX_METRES(3)
-/* A car waiting this close to its line when its green ends may still clear
- * the intersection. */
-#define CLEARING_REACH FOX_METRES(3)
+#define MIN_GAP_TICKS (INT64_C(1) * TICKS / 2)
+#define PATIENCE_TICKS (UINT64_C(20) * TICKS)
+#define SAFETY_TICKS (INT64_C(1) * TICKS)
+/* A car's rear this far past where two ways meet leaves the other one free,
+ * and its front stays this far short of it while it waits. */
+#define PASSED_MARGIN FOX_METRES(2)
+#define CLEARANCE (FOX_LANE_WIDTH / 2 + FOX_METRES(1))
+/* A car turning across the oncoming lanes drives in to wait when it gets at
+ * least this far past its line; cars from one lane wait for each other until
+ * the rear of the one ahead is this far along, where their ways part. */
+#define MIN_HOLD FOX_METRES(4)
+/* A car this close behind another one in an intersection goes no faster. */
+#define LEADER_REACH FOX_METRES(20)
+#define PARTING FOX_METRES(8)
+#define HOLD_NONE INT64_MAX
 /* At a stop sign a car stands this close to the line before it may go. */
 #define STOP_LINE_REACH FOX_METRES(5)
 /* Out of a hundred new vehicles, this many are trucks. */
@@ -44,8 +59,9 @@
 #define TRAIL 3u
 /* A car standing this long is taken off the road, as city builders do: an
  * overloaded network can always tie itself into a knot, and this undoes it
- * while the spawner brings the car back elsewhere. */
-#define STUCK_TICKS (60u * TICKS)
+ * while the spawner brings the car back elsewhere. Waiting through a few
+ * red lights takes less. */
+#define STUCK_TICKS (120u * TICKS)
 #define STATS_TICKS (UINT64_C(2) * TICKS)
 #define REROUTE_TICKS (UINT64_C(30) * TICKS)
 #define SPAWN_PER_TICK 2u
@@ -65,7 +81,7 @@ typedef struct Driving
 
 static const Driving drivings[FOX_VEHICLE_KIND_COUNT] = {
     [FOX_VEHICLE_CAR] = {FOX_CAR_LENGTH, FOX_METRES(2), FOX_METRES(5) / 2, 1200, FOX_METRES(60)},
-    [FOX_VEHICLE_TRUCK] = {FOX_TRUCK_LENGTH, FOX_METRES(9) / 10, FOX_METRES(8) / 5, 1800,
+    [FOX_VEHICLE_TRUCK] = {FOX_TRUCK_LENGTH, FOX_METRES(6) / 5, FOX_METRES(8) / 5, 1800,
                            FOX_KMH(80)},
 };
 
@@ -99,6 +115,9 @@ typedef struct Vehicle
     /* Beyond a lane too short to stop on, the connection claimed together
      * with the one before it. */
     uint32_t through;
+    /* How far along its connection a car turning across the oncoming lanes
+     * may drive to wait there for a gap; HOLD_NONE to drive through. */
+    int64_t holdAt;
     uint32_t waitTicks;
     /* The tick the car joined its intersection's rounds; zero outside them. */
     uint64_t arrival;
@@ -125,13 +144,7 @@ static const Driving *DrivingOf(const Vehicle *vehicle)
 
 typedef struct Candidate Candidate;
 
-/* A way given away or held in an intersection's round, and in how many ticks
- * its car gets there. */
-typedef struct TakenWay
-{
-    uint32_t connection;
-    int64_t eta;
-} TakenWay;
+typedef struct TakenWay TakenWay;
 
 struct FoxTraffic
 {
@@ -246,8 +259,8 @@ static void Unlink(FoxTraffic *traffic, FoxNetwork *network, uint32_t slot)
 }
 
 /* The neighbours a car at `s` would have on a path. */
-static void FindPlace(const FoxTraffic *traffic, const FoxPath *path, int64_t s,
-                      uint32_t *outAhead, uint32_t *outBehind)
+static void FindPlace(const FoxTraffic *traffic, const FoxPath *path, int64_t s, uint32_t *outAhead,
+                      uint32_t *outBehind)
 {
     uint32_t ahead = path->back;
     uint32_t behind = NONE;
@@ -370,7 +383,8 @@ static bool LaneLeadsTo(const FoxNetwork *network, const FoxPath *lane, uint32_t
     for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
     {
         const FoxPath *connection = FoxNetworkPathRecord(network, lane->outgoing[index]);
-        const FoxPath *to = connection == NULL ? NULL : FoxNetworkPathRecord(network, connection->to);
+        const FoxPath *to =
+            connection == NULL ? NULL : FoxNetworkPathRecord(network, connection->to);
         if (to != NULL && EdgeOf(to) == edge)
         {
             return true;
@@ -552,6 +566,7 @@ static void ChooseConnection(FoxTraffic *traffic, FoxNetwork *network, Vehicle *
     vehicle->permitted = false;
     vehicle->clear = false;
     vehicle->stopped = false;
+    vehicle->holdAt = HOLD_NONE;
     vehicle->arrival = 0u;
     const FoxPath *lane = FoxNetworkPathRecord(network, vehicle->path);
     if (lane == NULL || lane->kind != PATH_LANE || lane->outgoingCount == 0u)
@@ -591,7 +606,6 @@ static void ChooseConnection(FoxTraffic *traffic, FoxNetwork *network, Vehicle *
     vehicle->routeIndex = 0u;
     vehicle->connection = RandomConnection(network, lane, FoxRandomNext(&vehicle->random));
 }
-
 
 static void EnterLane(FoxTraffic *traffic, FoxNetwork *network, Vehicle *vehicle)
 {
@@ -675,9 +689,10 @@ static void Spawn(FoxTraffic *traffic, FoxNetwork *network)
         {
             continue;
         }
-        const uint32_t direction = road->laneCount[0] == 0u   ? 1u
-                                   : road->laneCount[1] == 0u ? 0u
-                                                              : FoxRandomBelow(&traffic->random, 2u);
+        const uint32_t direction = road->laneCount[0] == 0u ? 1u
+                                   : road->laneCount[1] == 0u
+                                       ? 0u
+                                       : FoxRandomBelow(&traffic->random, 2u);
         if (road->laneCount[direction] == 0u)
         {
             continue;
@@ -716,6 +731,7 @@ static void Spawn(FoxTraffic *traffic, FoxNetwork *network)
             .claim = NONE,
             .clearing = NONE,
             .through = NONE,
+            .holdAt = HOLD_NONE,
             .destination = NONE,
             .random = FoxRandomStream(traffic->seed, serial),
         };
@@ -723,8 +739,8 @@ static void Spawn(FoxTraffic *traffic, FoxNetwork *network)
                             ? (uint8_t)FOX_VEHICLE_TRUCK
                             : (uint8_t)FOX_VEHICLE_CAR;
         vehicle->color = (uint8_t)FoxRandomBelow(&vehicle->random, COLORS);
-        vehicle->desire = (int32_t)FoxRandomRange(&vehicle->random, FOX_UNIT * 95 / 100,
-                                                   FOX_UNIT * 108 / 100);
+        vehicle->desire =
+            (int32_t)FoxRandomRange(&vehicle->random, FOX_UNIT * 95 / 100, FOX_UNIT * 108 / 100);
         Link(traffic, network, slot, laneIndex, s);
         vehicle->prevPath = laneIndex;
         vehicle->prevGeneration = vehicle->pathGeneration;
@@ -759,8 +775,7 @@ static bool RoomOn(const FoxTraffic *traffic, const FoxNetwork *network, uint32_
     }
     /* Each vehicle on its way keeps a gap besides its length. */
     const int64_t coming = (int64_t)lane->incoming * (FOX_CAR_LENGTH + MIN_GAP) / FOX_CAR_LENGTH;
-    const int64_t room =
-        (tail != NULL ? tail->s - DrivingOf(tail)->length : lane->length) - coming;
+    const int64_t room = (tail != NULL ? tail->s - DrivingOf(tail)->length : lane->length) - coming;
     return room >= length + MIN_GAP;
 }
 
@@ -771,56 +786,417 @@ static void Claim(FoxNetwork *network, uint32_t connectionIndex, const Vehicle *
     PathOf(network, connection->to)->incoming += (uint32_t)DrivingOf(vehicle)->length;
 }
 
-static int64_t TravelTicks(const Vehicle *vehicle, int64_t distance);
-
-/* Whether the cars holding a claimed connection stand in the way of one
- * meeting it `at` along it: those on it and those that have left it until
- * their rear is past the meeting point, and the one about to enter unless the
- * other car, through `through` ticks from now, is gone before it gets
- * there. */
-static bool ClaimInWay(const FoxTraffic *traffic, const FoxNetwork *network,
-                       uint32_t connectionIndex, const FoxPath *connection, int64_t at,
-                       int64_t through)
+static int64_t BrakingDistance(const Vehicle *vehicle)
 {
-    uint32_t holders = connection->vehicleCount;
-    if (connection->back != NONE)
+    const int64_t speed = vehicle->speed;
+    return speed * speed / (2 * DrivingOf(vehicle)->brake);
+}
+
+/* The light at the end of a lane. */
+static FoxLight LightAt(const FoxNetwork *network, const FoxPath *lane)
+{
+    return FoxSignalsLight(network, lane->road, lane->direction == 0u ? 1u : 0u);
+}
+
+/* The light for a way through an intersection: the arrow while it shows
+ * for a turn across the oncoming lanes, else the one at the end of its
+ * lane. */
+static FoxLight LightFor(const FoxNetwork *network, uint32_t connectionIndex)
+{
+    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    const FoxPath *lane = FoxNetworkPathRecord(network, connection->from);
+    const FoxLight arrow =
+        connection->movement == MOVE_FAR
+            ? FoxSignalsArrow(network, lane->road, lane->direction == 0u ? 1u : 0u)
+            : FOX_LIGHT_NONE;
+    return arrow != FOX_LIGHT_NONE ? arrow : LightAt(network, lane);
+}
+
+/* Right of way from the sign at the end of a lane: 2 priority, 1 none, 0
+ * give way or stop. Under lights every approach is equal. */
+static int64_t SignClass(const FoxNetwork *network, const FoxPath *lane)
+{
+    const uint8_t sign = network->roads[lane->road].sign[lane->direction == 0u ? 1u : 0u];
+    return sign == FOX_SIGN_PRIORITY ? 2 : (sign == FOX_SIGN_NONE ? 1 : 0);
+}
+
+/* Ticks to cover a distance from a speed, accelerating up to a cap and
+ * keeping it. */
+static int64_t CoverTicks(int64_t speed, int64_t acceleration, int64_t cap, int64_t distance)
+{
+    if (distance <= 0)
     {
-        const Vehicle *last = &traffic->vehicles[connection->back];
-        if (last->s - DrivingOf(last)->length <= at + PASSED_MARGIN)
+        return 0;
+    }
+    cap = FoxMax(cap, FOX_METRES(1));
+    if (speed >= cap)
+    {
+        return distance * (int64_t)TICKS / cap;
+    }
+    const int64_t rising = (cap * cap - speed * speed) / (2 * acceleration);
+    if (distance <= rising)
+    {
+        const int64_t root =
+            (int64_t)FoxIntegerSqrt((uint64_t)(speed * speed + 2 * acceleration * distance));
+        return (int64_t)TICKS * (root - speed) / acceleration;
+    }
+    return (int64_t)TICKS * (cap - speed) / acceleration +
+           (distance - rising) * (int64_t)TICKS / cap;
+}
+
+/* The soonest a vehicle could cover a distance: accelerating as hard as it
+ * can to a little over the limit. */
+static int64_t EarliestTicks(const Vehicle *vehicle, int64_t limit, int64_t distance)
+{
+    return CoverTicks(vehicle->speed, DrivingOf(vehicle)->acceleration,
+                      FoxMax((int64_t)vehicle->speed, limit * 11 / 10), distance);
+}
+
+/* The latest a vehicle driving on covers a distance: never above nine
+ * tenths of the limit, and with seven tenths of its acceleration, which is
+ * about what the driver model averages easing into its speed. */
+static int64_t LatestTicks(const Vehicle *vehicle, int64_t limit, int64_t distance)
+{
+    const int64_t cap = limit * 9 / 10;
+    return CoverTicks(FoxMin((int64_t)vehicle->speed, cap),
+                      DrivingOf(vehicle)->acceleration * 7 / 10, cap, distance);
+}
+
+/* Where a car stops along the way it holds, or HOLD_NONE when it drives
+ * through. Once its light is red a car waiting inside the intersection only
+ * leaves it: everyone else lets it. */
+static int64_t HoldOf(const FoxNetwork *network, const Vehicle *vehicle)
+{
+    if (vehicle->holdAt == HOLD_NONE)
+    {
+        return HOLD_NONE;
+    }
+    return LightFor(network, vehicle->connection) == FOX_LIGHT_RED ? HOLD_NONE : vehicle->holdAt;
+}
+
+/* When a car would get to where its way meets another one at the earliest,
+ * when its rear would be past it at the latest, and the gap it leaves
+ * before anyone else comes. */
+typedef struct Window
+{
+    int64_t arrive;
+    int64_t clear;
+    int64_t gap;
+} Window;
+
+/* How fast a car on a way, or about to take it, can go at most for the one
+ * close ahead of it: no faster than that one, and at least a walking pace. */
+static int64_t LeaderPace(const FoxTraffic *traffic, const FoxNetwork *network,
+                          const Vehicle *holder, const FoxPath *way)
+{
+    const FoxPath *beyond = FoxNetworkPathRecord(network, way->to);
+    const Vehicle *leader = NULL;
+    if (holder->ahead != NONE)
+    {
+        leader = &traffic->vehicles[holder->ahead];
+    }
+    else if (way->front != NONE && FoxNetworkPathRecord(network, holder->path) != way)
+    {
+        leader = &traffic->vehicles[way->back];
+    }
+    else if (beyond->back != NONE && traffic->vehicles[beyond->back].s -
+                                             DrivingOf(&traffic->vehicles[beyond->back])->length <
+                                         LEADER_REACH)
+    {
+        leader = &traffic->vehicles[beyond->back];
+    }
+    return leader == NULL ? INT64_MAX : FoxMax((int64_t)leader->speed, FOX_METRES(1));
+}
+
+/* Whether a car on a way, or about to take it, `position` along it (negative
+ * before its line) stands in the way of one with the window `mine` where the
+ * two meet, `meet` along the way. It does not when it is through a margin
+ * before, waits short of the meeting point, or comes a gap after. */
+static bool HolderInWay(const FoxTraffic *traffic, const FoxNetwork *network, const Vehicle *holder,
+                        const FoxPath *way, int64_t position, int64_t meet, Window mine)
+{
+    const int64_t length = DrivingOf(holder)->length;
+    if (position - length > meet + PASSED_MARGIN)
+    {
+        return false;
+    }
+    const int64_t hold = HoldOf(network, holder);
+    if (hold != HOLD_NONE && hold <= meet - CLEARANCE)
+    {
+        return false;
+    }
+    const int64_t arrive = EarliestTicks(holder, way->speedLimit, meet - CLEARANCE - position);
+    const int64_t clear =
+        hold != HOLD_NONE && hold - length < meet + PASSED_MARGIN
+            ? INT64_MAX
+            : LatestTicks(holder,
+                          FoxMin(way->speedLimit, LeaderPace(traffic, network, holder, way)),
+                          meet + length + PASSED_MARGIN - position);
+    const bool before = clear != INT64_MAX && clear + SAFETY_TICKS <= mine.arrive;
+    return !before && arrive < mine.clear + mine.gap;
+}
+
+/* Whether the cars holding a way stand in the way of one meeting it: those
+ * on it, those that have left it until their rear is past, and the one about
+ * to enter it. Claims of cars not found among them come through a lane too
+ * short to stop on and always do. */
+static bool HoldersInWay(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t wayIndex,
+                         const FoxPath *way, int64_t meet, Window mine)
+{
+    if (way->claims == 0u)
+    {
+        return false;
+    }
+    uint32_t holders = 0u;
+    for (uint32_t slot = way->front; slot != NONE; slot = traffic->vehicles[slot].behind)
+    {
+        const Vehicle *holder = &traffic->vehicles[slot];
+        ++holders;
+        if (HolderInWay(traffic, network, holder, way, holder->s, meet, mine))
         {
             return true;
         }
     }
-    /* Those that have left are the last ones on the lane beyond; their rear
-     * lies as far along the connection as they are short of their length. */
-    const FoxPath *beyond = FoxNetworkPathRecord(network, connection->to);
-    for (uint32_t slot = beyond->back;
-         slot != NONE && traffic->vehicles[slot].clearing == connectionIndex;
+    const FoxPath *beyond = FoxNetworkPathRecord(network, way->to);
+    for (uint32_t slot = beyond->back; slot != NONE && traffic->vehicles[slot].clearing == wayIndex;
          slot = traffic->vehicles[slot].ahead)
     {
         const Vehicle *leaving = &traffic->vehicles[slot];
-        if (connection->length + leaving->s - DrivingOf(leaving)->length <= at + PASSED_MARGIN)
+        ++holders;
+        if (HolderInWay(traffic, network, leaving, way, way->length + leaving->s, meet, mine))
         {
             return true;
         }
-        ++holders;
     }
-    const FoxPath *lane = FoxNetworkPathRecord(network, connection->from);
-    if (lane != NULL && lane->front != NONE)
+    const FoxPath *lane = FoxNetworkPathRecord(network, way->from);
+    if (lane->front != NONE && traffic->vehicles[lane->front].claim == wayIndex)
     {
         const Vehicle *coming = &traffic->vehicles[lane->front];
-        if (coming->claim == connectionIndex)
+        ++holders;
+        if (HolderInWay(traffic, network, coming, way, coming->s - lane->length, meet, mine))
         {
-            if (through == 0 || TravelTicks(coming, lane->length - coming->s + at) <= through)
+            return true;
+        }
+    }
+    return way->claims > holders;
+}
+
+/* A way given away earlier in this round of its intersection, and to whom. */
+struct TakenWay
+{
+    uint32_t connection;
+    uint32_t slot;
+};
+
+static bool TakenInWay(const FoxTraffic *traffic, const FoxNetwork *network, const TakenWay *taken,
+                       uint32_t takenCount, uint32_t wayIndex, const FoxPath *way, int64_t meet,
+                       Window mine)
+{
+    for (uint32_t index = 0u; index < takenCount; ++index)
+    {
+        if (taken[index].connection != wayIndex)
+        {
+            continue;
+        }
+        const Vehicle *holder = &traffic->vehicles[taken[index].slot];
+        const FoxPath *path = FoxNetworkPathRecord(network, holder->path);
+        const int64_t position = path->kind == PATH_LANE ? holder->s - path->length : holder->s;
+        if (HolderInWay(traffic, network, holder, way, position, meet, mine))
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Whether the light or sign at the end of a lane will stop a car `distance`
+ * before it. */
+static bool WillStop(const FoxNetwork *network, const Vehicle *vehicle, const FoxPath *lane,
+                     int64_t distance)
+{
+    const FoxLight light = vehicle->connection != NONE ? LightFor(network, vehicle->connection)
+                                                       : LightAt(network, lane);
+    if (light == FOX_LIGHT_RED)
+    {
+        return true;
+    }
+    if (light == FOX_LIGHT_YELLOW)
+    {
+        /* Whoever can still stop comfortably does. */
+        return distance > BrakingDistance(vehicle) + FOX_METRES(2);
+    }
+    return light == FOX_LIGHT_NONE &&
+           network->roads[lane->road].sign[lane->direction == 0u ? 1u : 0u] == FOX_SIGN_STOP &&
+           !vehicle->stopped;
+}
+
+/* Whether a car's route still takes it onto the edge `target` beyond the
+ * lane `laneIndex` it is coming to; a car without a route, or whose route
+ * cannot go on from that lane and will be planned again there, might go
+ * anywhere. */
+static bool WillReach(const FoxNetwork *network, const Vehicle *vehicle, uint32_t laneIndex,
+                      uint32_t target)
+{
+    if (network->router == NULL || vehicle->routeLength == 0u ||
+        PlanThrough(network, vehicle, laneIndex) == NONE)
+    {
+        return true;
+    }
+    const uint32_t reach = vehicle->routeIndex + UPSTREAM_LANES + 1u;
+    const uint32_t last = vehicle->routeLength < reach ? vehicle->routeLength : reach;
+    for (uint32_t index = vehicle->routeIndex; index < last; ++index)
+    {
+        if (vehicle->route[index] == target)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* Whether a car `toLine` before its line, `toMeet` before where it would
+ * meet another one, could be there within `window` ticks, and for a driver
+ * out of patience also could not stop at its line comfortably after
+ * `reaction` ticks; `reaction` is negative while it is patient. */
+static bool Coming(const Vehicle *vehicle, int64_t limit, int64_t toLine, int64_t toMeet,
+                   int64_t window, int64_t reaction)
+{
+    if (EarliestTicks(vehicle, limit, toMeet) >= window)
+    {
+        return false;
+    }
+    return reaction < 0 || toLine <= BrakingDistance(vehicle) +
+                                         (int64_t)vehicle->speed * reaction / (int64_t)TICKS +
+                                         SPARE_ROOM;
+}
+
+/* A lane further back to look along: how far from its start the meeting
+ * point lies, and how many lanes further back may still follow. */
+typedef struct UpstreamLane
+{
+    uint32_t lane;
+    uint32_t depth;
+    int64_t toMeet;
+} UpstreamLane;
+
+/* Whether a car further back, before the lane `laneIndex`, could come onto
+ * the edge `target` in time: from the intersections and lanes leading into
+ * it, UPSTREAM_LANES lanes back. `toMeet` is measured from the start of the
+ * lane. Such a car only sees the intersection once on the last lane before
+ * it, and has no more than `room` to stop in. Nobody gets past the first car
+ * of a lane a light or sign holds. Where there are more ways in than can be
+ * followed, someone is taken to be coming. */
+static bool Upstream(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t laneIndex,
+                     int64_t room, int64_t toMeet, uint32_t target, int64_t window,
+                     int64_t reaction)
+{
+    UpstreamLane pending[UPSTREAM_PENDING];
+    uint32_t count = 0u;
+    pending[count++] = (UpstreamLane){.lane = laneIndex, .depth = UPSTREAM_LANES, .toMeet = toMeet};
+    while (count != 0u)
+    {
+        const UpstreamLane at = pending[--count];
+        const FoxPath *lane = FoxNetworkPathRecord(network, at.lane);
+        if (at.toMeet * (int64_t)TICKS /
+                FoxMax(FOX_METRES(1), (int64_t)lane->speedLimit * 11 / 10) >=
+            window)
+        {
+            continue;
+        }
+        const FoxRoad *road = &network->roads[lane->road];
+        const FoxNode *node = &network->nodes[road->nodes[lane->direction == 0u ? 0u : 1u]];
+        for (uint32_t index = 0u; index < node->connectionCount; ++index)
+        {
+            const uint32_t beforeIndex = node->connections[index];
+            const FoxPath *before = FoxNetworkPathRecord(network, beforeIndex);
+            if (before->to != at.lane)
+            {
+                continue;
+            }
+            for (uint32_t slot = before->front; slot != NONE; slot = traffic->vehicles[slot].behind)
+            {
+                const Vehicle *coming = &traffic->vehicles[slot];
+                if (WillReach(network, coming, at.lane, target) &&
+                    Coming(coming, lane->speedLimit, room, before->length - coming->s + at.toMeet,
+                           window, reaction))
+                {
+                    return true;
+                }
+            }
+            const FoxPath *previous = FoxNetworkPathRecord(network, before->from);
+            bool held = false;
+            for (uint32_t slot = previous->front; slot != NONE && !held;
+                 slot = traffic->vehicles[slot].behind)
+            {
+                const Vehicle *coming = &traffic->vehicles[slot];
+                const int64_t left = previous->length - coming->s + before->length;
+                held = slot == previous->front &&
+                       WillStop(network, coming, previous, previous->length - coming->s);
+                if (!held && coming->connection == beforeIndex &&
+                    WillReach(network, coming, at.lane, target) &&
+                    Coming(coming, previous->speedLimit, room, left + at.toMeet, window, reaction))
+                {
+                    return true;
+                }
+            }
+            if (held || at.depth <= 1u)
+            {
+                continue;
+            }
+            if (count == UPSTREAM_PENDING)
             {
                 return true;
             }
-            ++holders;
+            pending[count++] = (UpstreamLane){
+                .lane = before->from,
+                .depth = at.depth - 1u,
+                .toMeet = at.toMeet + before->length + previous->length,
+            };
         }
     }
-    /* The rest come through a lane too short to stop on and are on their
-     * way. */
-    return connection->claims > holders;
+    return false;
+}
+
+/* Whether a car that has not taken a way yet could get to where it meets
+ * another one, `meet` along it, within `window` ticks: from the lane before
+ * it, or from further back. Nobody gets past the first car of a lane while
+ * a light or sign holds that one. Where no lights rule, one standing at its
+ * line waiting for its own turn that came after the driver who asks, came
+ * `arrival`, lets that one go first, and so does any for a driver out of
+ * patience: no ring of cars waits for each other. */
+static bool Approaching(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t wayIndex,
+                        const FoxPath *way, int64_t meet, int64_t window, int64_t reaction,
+                        uint64_t arrival)
+{
+    if (LightFor(network, wayIndex) == FOX_LIGHT_RED)
+    {
+        /* Nobody comes through a red light; once it turns green, the cars
+         * there find this one in their way. */
+        return false;
+    }
+    const FoxPath *lane = FoxNetworkPathRecord(network, way->from);
+    for (uint32_t slot = lane->front; slot != NONE; slot = traffic->vehicles[slot].behind)
+    {
+        const Vehicle *coming = &traffic->vehicles[slot];
+        const int64_t distance = lane->length - coming->s;
+        if (slot == lane->front &&
+            (WillStop(network, coming, lane, distance) ||
+             (LightAt(network, lane) == FOX_LIGHT_NONE && coming->speed <= STANDING_SPEED &&
+              !coming->clear && !coming->permitted &&
+              (reaction >= 0 || (coming->arrival != 0u && coming->arrival > arrival)))))
+        {
+            return false;
+        }
+        if (coming->connection == wayIndex && coming->claim != wayIndex &&
+            Coming(coming, lane->speedLimit, distance, distance + meet - CLEARANCE, window,
+                   reaction))
+        {
+            return true;
+        }
+    }
+    const FoxPath *beyond = FoxNetworkPathRecord(network, way->to);
+    return Upstream(traffic, network, way->from, lane->length, lane->length + meet - CLEARANCE,
+                    EdgeOf(beyond), window, reaction);
 }
 
 /* How far along a connection one that conflicts with it meets it. */
@@ -836,67 +1212,210 @@ static int64_t MeetingOn(const FoxNetwork *network, uint32_t connectionIndex, co
     return FoxNetworkPathRecord(network, connectionIndex)->length;
 }
 
-/* Ticks until the rear of a car `distance` before its line is past the point
- * `meet` along its connection: at full acceleration, but no faster than the
- * way allows. */
-static int64_t PassTicks(const Vehicle *vehicle, const FoxPath *connection, int64_t distance,
-                         int64_t meet)
+/* How far along its connection a car `toLine` before its line (negative
+ * once past it) may go: up to the first meeting with a way a car holds or
+ * was given in this round and stands in its way there, or with one a car
+ * it gives way to is coming along; HOLD_NONE when it is free throughout.
+ * `outMerge` tells whether that way runs into the same lane. */
+static int64_t FirstBlocked(const FoxTraffic *traffic, const FoxNetwork *network,
+                            const Vehicle *vehicle, int64_t toLine, int64_t gap, int64_t reaction,
+                            const TakenWay *taken, uint32_t takenCount, bool giveWay,
+                            bool *outMerge)
 {
-    const int64_t beyond = meet + DrivingOf(vehicle)->length + PASSED_MARGIN;
-    return FoxMax(TravelTicks(vehicle, distance + beyond),
-                  TravelTicks(vehicle, distance) +
-                      beyond * TICKS / FoxMax(FOX_METRES(1), connection->speedLimit));
-}
-
-/* Whether a connection crosses a claimed one, or one given away or reserved
- * earlier in this round of its intersection. A car `distance` before its
- * line may still go when its rear is past where the two meet a gap ahead of
- * the other car getting there; without a car every claim blocks. */
-static bool Blocked(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t connectionIndex,
-                    const TakenWay *taken, uint32_t takenCount, const Vehicle *vehicle,
-                    int64_t distance)
-{
-    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    const FoxPath *connection = FoxNetworkPathRecord(network, vehicle->connection);
+    const int64_t length = DrivingOf(vehicle)->length;
+    int64_t first = HOLD_NONE;
+    *outMerge = false;
     for (uint32_t index = 0u; index < connection->conflictCount; ++index)
     {
-        const uint32_t otherIndex = connection->conflicts[index].path;
-        const FoxPath *other = FoxNetworkPathRecord(network, otherIndex);
+        const FoxConflict *conflict = &connection->conflicts[index];
+        const FoxPath *other = FoxNetworkPathRecord(network, conflict->path);
         if (other == NULL)
         {
             continue;
         }
-        const int64_t through =
-            vehicle == NULL ? 0
-                            : PassTicks(vehicle, connection, distance,
-                                        MeetingOn(network, connectionIndex, other)) +
-                                  GAP_TICKS;
-        if (other->claims > 0u &&
-            ClaimInWay(traffic, network, otherIndex, other, connection->conflicts[index].otherAt,
-                       through))
+        const int64_t meet = MeetingOn(network, vehicle->connection, other);
+        const int64_t toMeet = toLine + meet;
+        if (meet >= first || toMeet + length + PASSED_MARGIN <= 0)
+        {
+            continue;
+        }
+        const Window mine = {
+            .arrive = EarliestTicks(vehicle, connection->speedLimit, toMeet - CLEARANCE),
+            .clear = LatestTicks(vehicle, connection->speedLimit, toMeet + length + PASSED_MARGIN),
+            .gap = gap,
+        };
+        if (HoldersInWay(traffic, network, conflict->path, other, conflict->otherAt, mine) ||
+            TakenInWay(traffic, network, taken, takenCount, conflict->path, other,
+                       conflict->otherAt, mine) ||
+            (giveWay && conflict->yields &&
+             Approaching(traffic, network, conflict->path, other, conflict->otherAt,
+                         mine.clear + gap, reaction, vehicle->arrival)))
+        {
+            first = meet;
+            *outMerge = other->to == connection->to;
+        }
+    }
+    return first;
+}
+
+/* Whether a car `toLine` before the line of an intersection further ahead
+ * would find cars holding ways that cross its connection there in its way:
+ * a driver sees that coming before reaching the lane up to it. */
+static bool HeldOn(const FoxTraffic *traffic, const FoxNetwork *network, const Vehicle *vehicle,
+                   uint32_t connectionIndex, int64_t toLine)
+{
+    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    const int64_t length = DrivingOf(vehicle)->length;
+    for (uint32_t index = 0u; index < connection->conflictCount; ++index)
+    {
+        const FoxConflict *conflict = &connection->conflicts[index];
+        const FoxPath *other = FoxNetworkPathRecord(network, conflict->path);
+        if (other == NULL)
+        {
+            continue;
+        }
+        const int64_t toMeet = toLine + MeetingOn(network, connectionIndex, other);
+        const Window mine = {
+            .arrive = EarliestTicks(vehicle, connection->speedLimit, toMeet - CLEARANCE),
+            .clear = LatestTicks(vehicle, connection->speedLimit, toMeet + length + PASSED_MARGIN),
+            .gap = GAP_TICKS,
+        };
+        if (HoldersInWay(traffic, network, conflict->path, other, conflict->otherAt, mine))
         {
             return true;
         }
-        for (uint32_t slot = 0u; slot < takenCount; ++slot)
+    }
+    return false;
+}
+
+/* The same for the way a car takes at the end of a lane, `onward`, or for
+ * every way there when its route cannot go on from that lane. */
+static bool HeldAhead(const FoxTraffic *traffic, const FoxNetwork *network, const Vehicle *vehicle,
+                      const FoxPath *lane, uint32_t onward, int64_t toLine)
+{
+    if (onward != NONE)
+    {
+        return HeldOn(traffic, network, vehicle, onward, toLine);
+    }
+    for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
+    {
+        if (HeldOn(traffic, network, vehicle, lane->outgoing[index], toLine))
         {
-            if (taken[slot].connection == otherIndex && taken[slot].eta <= through)
-            {
-                return true;
-            }
+            return true;
         }
     }
     return false;
+}
+
+/* Whether any way crossing a connection is held. */
+static bool AnyClaimCrosses(const FoxNetwork *network, uint32_t connectionIndex)
+{
+    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    for (uint32_t index = 0u; index < connection->conflictCount; ++index)
+    {
+        const FoxPath *other = FoxNetworkPathRecord(network, connection->conflicts[index].path);
+        if (other != NULL && other->claims > 0u)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The car that left a lane by another way than `except` and whose rear is
+ * not yet past where the ways part, the rearmost one; NONE without one.
+ * `outRear` is how far past the line its rear is. */
+static uint32_t Departing(const FoxTraffic *traffic, const FoxNetwork *network, const FoxPath *lane,
+                          uint32_t except, int64_t *outRear)
+{
+    uint32_t found = NONE;
+    *outRear = PARTING;
+    for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
+    {
+        const FoxPath *connection = FoxNetworkPathRecord(network, lane->outgoing[index]);
+        if (lane->outgoing[index] == except || connection->back == NONE)
+        {
+            continue;
+        }
+        const Vehicle *last = &traffic->vehicles[connection->back];
+        const int64_t rear = last->s - DrivingOf(last)->length;
+        if (rear < *outRear)
+        {
+            *outRear = rear;
+            found = connection->back;
+        }
+    }
+    return found;
+}
+
+/* How far along a connection it first meets a way it gives way to that may
+ * be driven now: a car waiting inside stops short of all of them, not
+ * between them. */
+static int64_t FirstGiveWay(const FoxNetwork *network, uint32_t connectionIndex)
+{
+    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    int64_t first = HOLD_NONE;
+    for (uint32_t index = 0u; index < connection->conflictCount; ++index)
+    {
+        const FoxConflict *conflict = &connection->conflicts[index];
+        const FoxPath *other = FoxNetworkPathRecord(network, conflict->path);
+        if (other != NULL && conflict->yields && LightFor(network, conflict->path) != FOX_LIGHT_RED)
+        {
+            first = FoxMin(first, MeetingOn(network, connectionIndex, other));
+        }
+    }
+    return first;
+}
+
+/* Whether a car may drive into the intersection to wait for a gap in the
+ * oncoming traffic, its front at `hold` along its connection: when it turns
+ * across that traffic on a green, nobody waits on its way already, and
+ * standing there it is in the way of no way that may be driven while it
+ * waits, which only a red light makes sure of. */
+static bool MayWaitInside(const FoxTraffic *traffic, const FoxNetwork *network,
+                          const Vehicle *vehicle, const FoxPath *lane, const FoxPath *connection,
+                          int64_t hold)
+{
+    if (connection->movement != MOVE_FAR || LightAt(network, lane) != FOX_LIGHT_GREEN)
+    {
+        return false;
+    }
+    for (uint32_t slot = connection->front; slot != NONE; slot = traffic->vehicles[slot].behind)
+    {
+        if (traffic->vehicles[slot].holdAt != HOLD_NONE)
+        {
+            return false;
+        }
+    }
+    const int64_t rear = hold - DrivingOf(vehicle)->length - PASSED_MARGIN;
+    for (uint32_t index = 0u; index < connection->conflictCount; ++index)
+    {
+        const FoxPath *other = FoxNetworkPathRecord(network, connection->conflicts[index].path);
+        if (other == NULL)
+        {
+            continue;
+        }
+        const int64_t meet = MeetingOn(network, vehicle->connection, other);
+        if (meet + CLEARANCE > rear && meet - CLEARANCE < hold &&
+            LightFor(network, connection->conflicts[index].path) != FOX_LIGHT_RED)
+        {
+            return false;
+        }
+    }
+    return true;
 }
 
 /* A car taking part in its intersection's round. */
 struct Candidate
 {
     uint32_t node;
-    int64_t key;
+    int64_t rank;
+    uint64_t arrival;
     uint64_t serial;
     uint32_t slot;
-    /* Ticks until the car reaches its line, and how far it is from it. */
-    int64_t eta;
-    int64_t distance;
+    /* How far the car is from its line; negative once inside. */
+    int64_t toLine;
 };
 
 static int CompareCandidates(const void *left, const void *right)
@@ -907,78 +1426,66 @@ static int CompareCandidates(const void *left, const void *right)
     {
         return a->node < b->node ? -1 : 1;
     }
-    if (a->key != b->key)
+    if (a->rank != b->rank)
     {
-        return a->key < b->key ? -1 : 1;
+        return a->rank < b->rank ? -1 : 1;
+    }
+    if (a->arrival != b->arrival)
+    {
+        return a->arrival < b->arrival ? -1 : 1;
     }
     return (a->serial > b->serial) - (a->serial < b->serial);
 }
 
-static int64_t BrakingDistance(const Vehicle *vehicle)
+/* The order of a round: the road with right of way first, of each road
+ * those inside the intersection, then going straight, turning to the curb,
+ * across and back. */
+static int64_t Rank(const FoxNetwork *network, const FoxPath *lane, const FoxPath *connection,
+                    bool inside)
 {
-    const int64_t speed = vehicle->speed;
-    return speed * speed / (2 * DrivingOf(vehicle)->brake);
+    return (2 - SignClass(network, lane)) * 8 + (inside ? 0 : 4) + (int64_t)connection->movement;
 }
 
-/* Ticks a vehicle needs for a distance at full acceleration from its speed:
- * an estimate that errs early. */
-static int64_t TravelTicks(const Vehicle *vehicle, int64_t distance)
-{
-    const int64_t speed = vehicle->speed;
-    const int64_t acceleration = DrivingOf(vehicle)->acceleration;
-    const int64_t root = (int64_t)FoxIntegerSqrt(
-        (uint64_t)(speed * speed + 2 * acceleration * FoxMax(0, distance)));
-    return (int64_t)TICKS * (root - speed) / acceleration;
-}
-
-/* Whether the light or sign at the end of a lane holds a car back for now. */
+/* Whether the light or sign at the end of a lane holds a car back for now;
+ * at a stop sign it stands at the line first. */
 static bool HeldAtLine(const FoxNetwork *network, Vehicle *vehicle, const FoxPath *lane,
                        int64_t distance)
 {
-    const uint32_t end = lane->direction == 0u ? 1u : 0u;
-    const FoxLight light = FoxSignalsLight(network, lane->road, end);
-    if (light == FOX_LIGHT_RED)
-    {
-        /* Who waited at the line through the green to turn across the
-         * oncoming traffic finishes the turn while the junction clears. */
-        return vehicle->arrival == 0u || distance > CLEARING_REACH ||
-               !FoxSignalsClearing(network, lane->road, end);
-    }
-    if (light == FOX_LIGHT_YELLOW)
-    {
-        /* Whoever can still stop comfortably does. */
-        return distance > BrakingDistance(vehicle) + FOX_METRES(2);
-    }
-    if (light == FOX_LIGHT_NONE && network->roads[lane->road].sign[end] == FOX_SIGN_STOP &&
-        !vehicle->stopped)
+    if (LightAt(network, lane) == FOX_LIGHT_NONE && !vehicle->stopped &&
+        network->roads[lane->road].sign[lane->direction == 0u ? 1u : 0u] == FOX_SIGN_STOP)
     {
         vehicle->stopped = vehicle->speed <= STANDING_SPEED && distance <= STOP_LINE_REACH;
         return !vehicle->stopped;
     }
-    return false;
+    return WillStop(network, vehicle, lane, distance);
 }
 
-/* Right of way from the sign at the end of a lane: 2 priority, 1 none, 0
- * give way or stop. Under lights every approach is equal. */
-static int64_t SignClass(const FoxNetwork *network, const FoxPath *lane)
-{
-    const uint8_t sign = network->roads[lane->road].sign[lane->direction == 0u ? 1u : 0u];
-    return sign == FOX_SIGN_PRIORITY ? 2 : (sign == FOX_SIGN_NONE ? 1 : 0);
-}
-
-/* A car that holds its way but stands before its line with no room beyond
- * gives the way back: holding it would only block the cars crossing, and it
- * takes its turn again once there is room. */
+/* A car that holds its way but has not reached its line gives the way back
+ * when its light turns yellow or red and it can still stop comfortably, and
+ * when it stands with no room beyond or behind a car from its lane still in
+ * the way: holding it would only block the cars crossing, and it takes its
+ * turn again once it can go. */
 static bool GiveBack(const FoxTraffic *traffic, FoxNetwork *network, Vehicle *vehicle)
 {
-    if (vehicle->speed > STANDING_SPEED || vehicle->through != NONE ||
-        vehicle->claim != vehicle->connection)
+    if (vehicle->through != NONE || vehicle->claim != vehicle->connection)
+    {
+        return false;
+    }
+    const FoxPath *lane = FoxNetworkPathRecord(network, vehicle->path);
+    const FoxLight light = LightFor(network, vehicle->connection);
+    const bool standing = vehicle->speed <= STANDING_SPEED;
+    const bool stop =
+        (light == FOX_LIGHT_RED || light == FOX_LIGHT_YELLOW) &&
+        lane->length - vehicle->s >= BrakingDistance(vehicle) + (standing ? 0 : FOX_METRES(2));
+    if (!stop && !standing)
     {
         return false;
     }
     const uint32_t beyond = FoxNetworkPathRecord(network, vehicle->claim)->to;
+    int64_t rear = 0;
     Arrive(network, vehicle->claim, vehicle);
-    if (RoomOn(traffic, network, beyond, DrivingOf(vehicle)->length))
+    if (!stop && Departing(traffic, network, lane, vehicle->connection, &rear) == NONE &&
+        RoomOn(traffic, network, beyond, DrivingOf(vehicle)->length))
     {
         /* There is room once its own share is not counted: it keeps the way. */
         PathOf(network, beyond)->incoming += (uint32_t)DrivingOf(vehicle)->length;
@@ -987,18 +1494,49 @@ static bool GiveBack(const FoxTraffic *traffic, FoxNetwork *network, Vehicle *ve
     Release(network, &vehicle->claim);
     vehicle->permitted = false;
     vehicle->clear = false;
+    vehicle->holdAt = HOLD_NONE;
     return true;
 }
 
-/* Each intersection hands out its way in, one round per tick. The cars at
- * the front of its lanes that are close enough take part, in the order they
- * came, a bigger road and going straight counting as having come earlier.
- * Each in turn may go when nothing claimed or given away before it conflicts
- * and the lane beyond has room. A car held up by a conflict keeps its turn:
- * the cars after it may not take a way that crosses its own, so no car
- * waits forever and no ring of cars can wait for each other. A car claims
- * its way only once it could no longer stop comfortably; until then a car
- * that came earlier can still take its turn back. */
+/* Whether the candidate arrays have room for one more. */
+static bool CandidateRoom(FoxTraffic *traffic, uint32_t count)
+{
+    if (count < traffic->candidateCapacity)
+    {
+        return true;
+    }
+    const uint32_t capacity = count < 64u ? 64u : count * 2u;
+    Candidate *grown = realloc(traffic->candidates, (size_t)capacity * sizeof(*grown));
+    if (grown != NULL)
+    {
+        traffic->candidates = grown;
+    }
+    TakenWay *taken = realloc(traffic->taken, (size_t)capacity * sizeof(*taken));
+    if (taken != NULL)
+    {
+        traffic->taken = taken;
+    }
+    if (grown == NULL || taken == NULL)
+    {
+        return false;
+    }
+    traffic->candidateCapacity = capacity;
+    return true;
+}
+
+/* Each intersection hands out its way in, one round per tick, by the rules
+ * of the road. The cars near the front of its lanes take part, and those
+ * waiting inside it; the road with right of way goes first. A car may go
+ * when no car holding or given a way it crosses would be there with it, and
+ * none it gives way to could come within a gap of its being through: by the
+ * sign, from the curb side where the roads are equal, and the oncoming
+ * traffic when it turns across it. A car standing at its line waiting for
+ * its own turn lets the others go, so no ring of cars waits for each other.
+ * A car turning across the oncoming lanes drives in up to their way and
+ * waits there, and once its light is red it leaves before anyone else
+ * comes. The lane beyond must have room. A car claims its way only once it
+ * could no longer stop comfortably; until then one with right of way can
+ * still come first. */
 static void Arbitrate(FoxTraffic *traffic, FoxNetwork *network)
 {
     uint32_t count = 0u;
@@ -1009,65 +1547,60 @@ static void Arbitrate(FoxTraffic *traffic, FoxNetwork *network)
         {
             continue;
         }
-        const FoxPath *lane = FoxNetworkPathRecord(network, vehicle->path);
-        if (lane->kind != PATH_LANE || lane->front != slot ||
-            (vehicle->permitted && !GiveBack(traffic, network, vehicle)))
+        const FoxPath *path = FoxNetworkPathRecord(network, vehicle->path);
+        const bool inside = path->kind == PATH_CONNECTION;
+        int64_t toLine = -vehicle->s;
+        if (inside)
         {
-            continue;
-        }
-        const int64_t distance = lane->length - vehicle->s;
-        const int64_t zone =
-            BrakingDistance(vehicle) + (int64_t)vehicle->speed * 2 + DECISION_MARGIN;
-        if (distance > zone)
-        {
-            /* Far from the line: drive on, decide later. */
-            vehicle->clear = true;
-            vehicle->arrival = 0u;
-            continue;
-        }
-        if (HeldAtLine(network, vehicle, lane, distance))
-        {
-            vehicle->clear = false;
-            vehicle->arrival = 0u;
-            continue;
-        }
-        if (vehicle->arrival == 0u)
-        {
-            vehicle->arrival = traffic->tick;
-        }
-        if (count == traffic->candidateCapacity)
-        {
-            const uint32_t capacity = count < 64u ? 64u : count * 2u;
-            Candidate *grown = realloc(traffic->candidates, (size_t)capacity * sizeof(*grown));
-            TakenWay *taken = realloc(traffic->taken, (size_t)capacity * 2u * sizeof(*taken));
-            if (grown != NULL)
+            if (vehicle->holdAt == HOLD_NONE)
             {
-                traffic->candidates = grown;
-            }
-            if (taken != NULL)
-            {
-                traffic->taken = taken;
-            }
-            if (grown == NULL || taken == NULL)
-            {
-                /* Without memory the car simply waits at its line. */
-                vehicle->clear = false;
                 continue;
             }
-            traffic->candidateCapacity = capacity;
+        }
+        else
+        {
+            if (path->front != slot || (vehicle->permitted && !GiveBack(traffic, network, vehicle)))
+            {
+                continue;
+            }
+            vehicle->holdAt = HOLD_NONE;
+            toLine = path->length - vehicle->s;
+            const int64_t zone =
+                BrakingDistance(vehicle) + (int64_t)vehicle->speed * 2 + DECISION_MARGIN;
+            if (toLine > zone)
+            {
+                /* Far from the line: drive on, decide later. */
+                vehicle->clear = true;
+                vehicle->arrival = 0u;
+                continue;
+            }
+            if (HeldAtLine(network, vehicle, path, toLine))
+            {
+                vehicle->clear = false;
+                vehicle->arrival = 0u;
+                PathOf(network, vehicle->connection)->waited = true;
+                continue;
+            }
+            if (vehicle->arrival == 0u)
+            {
+                vehicle->arrival = traffic->tick;
+            }
+        }
+        if (!CandidateRoom(traffic, count))
+        {
+            /* Without memory the car simply waits. */
+            vehicle->clear = inside;
+            continue;
         }
         const FoxPath *connection = FoxNetworkPathRecord(network, vehicle->connection);
-        int64_t key = (int64_t)vehicle->arrival - SignClass(network, lane) * SIGN_PRIORITY_TICKS;
-        key -= connection->movement == MOVE_STRAIGHT ? STRAIGHT_PRIORITY_TICKS : 0;
-        key += connection->movement == MOVE_FAR ? STRAIGHT_PRIORITY_TICKS / 2 : 0;
-        key += connection->movement == MOVE_U_TURN ? STRAIGHT_PRIORITY_TICKS : 0;
         traffic->candidates[count++] = (Candidate){
             .node = connection->node,
-            .key = key,
+            .rank =
+                Rank(network, FoxNetworkPathRecord(network, connection->from), connection, inside),
+            .arrival = vehicle->arrival,
             .serial = vehicle->serial,
             .slot = slot,
-            .eta = TravelTicks(vehicle, distance),
-            .distance = distance,
+            .toLine = toLine,
         };
     }
     if (count == 0u)
@@ -1085,48 +1618,80 @@ static void Arbitrate(FoxTraffic *traffic, FoxNetwork *network)
         }
         Vehicle *vehicle = &traffic->vehicles[candidate->slot];
         const FoxPath *connection = FoxNetworkPathRecord(network, vehicle->connection);
+        const FoxPath *lane = FoxNetworkPathRecord(network, connection->from);
+        const bool inside = FoxNetworkPathRecord(network, vehicle->path)->kind == PATH_CONNECTION;
+        const bool leaving = inside && LightFor(network, vehicle->connection) == FOX_LIGHT_RED;
+        /* The longer a driver has waited, the shorter the gap it takes. */
+        const uint64_t waited =
+            inside ? vehicle->waitTicks
+                   : traffic->tick - (vehicle->arrival != 0u ? vehicle->arrival : traffic->tick);
+        const int64_t patience = (int64_t)PATIENCE_TICKS;
+        const int64_t wait = (int64_t)(waited < 2u * PATIENCE_TICKS ? waited : 2u * PATIENCE_TICKS);
+        const int64_t gap =
+            GAP_TICKS - (GAP_TICKS - MIN_GAP_TICKS) * FoxMin(wait, patience) / patience;
+        bool merge = false;
+        const int64_t reaction =
+            wait < patience ? -1 : REACTION_TICKS - REACTION_TICKS * (wait - patience) / patience;
+        const int64_t blocked =
+            FirstBlocked(traffic, network, vehicle, candidate->toLine, gap, reaction,
+                         traffic->taken, takenCount, !leaving, &merge);
+        if (inside)
+        {
+            /* Waiting inside: on through once the way is free. */
+            if (blocked == HOLD_NONE)
+            {
+                vehicle->holdAt = HOLD_NONE;
+                traffic->taken[takenCount++] =
+                    (TakenWay){.connection = vehicle->connection, .slot = candidate->slot};
+            }
+            continue;
+        }
+        int64_t hold = HOLD_NONE;
+        int64_t rear = 0;
+        if (blocked != HOLD_NONE)
+        {
+            hold = FoxMin(blocked, FirstGiveWay(network, vehicle->connection)) - CLEARANCE;
+            if (merge || hold < MIN_HOLD ||
+                !MayWaitInside(traffic, network, vehicle, lane, connection, hold))
+            {
+                vehicle->clear = false;
+                PathOf(network, vehicle->connection)->waited = true;
+                continue;
+            }
+        }
         const FoxPath *beyond = FoxNetworkPathRecord(network, connection->to);
         const int64_t length = DrivingOf(vehicle)->length;
-        const TakenWay way = {.connection = vehicle->connection, .eta = candidate->eta};
-        uint32_t through = NONE;
+        const uint32_t through = hold == HOLD_NONE && beyond->length < length + 2 * MIN_GAP
+                                     ? PlanThrough(network, vehicle, connection->to)
+                                     : NONE;
         bool clear = false;
-        if (Blocked(traffic, network, vehicle->connection, traffic->taken, takenCount, vehicle,
-                    candidate->distance))
+        if (Departing(traffic, network, lane, vehicle->connection, &rear) != NONE)
         {
-            traffic->taken[takenCount++] = way;
+            /* A car from the same lane is still where the ways part. */
+            clear = false;
         }
-        else if (beyond->length < length + 2 * MIN_GAP &&
-                 PlanThrough(network, vehicle, connection->to) != NONE)
+        else if (through != NONE)
         {
-            through = PlanThrough(network, vehicle, connection->to);
             /* Beyond a lane too short to stop on the next intersection must
              * be free as well. */
-            if (beyond->back == NONE && beyond->incoming == 0u)
-            {
-                if (Blocked(traffic, network, through, NULL, 0u, NULL, 0))
-                {
-                    traffic->taken[takenCount++] = way;
-                }
-                else
-                {
-                    clear = RoomOn(traffic, network, FoxNetworkPathRecord(network, through)->to,
-                                   length);
-                }
-            }
+            clear = beyond->back == NONE && beyond->incoming == 0u &&
+                    !AnyClaimCrosses(network, through) &&
+                    RoomOn(traffic, network, FoxNetworkPathRecord(network, through)->to, length);
         }
         else
         {
-            through = NONE;
             clear = RoomOn(traffic, network, connection->to, length);
         }
         vehicle->clear = clear;
         if (!clear)
         {
+            PathOf(network, vehicle->connection)->waited = true;
             continue;
         }
-        traffic->taken[takenCount++] = way;
-        const FoxPath *lane = FoxNetworkPathRecord(network, vehicle->path);
-        if (lane->length - vehicle->s <= BrakingDistance(vehicle) + FOX_METRES(4))
+        vehicle->holdAt = hold;
+        traffic->taken[takenCount++] =
+            (TakenWay){.connection = vehicle->connection, .slot = candidate->slot};
+        if (candidate->toLine <= BrakingDistance(vehicle) + FOX_METRES(4))
         {
             Claim(network, vehicle->connection, vehicle);
             vehicle->claim = vehicle->connection;
@@ -1141,6 +1706,22 @@ static void Arbitrate(FoxTraffic *traffic, FoxNetwork *network)
     }
 }
 /* ---- Driving ------------------------------------------------------------------- */
+
+/* How far ahead a car waits inside the intersection, or HOLD_NONE. */
+static int64_t ToHold(const FoxNetwork *network, const Vehicle *vehicle)
+{
+    const FoxPath *path = FoxNetworkPathRecord(network, vehicle->path);
+    if (vehicle->holdAt == HOLD_NONE)
+    {
+        return HOLD_NONE;
+    }
+    if (path->kind == PATH_CONNECTION)
+    {
+        return vehicle->holdAt - vehicle->s;
+    }
+    return vehicle->permitted || vehicle->clear ? path->length - vehicle->s + vehicle->holdAt
+                                                : HOLD_NONE;
+}
 
 /* The speed a driver aims for under a limit: a little above or below it,
  * never above what the vehicle can do. */
@@ -1201,12 +1782,23 @@ static void Accelerate(const FoxTraffic *traffic, const FoxNetwork *network, Veh
     }
     int64_t travelled = path->length - vehicle->s;
     uint32_t next = NONE;
+    int64_t rear = 0;
+    const uint32_t departing = path->kind == PATH_LANE && !hasLeader
+                                   ? Departing(traffic, network, path, vehicle->connection, &rear)
+                                   : NONE;
+    if (departing != NONE)
+    {
+        /* A car from this lane still where the ways part. */
+        gap = travelled + rear;
+        leaderSpeed = traffic->vehicles[departing].speed;
+        hasLeader = true;
+    }
     if (path->kind == PATH_LANE)
     {
         if (vehicle->connection == NONE || (!vehicle->permitted && !vehicle->clear))
         {
             /* The stop line, or the end of the road. */
-            if (!hasLeader)
+            if (!hasLeader || travelled < gap)
             {
                 gap = travelled;
                 leaderSpeed = 0;
@@ -1222,6 +1814,7 @@ static void Accelerate(const FoxTraffic *traffic, const FoxNetwork *network, Veh
     {
         next = path->to;
     }
+    bool lookedAhead = false;
     while (next != NONE && travelled < LOOKAHEAD)
     {
         const FoxPath *upcoming = FoxNetworkPathRecord(network, next);
@@ -1252,8 +1845,33 @@ static void Accelerate(const FoxTraffic *traffic, const FoxNetwork *network, Veh
         {
             break;
         }
+        uint32_t onward = NONE;
+        if (upcoming->kind == PATH_LANE && !lookedAhead && vehicle->routeLength != 0u)
+        {
+            /* The intersection at the end of the next lane, seen from here:
+             * where cars hold the way the route takes, stop at its line, and
+             * else slow down in time for that way. */
+            lookedAhead = true;
+            onward = PlanThrough(network, vehicle, next);
+            if (HeldAhead(traffic, network, vehicle, upcoming, onward,
+                          travelled + upcoming->length))
+            {
+                gap = travelled + upcoming->length;
+                leaderSpeed = 0;
+                hasLeader = true;
+                break;
+            }
+        }
         travelled += upcoming->length;
-        next = upcoming->kind == PATH_CONNECTION ? upcoming->to : NONE;
+        next = upcoming->kind == PATH_CONNECTION ? upcoming->to : onward;
+    }
+    const int64_t hold = ToHold(network, vehicle);
+    if (hold != HOLD_NONE && (!hasLeader || hold < gap))
+    {
+        /* Where it waits inside the intersection. */
+        gap = hold;
+        leaderSpeed = 0;
+        hasLeader = true;
     }
     int32_t acceleration =
         DriverModel(driving, vehicle->speed, desired, gap, leaderSpeed, hasLeader);
@@ -1293,6 +1911,21 @@ static void Integrate(FoxTraffic *traffic, const FoxNetwork *network, Vehicle *v
                    FOX_METRES(1) / 2;
             roomSpeed = leader->speed;
         }
+    }
+    int64_t rear = 0;
+    const uint32_t departing = path->kind == PATH_LANE && vehicle->ahead == NONE
+                                   ? Departing(traffic, network, path, vehicle->connection, &rear)
+                                   : NONE;
+    if (departing != NONE && path->length - vehicle->s + rear - FOX_METRES(1) / 2 < room)
+    {
+        room = path->length - vehicle->s + rear - FOX_METRES(1) / 2;
+        roomSpeed = traffic->vehicles[departing].speed;
+    }
+    const int64_t hold = ToHold(network, vehicle);
+    if (hold < room)
+    {
+        room = hold;
+        roomSpeed = 0;
     }
     if (advance > room)
     {
@@ -1371,6 +2004,7 @@ static bool Transfer(FoxTraffic *traffic, FoxNetwork *network, uint32_t slot)
             vehicle->clearing = vehicle->claim;
             vehicle->claim = NONE;
             vehicle->permitted = false;
+            vehicle->holdAt = HOLD_NONE;
             EnterLane(traffic, network, vehicle);
         }
     }
@@ -1416,12 +2050,13 @@ static void UpdateCosts(FoxNetwork *network)
                                        ? road->speedSum[direction] / road->speedSamples[direction]
                                        : limit;
             const int64_t average =
-                FoxClamp(((int64_t)road->averageSpeed[direction] * 3 + sample) / 4, FOX_METRES(1) / 2,
-                         limit);
+                FoxClamp(((int64_t)road->averageSpeed[direction] * 3 + sample) / 4,
+                         FOX_METRES(1) / 2, limit);
             road->averageSpeed[direction] = (int32_t)average;
             road->speedSum[direction] = 0;
             road->speedSamples[direction] = 0u;
-            const uint32_t cost = (uint32_t)FoxClamp(road->length * 1000 / average, 1, UINT32_MAX - 1u);
+            const uint32_t cost =
+                (uint32_t)FoxClamp(road->length * 1000 / average, 1, UINT32_MAX - 1u);
             const uint32_t routed = road->routedCost[direction];
             const uint32_t change = cost > routed ? cost - routed : routed - cost;
             if (network->router != NULL && (uint64_t)change * 10u > routed)
@@ -1541,8 +2176,9 @@ static uint32_t ResolveLane(const FoxNetwork *network, uint32_t laneIndex, int64
         return NONE;
     }
     const FoxRoad *record = &network->roads[road];
-    return lane->lane < record->laneCount[lane->direction] ? record->lanes[lane->direction][lane->lane]
-                                                           : NONE;
+    return lane->lane < record->laneCount[lane->direction]
+               ? record->lanes[lane->direction][lane->lane]
+               : NONE;
 }
 
 static uint32_t MapPath(const FoxNetwork *network, uint32_t pathIndex, int64_t s, int64_t *outS)
@@ -1582,7 +2218,8 @@ static uint32_t MapPath(const FoxNetwork *network, uint32_t pathIndex, int64_t s
         const FoxPath *candidate = FoxNetworkPathRecord(network, node->connections[index]);
         if (candidate->from == newFrom && candidate->to == newTo)
         {
-            *outS = FoxClamp(s * candidate->length / FoxMax(1, old->length), 0, candidate->length - 1);
+            *outS =
+                FoxClamp(s * candidate->length / FoxMax(1, old->length), 0, candidate->length - 1);
             return node->connections[index];
         }
     }
@@ -1628,6 +2265,7 @@ void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network)
         }
         Link(traffic, network, slot, moved, s);
         vehicle->trailCount = 0u;
+        vehicle->holdAt = HOLD_NONE;
     }
     /* Claims are counted afresh from the cars that still hold live ones. */
     for (uint32_t index = 0u; index < network->pathCapacity; ++index)
@@ -1704,6 +2342,7 @@ bool FoxTrafficVehicle(const FoxTraffic *traffic, uint32_t slot, FoxVehicleView 
         .length = DrivingOf(vehicle)->length,
         .color = vehicle->color,
         .waitTicks = vehicle->waitTicks,
+        .next = vehicle->connection,
     };
     return true;
 }

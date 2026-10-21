@@ -313,7 +313,8 @@ static void Track(FoxRoadsView *view, const FoxNetwork *network)
 {
     const uint32_t roadCapacity = FoxNetworkRoadCapacity(network);
     const uint32_t nodeCapacity = FoxNetworkNodeCapacity(network);
-    if (!GrowArray((void **)&view->roads, &view->roadCapacity, roadCapacity, sizeof(*view->roads)) ||
+    if (!GrowArray((void **)&view->roads, &view->roadCapacity, roadCapacity,
+                   sizeof(*view->roads)) ||
         !GrowArray((void **)&view->nodes, &view->nodeCapacity, nodeCapacity, sizeof(*view->nodes)))
     {
         return;
@@ -625,6 +626,11 @@ void FoxRoadsViewDraw(FoxRoadsView *view, const FoxCameraView *camera, const Fox
                                       : light == FOX_LIGHT_YELLOW ? 1u
                                                                   : 2u;
                 AddLamp(view, camera, lamp, signal->lamps[lamp]);
+            }
+            const FoxLight arrow = FoxNetworkArrow(network, signal->road, signal->end);
+            if (arrow != FOX_LIGHT_NONE)
+            {
+                AddLamp(view, camera, arrow == FOX_LIGHT_YELLOW ? 1u : 2u, signal->arrow);
             }
         }
     }

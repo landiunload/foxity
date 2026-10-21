@@ -78,6 +78,8 @@ typedef struct FoxPath
     uint32_t vehicleCount;
     uint32_t claims;
     uint32_t incoming;
+    /* On connections: a car stood waiting to take it in the last round. */
+    bool waited;
 } FoxPath;
 
 /* Traffic light stages within a phase. */
@@ -85,6 +87,9 @@ typedef enum SignalStage
 {
     STAGE_GREEN = 0,
     STAGE_YELLOW,
+    /* Only the turns across the oncoming lanes go, then their yellow. */
+    STAGE_ARROW,
+    STAGE_ARROW_YELLOW,
     STAGE_ALL_RED,
 } SignalStage;
 
@@ -241,8 +246,8 @@ void FoxSignalsAssign(FoxNetwork *network, uint32_t node);
  * green, empty ones are skipped. */
 void FoxSignalsStep(FoxNetwork *network);
 FoxLight FoxSignalsLight(const FoxNetwork *network, uint32_t road, uint32_t end);
-/* Whether the green of a road end has just ended and the intersection is
- * being cleared before the next phase. */
-bool FoxSignalsClearing(const FoxNetwork *network, uint32_t road, uint32_t end);
+/* The arrow for the turns across the oncoming lanes from a road end:
+ * FOX_LIGHT_NONE while it is dark and the main light rules them. */
+FoxLight FoxSignalsArrow(const FoxNetwork *network, uint32_t road, uint32_t end);
 
 #endif
