@@ -9,7 +9,7 @@
 #define ASPHALT_LIFT 0.15
 #define MARKING_LIFT 0.19
 /* Paved beyond the outer lanes. */
-#define SHOULDER 0.4
+#define SHOULDER ((double)FOX_ROAD_SHOULDER / FOX_UNITS_PER_METRE)
 #define LINE_HALF 0.08
 #define EDGE_HALF 0.07
 #define DOUBLE_LINE_SPACING 0.14
@@ -17,7 +17,6 @@
 #define DASH_GAP 6.0
 /* Lane lines turn solid this far before an intersection. */
 #define SOLID_NEAR 15.0
-#define BRIDGE_SEGMENTS 8u
 #define FILLET_SEGMENTS 8u
 #define CAP_SEGMENTS 12u
 /* Signs stand this far beyond the paved edge. */
@@ -773,6 +772,16 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
 
 /* ---- Nodes ---------------------------------------------------------------------------- */
 
+/* Between two roads closer than this the curb rounds the corner where their
+ * edges meet; wider apart it sweeps round from one road to the other. The
+ * simulation trims roads by the same rule. */
+#define SWEEP_GAP (PI * 5.0 / 6.0)
+#define SWEEP_SEGMENTS 12u
+/* A turning circle: the arc round its far side and each flare into it. */
+#define BULB_SEGMENTS 24u
+#define FLARE_SEGMENTS 6u
+#define OUTLINE_CAPACITY (FOX_NODE_MAX_ROADS * (SWEEP_SEGMENTS + 2u) + BULB_SEGMENTS + 16u)
+
 /* A road where it meets a node: its station at the trim, the direction away
  * from the node, the right of that direction and its paved half width. */
 typedef struct RoadEndShape
@@ -813,6 +822,46 @@ static V3 Lift(V3 point, V3 up, double lift)
     return Add(point, Scale(up, lift));
 }
 
+static V3 RightCorner(const RoadEndShape *end)
+{
+    return Add(end->station.point, Scale(end->right, end->paved));
+}
+
+static V3 LeftCorner(const RoadEndShape *end)
+{
+    return Sub(end->station.point, Scale(end->right, end->paved));
+}
+
+/* The outline of what a node paves, anticlockwise seen from above: the
+ * mouths of its roads and the curbs between them. Corners at the mouths keep
+ * the up of their road, so the asphalt meets the road's without a seam. */
+typedef struct Outline
+{
+    V3 points[OUTLINE_CAPACITY];
+    V3 lift[OUTLINE_CAPACITY];
+    /* Whether the edge from a point to the next one is a curb. */
+    bool curb[OUTLINE_CAPACITY];
+    uint32_t count;
+} Outline;
+
+static void Put(Outline *outline, V3 point, V3 up, bool curb)
+{
+    if (outline->count < OUTLINE_CAPACITY)
+    {
+        outline->points[outline->count] = point;
+        outline->lift[outline->count] = up;
+        outline->curb[outline->count++] = curb;
+    }
+}
+
+/* The mouth of a road: its right corner, then its left, from where the curb
+ * goes on. */
+static void Mouth(Outline *outline, const RoadEndShape *end)
+{
+    Put(outline, RightCorner(end), end->station.up, false);
+    Put(outline, LeftCorner(end), end->station.up, true);
+}
+
 /* The curb between the left edge of one road and the right edge of the next
  * one round: a curve that leaves both edges smoothly where they would meet,
  * a straight line where they never do. */
@@ -849,20 +898,144 @@ static uint32_t Fillet(V3 from, V3 fromDirection, V3 to, V3 toDirection, V3 ex, 
     return written;
 }
 
-static void Junction(const RoadEndShape *ends, uint32_t count, V3 centre, V3 up, FoxMesh *base)
+/* A cubic that leaves p0 along t0 and arrives at p3 along t3, at t. */
+static V3 CubicPoint(V3 p0, V3 t0, V3 p3, V3 t3, double t)
 {
-    /* Round the node anticlockwise seen from above. */
-    uint32_t order[FOX_NODE_MAX_ROADS];
+    const double reach = Length(Sub(p3, p0)) * 0.4;
+    const V3 p1 = Add(p0, Scale(t0, reach));
+    const V3 p2 = Sub(p3, Scale(t3, reach));
+    const double s = 1.0 - t;
+    return Add(Add(Scale(p0, s * s * s), Scale(p1, 3.0 * s * s * t)),
+               Add(Scale(p2, 3.0 * s * t * t), Scale(p3, t * t * t)));
+}
+
+/* The centre line from one road's end through the node to another's: a cubic
+ * that leaves and joins both straight, sampled into stations. */
+static void CentreCurve(const RoadEndShape *a, const RoadEndShape *b, V3 up, Station *out)
+{
+    const V3 p0 = a->station.point;
+    const V3 p3 = b->station.point;
+    const V3 t0 = Scale(a->outward, -1.0);
+    const V3 t3 = b->outward;
+    double travelled = 0.0;
+    for (uint32_t step = 0u; step <= SWEEP_SEGMENTS; ++step)
+    {
+        const double t = (double)step / SWEEP_SEGMENTS;
+        const V3 point = CubicPoint(p0, t0, p3, t3, t);
+        /* The direction across the neighbouring half steps; at the ends the
+         * roads'. */
+        V3 tangent = step == 0u ? t0 : t3;
+        if (step != 0u && step != SWEEP_SEGMENTS)
+        {
+            tangent = Sub(CubicPoint(p0, t0, p3, t3, t + 0.5 / SWEEP_SEGMENTS),
+                          CubicPoint(p0, t0, p3, t3, t - 0.5 / SWEEP_SEGMENTS));
+        }
+        if (step != 0u)
+        {
+            travelled += Length(Sub(point, out[step - 1u].point));
+        }
+        out[step] = MakeStation(point, tangent, up, travelled);
+    }
+    /* The ends take the roads' own frames, so the edges meet exactly. */
+    out[0].point = p0;
+    out[0].up = a->station.up;
+    out[0].right = Scale(a->right, -1.0);
+    out[SWEEP_SEGMENTS].point = p3;
+    out[SWEEP_SEGMENTS].up = b->station.up;
+    out[SWEEP_SEGMENTS].right = b->right;
+}
+
+/* The curb from the left corner of road a round to the right corner of the
+ * next road b, `gap` radians further anticlockwise; the corners themselves
+ * are not included. */
+static void Curb(Outline *outline, const RoadEndShape *a, const RoadEndShape *b, double gap, V3 up,
+                 V3 ex, V3 ey, double reach)
+{
+    if (gap < SWEEP_GAP)
+    {
+        V3 fillet[FILLET_SEGMENTS];
+        const uint32_t count =
+            Fillet(LeftCorner(a), a->outward, RightCorner(b), b->outward, ex, ey, reach, fillet);
+        for (uint32_t index = 0u; index < count; ++index)
+        {
+            Put(outline, fillet[index], up, true);
+        }
+        return;
+    }
+    /* Wide apart, the curb keeps beside the way from one road into the other,
+     * its width changing from the one road's to the other's. */
+    Station stations[SWEEP_SEGMENTS + 1u];
+    CentreCurve(a, b, up, stations);
+    for (uint32_t step = 1u; step < SWEEP_SEGMENTS; ++step)
+    {
+        const double t = (double)step / SWEEP_SEGMENTS;
+        Put(outline, Offset(&stations[step], a->paved + (b->paved - a->paved) * t, 0.0), up, true);
+    }
+}
+
+/* Paves an outline as a fan from the node and paints a line along its curbs,
+ * just inside them as along the roads' edges. */
+static void PaveOutline(const Outline *outline, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
+{
+    const uint32_t count = outline->count;
+    if (count < 3u)
+    {
+        return;
+    }
+    const V3 middle = Lift(centre, up, ASPHALT_LIFT);
     for (uint32_t index = 0u; index < count; ++index)
     {
-        uint32_t position = index;
-        while (position > 0u && ends[order[position - 1u]].angle > ends[index].angle)
-        {
-            order[position] = order[position - 1u];
-            --position;
-        }
-        order[position] = index;
+        const uint32_t next = (index + 1u) % count;
+        Triangle(base, middle, Lift(outline->points[index], outline->lift[index], ASPHALT_LIFT),
+                 Lift(outline->points[next], outline->lift[next], ASPHALT_LIFT), COLOR_ASPHALT);
     }
+    if (detail == NULL)
+    {
+        return;
+    }
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        if (!outline->curb[index])
+        {
+            continue;
+        }
+        const uint32_t next = (index + 1u) % count;
+        V3 inward[2];
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            /* Inside is to the left going round. Between two curb edges the
+             * normals are averaged; where a curb meets a mouth it keeps its
+             * own. */
+            const uint32_t at = side == 0u ? index : next;
+            const uint32_t before = (at + count - 1u) % count;
+            const uint32_t after = (at + 1u) % count;
+            const V3 own = side == 0u ? Unit(Cross(up, Sub(outline->points[after],
+                                                            outline->points[at])))
+                                      : Unit(Cross(up, Sub(outline->points[at],
+                                                            outline->points[before])));
+            V3 normal = own;
+            if (outline->curb[before] && outline->curb[at])
+            {
+                const V3 previous = Unit(Cross(up, Sub(outline->points[at], outline->points[before])));
+                const V3 following = Unit(Cross(up, Sub(outline->points[after], outline->points[at])));
+                const V3 mean = Unit(Add(previous, following));
+                normal = Scale(mean, 1.0 / fmax(Dot(mean, following), 0.5));
+            }
+            inward[side] = normal;
+        }
+        const V3 a = Lift(outline->points[index], up, MARKING_LIFT);
+        const V3 b = Lift(outline->points[next], up, MARKING_LIFT);
+        Quad(detail, Add(a, Scale(inward[0], SHOULDER)), Add(b, Scale(inward[1], SHOULDER)),
+             Add(b, Scale(inward[1], SHOULDER + 2.0 * EDGE_HALF)),
+             Add(a, Scale(inward[0], SHOULDER + 2.0 * EDGE_HALF)), COLOR_LINE);
+    }
+}
+
+/* An intersection, or a bend that a piece of road cannot carry: the mouths
+ * of its roads joined by curbs. */
+static void Junction(const RoadEndShape *ends, const uint32_t *order, uint32_t count, V3 centre,
+                     V3 up, FoxMesh *base, FoxMesh *detail)
+{
     const V3 ex = ends[0].outward;
     const V3 ey = Unit(Cross(up, ex));
     double reach = 0.0;
@@ -871,105 +1044,126 @@ static void Junction(const RoadEndShape *ends, uint32_t count, V3 centre, V3 up,
         reach = fmax(reach, Length(Sub(ends[index].station.point, centre)) + ends[index].paved);
     }
     reach *= 3.0;
-    /* The corners are the very vertices the roads end with, lifted along
-     * their own up, so no seam opens between road and intersection. */
-    V3 boundary[FOX_NODE_MAX_ROADS * (FILLET_SEGMENTS + 2u)];
-    uint32_t points = 0u;
+    Outline outline = {.count = 0u};
     for (uint32_t index = 0u; index < count; ++index)
     {
         const RoadEndShape *a = &ends[order[index]];
         const RoadEndShape *b = &ends[order[(index + 1u) % count]];
-        const V3 rightCorner = Add(a->station.point, Scale(a->right, a->paved));
-        const V3 leftCorner = Sub(a->station.point, Scale(a->right, a->paved));
-        const V3 next = Add(b->station.point, Scale(b->right, b->paved));
-        boundary[points++] = Lift(rightCorner, a->station.up, ASPHALT_LIFT);
-        boundary[points++] = Lift(leftCorner, a->station.up, ASPHALT_LIFT);
-        const uint32_t first = points;
-        points += Fillet(leftCorner, a->outward, next, b->outward, ex, ey, reach, boundary + points);
-        for (uint32_t point = first; point < points; ++point)
+        double gap = b->angle - a->angle;
+        gap += gap <= 0.0 ? 2.0 * PI : 0.0;
+        Mouth(&outline, a);
+        Curb(&outline, a, b, gap, up, ex, ey, reach);
+    }
+    PaveOutline(&outline, centre, up, base, detail);
+}
+
+/* Whether a piece of road can carry the lanes from one road to the other:
+ * where it turns too tightly for its width, its inner edge would fold. */
+static bool RibbonFits(const RoadEndShape *a, const RoadEndShape *b, V3 up)
+{
+    if (a->type != b->type)
+    {
+        return false;
+    }
+    Station stations[SWEEP_SEGMENTS + 1u];
+    CentreCurve(a, b, up, stations);
+    for (uint32_t step = 0u; step < SWEEP_SEGMENTS; ++step)
+    {
+        const V3 along = Sub(stations[step + 1u].point, stations[step].point);
+        for (int side = -1; side <= 1; side += 2)
         {
-            boundary[point] = Lift(boundary[point], up, ASPHALT_LIFT);
+            const V3 edge = Sub(Offset(&stations[step + 1u], (double)side * a->paved, 0.0),
+                                Offset(&stations[step], (double)side * a->paved, 0.0));
+            if (Dot(edge, along) <= 0.0)
+            {
+                return false;
+            }
         }
     }
-    const V3 middle = Lift(centre, up, ASPHALT_LIFT);
-    for (uint32_t index = 0u; index < points; ++index)
-    {
-        Triangle(base, middle, boundary[index], boundary[(index + 1u) % points], COLOR_ASPHALT);
-    }
+    return true;
 }
 
 /* A bend: a piece of road from one road's end to the other's that carries
- * the asphalt, and the markings where both roads are of a kind. */
+ * the asphalt and the markings. */
 static void Bend(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *base, FoxMesh *detail)
 {
-    const V3 p0 = a->station.point;
-    const V3 p3 = b->station.point;
-    const double reach = Length(Sub(p3, p0)) * 0.4;
-    const V3 p1 = Sub(p0, Scale(a->outward, reach));
-    const V3 p2 = Sub(p3, Scale(b->outward, reach));
-    Station stations[BRIDGE_SEGMENTS + 1u];
-    double travelled = 0.0;
-    for (uint32_t step = 0u; step <= BRIDGE_SEGMENTS; ++step)
+    Station stations[SWEEP_SEGMENTS + 1u];
+    CentreCurve(a, b, up, stations);
+    const double length = stations[SWEEP_SEGMENTS].along;
+    Strip(base, stations, SWEEP_SEGMENTS + 1u, -a->paved, a->paved, ASPHALT_LIFT, 0.0, length, 0.0,
+          0.0, COLOR_ASPHALT);
+    if (detail != NULL && length > 0.0)
     {
-        const double t = (double)step / BRIDGE_SEGMENTS;
-        const double s = 1.0 - t;
-        const V3 point = Add(Add(Scale(p0, s * s * s), Scale(p1, 3.0 * s * s * t)),
-                             Add(Scale(p2, 3.0 * s * t * t), Scale(p3, t * t * t)));
-        const V3 tangent = Add(Add(Scale(Sub(p1, p0), 3.0 * s * s), Scale(Sub(p2, p1), 6.0 * s * t)),
-                               Scale(Sub(p3, p2), 3.0 * t * t));
-        if (step != 0u)
-        {
-            travelled += Length(Sub(point, stations[step - 1u].point));
-        }
-        stations[step] = MakeStation(point, tangent, up, travelled);
-    }
-    /* The ends take the roads' own frames, so the edges meet exactly. */
-    stations[0].point = p0;
-    stations[0].up = a->station.up;
-    stations[0].right = Scale(a->right, -1.0);
-    stations[BRIDGE_SEGMENTS].point = p3;
-    stations[BRIDGE_SEGMENTS].up = b->station.up;
-    stations[BRIDGE_SEGMENTS].right = b->right;
-    for (uint32_t step = 0u; step < BRIDGE_SEGMENTS; ++step)
-    {
-        const double w0 = a->paved + (b->paved - a->paved) * (double)step / BRIDGE_SEGMENTS;
-        const double w1 = a->paved + (b->paved - a->paved) * (double)(step + 1u) / BRIDGE_SEGMENTS;
-        const Station *s0 = &stations[step];
-        const Station *s1 = &stations[step + 1u];
-        Quad(base, Offset(s0, -w0, ASPHALT_LIFT), Offset(s0, w0, ASPHALT_LIFT),
-             Offset(s1, w1, ASPHALT_LIFT), Offset(s1, -w1, ASPHALT_LIFT), COLOR_ASPHALT);
-    }
-    if (a->type == b->type && a->side == b->side && travelled > 0.0)
-    {
-        Markings(detail, stations, BRIDGE_SEGMENTS + 1u, a->type, 0.0, travelled, 0.0, travelled);
+        Markings(detail, stations, SWEEP_SEGMENTS + 1u, a->type, 0.0, length, 0.0, length);
     }
 }
 
-/* A dead end rounds off in a half circle, its edge line following. */
-static void Cap(const RoadEndShape *end, FoxMesh *base, FoxMesh *detail)
+/* Through a bend paved as an outline only the line between the directions
+ * carries on: dashed between streets, double elsewhere. */
+static void BendCentreLine(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *detail)
 {
-    const Station *station = &end->station;
-    const double half = end->paved - SHOULDER;
-    for (uint32_t step = 0u; step < CAP_SEGMENTS; ++step)
+    const FoxRoadTypeInfo *first = FoxRoadTypeGet(a->type);
+    const FoxRoadTypeInfo *second = FoxRoadTypeGet(b->type);
+    if (first->backwardLanes == 0u || second->backwardLanes == 0u)
     {
-        const double a = PI * (double)step / CAP_SEGMENTS;
-        const double b = PI * (double)(step + 1u) / CAP_SEGMENTS;
-        const V3 da = Along((V3){0.0, 0.0, 0.0}, end->right, cos(a), end->outward, -sin(a));
-        const V3 db = Along((V3){0.0, 0.0, 0.0}, end->right, cos(b), end->outward, -sin(b));
-        const V3 lift = Scale(station->up, ASPHALT_LIFT);
-        const V3 paint = Scale(station->up, MARKING_LIFT);
-        Triangle(base, Add(station->point, lift),
-                 Add(Add(station->point, Scale(da, end->paved)), lift),
-                 Add(Add(station->point, Scale(db, end->paved)), lift), COLOR_ASPHALT);
-        if (detail != NULL)
+        return;
+    }
+    Station stations[SWEEP_SEGMENTS + 1u];
+    CentreCurve(a, b, up, stations);
+    const double length = stations[SWEEP_SEGMENTS].along;
+    if (first->forwardLanes == 1u && second->forwardLanes == 1u)
+    {
+        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, 0.0, 0.0, length, 0.0, length, true);
+        return;
+    }
+    for (int side = -1; side <= 1; side += 2)
+    {
+        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, (double)side * DOUBLE_LINE_SPACING, 0.0,
+                 length, 0.0, 0.0, false);
+    }
+}
+
+/* A dead end widens into a turning circle about its node, as wide as the
+ * lanes turn round on. */
+static void Bulb(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
+{
+    const double radius =
+        (double)FoxRoadTurnaroundRadius(end->type) / FOX_UNITS_PER_METRE + LaneWidth() / 2.0 +
+        SHOULDER;
+    const V3 ex = end->outward;
+    const V3 ey = Scale(end->right, -1.0);
+    const double trim = Dot(Sub(end->station.point, centre), ex);
+    /* The flares join the circle where it still lies well short of the
+     * road's end. */
+    const double join = acos(fmax(fmin(0.5, (trim - 1.0) / radius), -0.3));
+    Outline outline = {.count = 0u};
+    Mouth(&outline, end);
+    const V3 inward = Scale(ex, -1.0);
+    for (uint32_t flare = 0u; flare < 2u; ++flare)
+    {
+        /* Out of the left edge onto the circle, round it, off it into the
+         * right edge. */
+        const double angle = flare == 0u ? join : 2.0 * PI - join;
+        const V3 onCircle = Along(centre, ex, cos(angle) * radius, ey, sin(angle) * radius);
+        const V3 tangent = Add(Scale(ex, -sin(angle)), Scale(ey, cos(angle)));
+        if (flare == 1u)
         {
-            const double inner = half - 2.0 * EDGE_HALF;
-            Quad(detail, Add(Add(station->point, Scale(da, inner)), paint),
-                 Add(Add(station->point, Scale(da, half)), paint),
-                 Add(Add(station->point, Scale(db, half)), paint),
-                 Add(Add(station->point, Scale(db, inner)), paint), COLOR_LINE);
+            for (uint32_t step = 0u; step <= BULB_SEGMENTS; ++step)
+            {
+                const double a = join + (2.0 * PI - 2.0 * join) * (double)step / BULB_SEGMENTS;
+                Put(&outline, Along(centre, ex, cos(a) * radius, ey, sin(a) * radius), up, true);
+            }
+        }
+        for (uint32_t step = 1u; step < FLARE_SEGMENTS; ++step)
+        {
+            const double t = (double)step / FLARE_SEGMENTS;
+            Put(&outline,
+                flare == 0u ? CubicPoint(LeftCorner(end), inward, onCircle, tangent, t)
+                            : CubicPoint(onCircle, tangent, RightCorner(end), ex, t),
+                up, true);
         }
     }
+    PaveOutline(&outline, centre, up, base, detail);
 }
 
 void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origin, FoxMesh *base,
@@ -995,23 +1189,36 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
     {
         return;
     }
+    /* Round the node anticlockwise seen from above. */
     const V3 ex = ends[0].outward;
     const V3 ey = Unit(Cross(up, ex));
+    uint32_t order[FOX_NODE_MAX_ROADS];
     for (uint32_t index = 0u; index < count; ++index)
     {
         ends[index].angle = atan2(Dot(ends[index].outward, ey), Dot(ends[index].outward, ex));
+        uint32_t position = index;
+        while (position > 0u && ends[order[position - 1u]].angle > ends[index].angle)
+        {
+            order[position] = order[position - 1u];
+            --position;
+        }
+        order[position] = index;
     }
     if (count == 1u)
     {
-        Cap(&ends[0], base, detail);
+        Bulb(&ends[0], centre, up, base, detail);
     }
-    else if (count == 2u)
+    else if (count == 2u && RibbonFits(&ends[0], &ends[1], up))
     {
         Bend(&ends[0], &ends[1], up, base, detail);
     }
     else
     {
-        Junction(ends, count, centre, up, base);
+        Junction(ends, order, count, centre, up, base, detail);
+        if (count == 2u && detail != NULL)
+        {
+            BendCentreLine(&ends[0], &ends[1], up, detail);
+        }
     }
 }
 

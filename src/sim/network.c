@@ -25,11 +25,18 @@ const FoxRoadTypeInfo *FoxRoadTypeGet(FoxRoadType type)
     return (unsigned)type < FOX_ROAD_TYPE_COUNT ? &roadTypes[type] : NULL;
 }
 
-/* Half the paved width of a road type. */
-static int64_t TypeHalfWidth(uint32_t type)
+int64_t FoxRoadHalfWidth(FoxRoadType type)
 {
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet((FoxRoadType)type);
-    return (int64_t)(info->forwardLanes + info->backwardLanes) * FOX_LANE_WIDTH / 2;
+    const FoxRoadTypeInfo *info = FoxRoadTypeGet(type);
+    return info == NULL ? 0
+                        : (int64_t)(info->forwardLanes + info->backwardLanes) * FOX_LANE_WIDTH / 2;
+}
+
+int64_t FoxRoadTurnaroundRadius(FoxRoadType type)
+{
+    /* The circle stays outside the road's own lanes, so every lane can swing
+     * out and round. */
+    return FoxMax(FOX_TURNAROUND_MIN_RADIUS, FoxRoadHalfWidth(type) + FOX_LANE_WIDTH / 2);
 }
 
 #define MAX_HALF_WIDTH (6 * FOX_LANE_WIDTH / 2)
@@ -1317,7 +1324,7 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
 
     /* Away from its intersections the road must keep clear of other roads:
      * one laid along another would pave over it. */
-    const int64_t ownHalf = TypeHalfWidth(plan->type);
+    const int64_t ownHalf = FoxRoadHalfWidth(plan->type);
     for (uint32_t point = 0u; point < count; ++point)
     {
         int64_t along = 0;
@@ -1331,7 +1338,8 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
         /* Near a cut the roads that meet there come close by nature; how
          * close depends on the angle, so the window spans both widths
          * twice, enough down to about thirty degrees. */
-        const int64_t window = FOX_ROAD_MIN_LENGTH + 2 * (ownHalf + TypeHalfWidth(other->type));
+        const int64_t otherHalf = FoxRoadHalfWidth((FoxRoadType)other->type);
+        const int64_t window = FOX_ROAD_MIN_LENGTH + 2 * (ownHalf + otherHalf);
         bool meets = false;
         for (uint32_t index = 0u; index < cutCount && !meets; ++index)
         {
@@ -1347,7 +1355,7 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
         }
         const FoxVec closest =
             FoxPolylinePoint(other->centre, other->centreLengths, other->centreCount, along, NULL);
-        if (FoxVecDistance(closest, points[point]) < ownHalf + TypeHalfWidth(other->type))
+        if (FoxVecDistance(closest, points[point]) < ownHalf + otherHalf)
         {
             result = FOX_ROAD_OVERLAP;
             goto cleanup;

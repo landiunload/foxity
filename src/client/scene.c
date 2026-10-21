@@ -135,7 +135,7 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
         .modules = desc->modules,
     };
     scene->statisticsText = malloc(STATISTICS_TEXT);
-    scene->statistics = true;
+    scene->statistics = false;
     if (scene->previewPoints == NULL || scene->statisticsText == NULL ||
         !FoxCityCreate(&scene->city, &cityDesc) ||
         !FoxClockInit(&scene->clock, FOX_CLOCK_TICKS_PER_SECOND,

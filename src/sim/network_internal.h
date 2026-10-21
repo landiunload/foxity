@@ -241,5 +241,8 @@ void FoxSignalsAssign(FoxNetwork *network, uint32_t node);
  * green, empty ones are skipped. */
 void FoxSignalsStep(FoxNetwork *network);
 FoxLight FoxSignalsLight(const FoxNetwork *network, uint32_t road, uint32_t end);
+/* Whether the green of a road end has just ended and the intersection is
+ * being cleared before the next phase. */
+bool FoxSignalsClearing(const FoxNetwork *network, uint32_t road, uint32_t end);
 
 #endif

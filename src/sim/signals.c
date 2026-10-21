@@ -153,6 +153,24 @@ void FoxSignalsStep(FoxNetwork *network)
     }
 }
 
+bool FoxSignalsClearing(const FoxNetwork *network, uint32_t roadIndex, uint32_t end)
+{
+    const FoxRoad *road = &network->roads[roadIndex];
+    const FoxNode *node = &network->nodes[road->nodes[end]];
+    if (!node->alive || !node->signals || node->stage != STAGE_ALL_RED)
+    {
+        return false;
+    }
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        if (node->roads[slot] == roadIndex)
+        {
+            return node->phases[slot] == node->phase;
+        }
+    }
+    return false;
+}
+
 FoxLight FoxSignalsLight(const FoxNetwork *network, uint32_t roadIndex, uint32_t end)
 {
     const FoxRoad *road = &network->roads[roadIndex];

@@ -213,6 +213,32 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         .type = FOX_ROAD_STREET,
     };
     ok = FoxWorldBuildRoad(world, &spur) == FOX_ROAD_OK && ok;
+    /* East of town the avenue runs on into a square where five roads meet at
+     * uneven angles; a boulevard sweeps round behind it, one street ends in a
+     * turning circle and another doubles back sharply. */
+    static const int16_t district[][7] = {
+        /* east, north of the start and end, of the point to bend towards,
+         * and the type. */
+        {200, 0, 330, 0, 0, 0, FOX_ROAD_AVENUE},
+        {330, 0, 330, 90, 0, 0, FOX_ROAD_STREET},
+        {330, 0, 330, -90, 0, 0, FOX_ROAD_STREET},
+        {330, -90, 260, -140, 0, 0, FOX_ROAD_STREET},
+        {330, 0, 430, 50, 0, 0, FOX_ROAD_STREET},
+        {330, 0, 430, -30, 0, 0, FOX_ROAD_STREET},
+        {430, 50, 430, -30, 510, 10, FOX_ROAD_BOULEVARD},
+    };
+    for (size_t index = 0u; index < sizeof(district) / sizeof(district[0]); ++index)
+    {
+        const int16_t *road = district[index];
+        const FoxRoadPlan plan = {
+            .start = PoleOffset(world, road[0], road[1]),
+            .end = PoleOffset(world, road[2], road[3]),
+            .control = PoleOffset(world, road[4], road[5]),
+            .curved = road[4] != 0,
+            .type = (FoxRoadType)road[6],
+        };
+        ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+    }
     /* Lights where the avenues cross, stop signs where two streets meet. */
     const FoxNetwork *network = world->network;
     const uint32_t centre =

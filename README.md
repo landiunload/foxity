@@ -10,7 +10,8 @@ Early development. Space is unbounded; in it hangs one planet, a ball a
 kilometre in radius under an always bright sky. The planet is solid through
 and through: it can be dug down to its core and piled up anywhere. Roads are
 drawn as straight lines or curves draped over the ground; where they meet or
-cross, intersections form by themselves, paved up to curved curbs, and the
+cross, intersections form by themselves, paved up to curved curbs, dead ends
+widen into turning circles, and the
 roads are marked and signed on their own: lane lines that turn solid before
 junctions, arrows for where each lane leads, priority and give-way signs
 where a bigger road meets a smaller one, speed limits. Traffic lights, other
