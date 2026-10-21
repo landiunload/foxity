@@ -3,6 +3,7 @@
 #include "sim/world.h"
 #include "test_router.h"
 
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -11,7 +12,9 @@
  * over a red light or past a stop sign without stopping, two cars in the
  * same place where their ways cross, a car with right of way braking hard
  * for one that should have given way, and cars with right of way and room
- * ahead standing at their line. */
+ * ahead standing at their line. Everywhere, two cars' bodies must never
+ * overlap: changing lanes, overtaking or turning round. Out on the roads
+ * round the planet, drivers change lanes and overtake. */
 
 #define TICKS FOX_TRAFFIC_TICKS_PER_SECOND
 #define SECONDS(seconds) ((uint64_t)(seconds) * TICKS)
@@ -30,6 +33,13 @@
 #define CLEAR_AHEAD FOX_METRES(4)
 /* More vehicle slots than the town ever uses. */
 #define SLOTS 1024u
+/* Bodies are a car's width and a truck's, and count as overlapping only
+ * this far into each other; cars further apart than the reach are not
+ * compared. */
+#define CAR_HALF_WIDTH 0.9
+#define TRUCK_HALF_WIDTH 1.25
+#define BODY_MARGIN 0.15
+#define BODY_REACH 15.0
 
 typedef struct Track
 {
@@ -53,6 +63,9 @@ typedef struct Tally
     uint64_t collisions;
     uint64_t forcedBrakes;
     uint64_t idleStops;
+    /* Ticks two cars' bodies overlapped, and a truck's with another's. */
+    uint64_t bodies;
+    uint64_t truckBodies;
     uint64_t priorityArrivals;
     uint64_t entries;
 } Tally;
@@ -163,6 +176,113 @@ static bool NothingAhead(const FoxTraffic *traffic, const FoxNetwork *network, c
     return last.distance - last.length > length + CLEAR_AHEAD;
 }
 
+/* A vehicle's body in the plane: its middle, the direction it faces and
+ * the one across it, its half length and half width, in metres. */
+typedef struct Body
+{
+    double middle[3];
+    double forward[3];
+    double across[3];
+    double half;
+    double side;
+    bool truck;
+} Body;
+
+static double Dot(const double *a, const double *b)
+{
+    return a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+}
+
+static Body BodyOf(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t slot,
+                   const FoxVehicleView *view)
+{
+    FoxVec position;
+    FoxVec forward;
+    EXPECT(FoxTrafficVehiclePose(traffic, network, slot, FOX_UNIT, &position, &forward),
+           "every car has a pose");
+    const FoxVec up = FoxPlanetUp(position);
+    const FoxVec across = FoxVecScale(FoxVecCross(forward, up), 1, FOX_UNIT);
+    const bool truck = view->kind == FOX_VEHICLE_TRUCK;
+    return (Body){
+        .middle = {(double)position.x / FOX_UNITS_PER_METRE,
+                   (double)position.y / FOX_UNITS_PER_METRE,
+                   (double)position.z / FOX_UNITS_PER_METRE},
+        .forward = {(double)forward.x / FOX_UNIT, (double)forward.y / FOX_UNIT,
+                    (double)forward.z / FOX_UNIT},
+        .across = {(double)across.x / FOX_UNIT, (double)across.y / FOX_UNIT,
+                   (double)across.z / FOX_UNIT},
+        .half = (double)view->length / FOX_UNITS_PER_METRE / 2.0,
+        .side = truck ? TRUCK_HALF_WIDTH : CAR_HALF_WIDTH,
+        .truck = truck,
+    };
+}
+
+/* Whether two bodies overlap, by their separating axes. */
+static bool Overlap(const Body *a, const Body *b)
+{
+    const double between[3] = {b->middle[0] - a->middle[0], b->middle[1] - a->middle[1],
+                               b->middle[2] - a->middle[2]};
+    if (Dot(between, between) > BODY_REACH * BODY_REACH)
+    {
+        return false;
+    }
+    const double *axes[4] = {a->forward, a->across, b->forward, b->across};
+    for (uint32_t index = 0u; index < 4u; ++index)
+    {
+        const double *axis = axes[index];
+        const double reach = fabs(Dot(a->forward, axis)) * (a->half - BODY_MARGIN) +
+                             fabs(Dot(a->across, axis)) * (a->side - BODY_MARGIN) +
+                             fabs(Dot(b->forward, axis)) * (b->half - BODY_MARGIN) +
+                             fabs(Dot(b->across, axis)) * (b->side - BODY_MARGIN);
+        if (fabs(Dot(between, axis)) > reach)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
+static int CompareBodies(const void *left, const void *right)
+{
+    const double a = ((const Body *)left)->middle[0];
+    const double b = ((const Body *)right)->middle[0];
+    return (a > b) - (a < b);
+}
+
+/* Counts the ticks two bodies overlap, comparing those near each other. */
+static void WatchBodies(const FoxTraffic *traffic, const FoxNetwork *network, Body *bodies,
+                        Tally *tally)
+{
+    uint32_t count = 0u;
+    for (uint32_t slot = 0u; slot < FoxTrafficCapacity(traffic); ++slot)
+    {
+        FoxVehicleView view;
+        if (FoxTrafficVehicle(traffic, slot, &view))
+        {
+            bodies[count++] = BodyOf(traffic, network, slot, &view);
+        }
+    }
+    qsort(bodies, count, sizeof(*bodies), CompareBodies);
+    for (uint32_t a = 0u; a < count; ++a)
+    {
+        for (uint32_t b = a + 1u;
+             b < count && bodies[b].middle[0] - bodies[a].middle[0] < BODY_REACH; ++b)
+        {
+            if (Overlap(&bodies[a], &bodies[b]))
+            {
+                if (bodies[a].truck || bodies[b].truck)
+                {
+                    ++tally->truckBodies;
+                }
+                else
+                {
+                    ++tally->bodies;
+                }
+            }
+        }
+    }
+}
+
 static void Watch(const FoxWorld *world, Track *tracks, Tally *tally)
 {
     const FoxTraffic *traffic = FoxWorldTraffic(world);
@@ -271,7 +391,8 @@ static void Watch(const FoxWorld *world, Track *tracks, Tally *tally)
     }
 }
 
-static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed, uint32_t seconds)
+static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed, bool planet,
+                uint32_t seconds)
 {
     TestRouterInit(&router);
     const FoxWorldDesc desc = {.seed = 11u,
@@ -280,23 +401,29 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
                                .router = routed ? &router.router : NULL};
     FoxWorld *world = FoxWorldCreate(&desc);
     EXPECT(world != NULL && FoxWorldBuildDemoTown(world), "the demo town is built");
+    EXPECT(!planet || FoxWorldBuildPlanetRoads(world), "the roads round the planet are built");
     Track *tracks = calloc(SLOTS, sizeof(*tracks));
-    EXPECT(tracks != NULL, "tracks for every car");
+    Body *bodies = calloc(SLOTS, sizeof(*bodies));
+    EXPECT(tracks != NULL && bodies != NULL, "tracks for every car");
     Tally tally = {0};
     for (uint64_t tick = 0u; tick < SECONDS(seconds); ++tick)
     {
         FoxWorldAdvance(world, 1u);
         Watch(world, tracks, &tally);
+        WatchBodies(FoxWorldTraffic(world), FoxWorldNetwork(world), bodies, &tally);
     }
     const FoxTrafficStats stats = FoxTrafficGetStats(FoxWorldTraffic(world));
     printf("%s: %llu entries, %llu on red, %llu past stop signs, %llu collisions, %llu forced "
            "brakes, %llu of %llu arrivals with right of way stood idle; %llu arrived, %llu stuck, "
-           "mean %.1f m/s\n",
+           "mean %.1f m/s; %llu lane changes, %llu overtakes; bodies overlapping %llu ticks, with "
+           "a truck %llu\n",
            label, (unsigned long long)tally.entries, (unsigned long long)tally.redEntries,
            (unsigned long long)tally.stopsSkipped, (unsigned long long)tally.collisions,
            (unsigned long long)tally.forcedBrakes, (unsigned long long)tally.idleStops,
            (unsigned long long)tally.priorityArrivals, (unsigned long long)stats.arrived,
-           (unsigned long long)stats.stuck, (double)stats.meanSpeed / FOX_UNITS_PER_METRE);
+           (unsigned long long)stats.stuck, (double)stats.meanSpeed / FOX_UNITS_PER_METRE,
+           (unsigned long long)stats.laneChanges, (unsigned long long)stats.overtakes,
+           (unsigned long long)tally.bodies, (unsigned long long)tally.truckBodies);
     EXPECT(tally.redEntries == 0u, "nobody drives into a red light");
     EXPECT(tally.stopsSkipped == 0u, "everyone stops at a stop sign");
     EXPECT(tally.collisions == 0u, "no two cars meet where their ways cross");
@@ -305,14 +432,22 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
      * stop for it comfortably; that is rare. */
     EXPECT(tally.idleStops * 100u <= tally.priorityArrivals,
            "a car with right of way and room goes but for a rare driver squeezing in");
+    EXPECT(tally.bodies == 0u, "no two cars' bodies ever overlap");
+    if (planet)
+    {
+        EXPECT(stats.laneChanges != 0u && stats.overtakes != 0u,
+               "drivers change lanes and overtake on the open road");
+    }
+    free(bodies);
     free(tracks);
     FoxWorldDestroy(world);
 }
 
 int main(void)
 {
-    Run("keep right, routed", FOX_DRIVE_RIGHT, 220u, true, 300u);
-    Run("keep left, random turns", FOX_DRIVE_LEFT, 160u, false, 180u);
+    Run("keep right, routed", FOX_DRIVE_RIGHT, 220u, true, false, 300u);
+    Run("keep left, random turns", FOX_DRIVE_LEFT, 160u, false, false, 180u);
+    Run("round the planet", FOX_DRIVE_RIGHT, 400u, true, true, 300u);
     puts("rules: ok");
     return 0;
 }

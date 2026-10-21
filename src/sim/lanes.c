@@ -17,15 +17,41 @@
 /* Where roads meet, each one stops this far beyond the point its edge would
  * touch the next road's: the room of the curb or the bend between them. */
 #define JUNCTION_FILLET (FOX_METRES(5) / 2)
+/* Two ways through an intersection whose middles come this close carry cars
+ * that would touch. */
+#define CLOSE_PASS (FOX_METRES(16) / 5)
+/* Where two ways cross, a car keeps clear of the other way by as much as
+ * the half widths of two cars and a margin take across it, at least this
+ * and at most that. */
+#define CAR_HALF_WIDTH (FOX_METRES(9) / 10)
+#define CROSS_MARGIN (FOX_METRES(3) / 10)
+#define MIN_ROOM (FOX_LANE_WIDTH / 2 + FOX_METRES(1))
+#define MAX_ROOM FOX_METRES(6)
 #define BEND_MARGIN FOX_METRES(1)
 #define MIN_BEND_TRIM (FOX_METRES(3) / 2)
-/* The lanes of a dead end stop this far before its node and swing out onto
- * the turning circle. */
-#define TURNAROUND_ENTRY FOX_METRES(9)
-/* A turning circle is driven in this many steps of twenty degrees: half a
- * turn and twice the thirty degrees that lead in and out of it. */
-#define TURNAROUND_STEPS 12u
-#define TURNAROUND_LEAD_STEPS 5u
+/* At a dead end drivers turn round on the road itself: in one sweep where it
+ * is wide enough, else to and fro. The turn is planned for a car this long
+ * and half as wide, its axles a sixth of the body in from either end, its
+ * rear axle turning on this radius at full lock, kept this far off the
+ * curbs. A dead end's lanes stop short of its node to leave the room. */
+#define TURN_LENGTH (FOX_METRES(9) / 2)
+#define TURN_HALF_WIDTH (FOX_METRES(9) / 10)
+#define TURN_FRONT (TURN_LENGTH * 5 / 6)
+#define TURN_REAR (TURN_LENGTH / 6)
+#define TURN_RADIUS FOX_METRES(4)
+#define TURN_CURB_ROOM (FOX_METRES(3) / 10)
+/* A turn has at most this many legs, sampled every two degrees; the curves
+ * leading in and out take this many samples. */
+#define TURN_LEGS (FOX_PATH_MAX_CUSPS + 1u)
+#define TURN_CURVE_SAMPLES 16u
+#define TURN_MAX_POINTS 160u
+/* Where the turn may begin: up to this far past the lanes' end, in steps,
+ * and how far over to the curb first, in so many steps. */
+#define TURN_START_REACH FOX_METRES(20)
+#define TURN_START_STEP (FOX_METRES(1) / 2)
+#define TURN_SWINGS 4
+/* To and fro drivers keep to a slow pace. */
+#define MANOEUVRE_SPEED FOX_METRES(3)
 /* Through an intersection where one must look out, drivers keep to these:
  * where nobody has priority, and where they give way or stop. */
 #define UNSIGNED_SPEED FOX_KMH(30)
@@ -138,7 +164,8 @@ int64_t FoxCentreToLane(const FoxPath *lane, int64_t centre)
     }
     /* Centre distances grow along a forward lane and shrink along a
      * backward one; flip the sign so the search sees them growing. */
-    const int64_t sign = lane->count > 1u && lane->centre[lane->count - 1u] < lane->centre[0] ? -1 : 1;
+    const int64_t sign =
+        lane->count > 1u && lane->centre[lane->count - 1u] < lane->centre[0] ? -1 : 1;
     const int64_t target = centre * sign;
     if (lane->count == 1u || target <= lane->centre[0] * sign)
     {
@@ -195,6 +222,24 @@ uint32_t FoxRoadEndAt(const FoxRoad *road, uint32_t node)
     return road->nodes[0] == node ? 0u : 1u;
 }
 
+/* How far before a dead end its lanes stop: room for a car to turn round
+ * in, to and fro on a street, in one sweep on wider roads. A one-way road
+ * has no lanes to turn into. */
+static int64_t DeadEndTrim(const FoxRoad *road)
+{
+    switch ((FoxRoadType)road->type)
+    {
+    case FOX_ROAD_STREET:
+        return FOX_METRES(23) / 2;
+    case FOX_ROAD_AVENUE:
+        return FOX_METRES(21) / 2;
+    case FOX_ROAD_BOULEVARD:
+        return FOX_METRES(33) / 2;
+    default:
+        return FOX_METRES(2);
+    }
+}
+
 static void PlaneCoordinates(FoxVec direction, FoxVec reference, FoxVec up, int64_t *outX,
                              int64_t *outY);
 static bool AngleLess(int64_t ax, int64_t ay, int64_t bx, int64_t by);
@@ -216,12 +261,12 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
         leaving[slot] = LeavingDirection(road, FoxRoadEndAt(road, index));
         paved[slot] = HalfWidth(road) + FOX_ROAD_SHOULDER;
         widest = FoxMax(widest, HalfWidth(road));
-        trims[slot] = count == 1u ? TURNAROUND_ENTRY : (count == 2u ? MIN_BEND_TRIM : 0);
+        trims[slot] = count == 1u ? DeadEndTrim(road) : (count == 2u ? MIN_BEND_TRIM : 0);
         /* Round the node anticlockwise seen from above. */
         PlaneCoordinates(leaving[slot], leaving[0], node->up, &xs[slot], &ys[slot]);
         uint32_t position = slot;
-        while (position > 0u && AngleLess(xs[slot], ys[slot], xs[order[position - 1u]],
-                                          ys[order[position - 1u]]))
+        while (position > 0u &&
+               AngleLess(xs[slot], ys[slot], xs[order[position - 1u]], ys[order[position - 1u]]))
         {
             order[position] = order[position - 1u];
             --position;
@@ -259,8 +304,7 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
         {
             const int64_t sine =
                 FoxVecLength(FoxVecScale(FoxVecCross(leaving[a], leaving[b]), 1, FOX_UNIT));
-            trims[a] = b == a ? trims[a]
-                              : FoxMax(trims[a], paved[b] * sine / FOX_UNIT + margin);
+            trims[a] = b == a ? trims[a] : FoxMax(trims[a], paved[b] * sine / FOX_UNIT + margin);
         }
     }
     for (uint32_t slot = 0u; slot < count; ++slot)
@@ -420,8 +464,7 @@ bool FoxLanesBuildRoad(FoxNetwork *network, uint32_t roadIndex)
              * one-way road is centred on its centre line. */
             const int64_t doubled = twoWay ? 2 * (int64_t)counts[direction] - (int64_t)lane * 2 - 1
                                            : (int64_t)counts[direction] - (int64_t)lane * 2 - 1;
-            const int64_t offset =
-                (direction == 0u ? side : -side) * doubled * FOX_LANE_WIDTH / 2;
+            const int64_t offset = (direction == 0u ? side : -side) * doubled * FOX_LANE_WIDTH / 2;
             const uint32_t path = BuildLane(network, roadIndex, direction, lane, offset);
             if (path == FOX_NETWORK_NONE)
             {
@@ -516,71 +559,295 @@ static void Handles(FoxVec p0, FoxVec t0, FoxVec p3, FoxVec t3, FoxVec *outP1, F
     *outP2 = FoxVecSub(p3, FoxVecScale(t3, reach, FOX_UNIT));
 }
 
-/* A dead end's turn: from the end of the lane in it swings out onto a circle
- * about the node, drives two thirds of the way round and comes back into the
- * lane out, as a driver uses a turning circle. Fills TURNAROUND_COUNT points. */
-#define TURNAROUND_COUNT (2u * TURNAROUND_LEAD_STEPS + TURNAROUND_STEPS + 1u)
-static void TurnaroundPoints(const FoxNetwork *network, uint32_t nodeIndex, const FoxPath *in,
-                             const FoxPath *out, FoxVec *points)
+/* sin(degree) in FOX_UNIT for 0..90 degrees. */
+static const int32_t sines[91] = {
+    0,     1144,  2287,  3430,  4572,  5712,  6850,  7987,  9121,  10252, 11380, 12505, 13626,
+    14742, 15855, 16962, 18064, 19161, 20252, 21336, 22415, 23486, 24550, 25607, 26656, 27697,
+    28729, 29753, 30767, 31772, 32768, 33754, 34729, 35693, 36647, 37590, 38521, 39441, 40348,
+    41243, 42126, 42995, 43852, 44695, 45525, 46341, 47143, 47930, 48703, 49461, 50203, 50931,
+    51643, 52339, 53020, 53684, 54332, 54963, 55578, 56175, 56756, 57319, 57865, 58393, 58903,
+    59396, 59870, 60326, 60764, 61183, 61584, 61966, 62328, 62672, 62997, 63303, 63589, 63856,
+    64104, 64332, 64540, 64729, 64898, 65048, 65177, 65287, 65376, 65446, 65496, 65526, 65536,
+};
+
+static int64_t Sine(int32_t degree)
 {
-    /* Twenty degrees in FOX_UNIT, and where the circle is joined: 120 degrees
-     * either side of straight on. */
-    const int64_t cosStep = 61584;
-    const int64_t sinStep = 22415;
+    const int32_t angle = ((degree % 360) + 360) % 360;
+    if (angle <= 90)
+    {
+        return sines[angle];
+    }
+    if (angle <= 180)
+    {
+        return sines[180 - angle];
+    }
+    return angle <= 270 ? -sines[angle - 180] : -sines[360 - angle];
+}
+
+static int64_t Cosine(int32_t degree)
+{
+    return Sine(degree + 90);
+}
+
+/* A point in the plane of a dead end: x along the lanes arriving there,
+ * from where their centre line ends, and y from the centre line towards
+ * the far side. */
+typedef struct TurnPoint
+{
+    int64_t x;
+    int64_t y;
+} TurnPoint;
+
+/* The room to turn in: the node lies `node` along x, and the paved road and
+ * its rounded end reach `edge` from the centre line, less the curb room. */
+typedef struct TurnRoom
+{
+    int64_t node;
+    int64_t edge;
+} TurnRoom;
+
+/* The rear axle's way through a turn and the points where the car stops to
+ * change between driving forward and reversing. */
+typedef struct TurnPlan
+{
+    TurnPoint points[TURN_MAX_POINTS];
+    uint32_t count;
+    uint32_t cusps[FOX_PATH_MAX_CUSPS];
+    uint32_t cuspCount;
+} TurnPlan;
+
+static bool TurnAppend(TurnPlan *plan, TurnPoint point)
+{
+    if (plan->count == TURN_MAX_POINTS)
+    {
+        return false;
+    }
+    plan->points[plan->count++] = point;
+    return true;
+}
+
+/* Whether the car with its rear axle at `at`, heading (hx, hy) in FOX_UNIT,
+ * stays on the road and out of the lanes leading in, where the next car
+ * waits; while it leads in it is still in its own lane. */
+static bool BodyFits(const TurnRoom *room, TurnPoint at, int64_t hx, int64_t hy, bool leading)
+{
+    static const int64_t lengths[2] = {TURN_FRONT, -TURN_REAR};
+    static const int64_t widths[2] = {TURN_HALF_WIDTH, -TURN_HALF_WIDTH};
+    for (uint32_t end = 0u; end < 2u; ++end)
+    {
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            const int64_t x = at.x + (lengths[end] * hx - widths[side] * hy) / FOX_UNIT;
+            const int64_t y = at.y + (lengths[end] * hy + widths[side] * hx) / FOX_UNIT;
+            const int64_t past = x - room->node;
+            if (FoxAbs(y) > room->edge ||
+                (past > 0 && past * past + y * y > room->edge * room->edge) ||
+                (!leading && x < 0 && y < 0))
+            {
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* A cubic from one point and heading to another: false where it bends
+ * tighter than the car steers or leaves the room. The samples after `from`
+ * are appended. */
+static bool TurnCurve(const TurnRoom *room, TurnPoint from, int64_t fx, int64_t fy, TurnPoint to,
+                      int64_t tx, int64_t ty, bool leading, TurnPlan *plan)
+{
+    const int64_t dx = to.x - from.x;
+    const int64_t dy = to.y - from.y;
+    const int64_t reach = (int64_t)FoxIntegerSqrt((uint64_t)(dx * dx + dy * dy)) * 2 / 5;
+    const TurnPoint handles[2] = {
+        {from.x + fx * reach / FOX_UNIT, from.y + fy * reach / FOX_UNIT},
+        {to.x - tx * reach / FOX_UNIT, to.y - ty * reach / FOX_UNIT},
+    };
+    TurnPoint previous = from;
+    int64_t px = fx;
+    int64_t py = fy;
+    for (uint32_t sample = 1u; sample <= TURN_CURVE_SAMPLES; ++sample)
+    {
+        const int64_t t = (int64_t)sample * FOX_UNIT / TURN_CURVE_SAMPLES;
+        const int64_t u = FOX_UNIT - t;
+        const int64_t weights[4] = {
+            u * u / FOX_UNIT * u / FOX_UNIT,
+            3 * u * u / FOX_UNIT * t / FOX_UNIT,
+            3 * u * t / FOX_UNIT * t / FOX_UNIT,
+            t * t / FOX_UNIT * t / FOX_UNIT,
+        };
+        const TurnPoint point = sample == TURN_CURVE_SAMPLES
+                                    ? to
+                                    : (TurnPoint){(weights[0] * from.x + weights[1] * handles[0].x +
+                                                   weights[2] * handles[1].x + weights[3] * to.x) /
+                                                      FOX_UNIT,
+                                                  (weights[0] * from.y + weights[1] * handles[0].y +
+                                                   weights[2] * handles[1].y + weights[3] * to.y) /
+                                                      FOX_UNIT};
+        const int64_t sx = point.x - previous.x;
+        const int64_t sy = point.y - previous.y;
+        const int64_t span = (int64_t)FoxIntegerSqrt((uint64_t)(sx * sx + sy * sy));
+        if (span == 0)
+        {
+            continue;
+        }
+        const int64_t hx = sx * FOX_UNIT / span;
+        const int64_t hy = sy * FOX_UNIT / span;
+        /* The turn from the last span to this one, against what the radius
+         * allows over this span. */
+        const int64_t turn = FoxAbs(px * hy - py * hx) / FOX_UNIT;
+        if (px * hx + py * hy < 0 || span * FOX_UNIT * 20 < TURN_RADIUS * 19 * turn ||
+            !BodyFits(room, point, hx, hy, leading) || !TurnAppend(plan, point))
+        {
+            return false;
+        }
+        previous = point;
+        px = hx;
+        py = hy;
+    }
+    /* It leaves the curve the way the lane out runs. */
+    return px * tx + py * ty >= 0;
+}
+
+/* The rear axle on the circle about `centre` at a heading: driving forward
+ * the circle lies to the left, reversing to the right, and either way the
+ * heading turns left as the car goes. */
+static TurnPoint OnTurn(TurnPoint centre, int32_t degree, bool forward)
+{
+    const int64_t side = forward ? 1 : -1;
+    return (TurnPoint){centre.x + side * TURN_RADIUS * Sine(degree) / FOX_UNIT,
+                       centre.y - side * TURN_RADIUS * Cosine(degree) / FOX_UNIT};
+}
+
+/* A turn as a driver makes it: on from its lane, `swing` of the way over
+ * to the curb, up to `start`, then at full lock, left going forward and
+ * right in reverse, each leg as far as the road allows, until it can bend
+ * into the lane out at `end`, heading (ex, ey). */
+static bool PlanTurn(const TurnRoom *room, TurnPoint in, TurnPoint end, int64_t ex, int64_t ey,
+                     int32_t swing, int64_t start, TurnPlan *plan)
+{
+    plan->count = 0u;
+    plan->cuspCount = 0u;
+    const int64_t curb = FoxMin(in.y, -(room->edge - TURN_HALF_WIDTH - FOX_METRES(1) / 10));
+    TurnPoint at = {start, in.y + (curb - in.y) * swing / TURN_SWINGS};
+    if (!TurnAppend(plan, in) || !TurnCurve(room, in, FOX_UNIT, 0, at, FOX_UNIT, 0, true, plan))
+    {
+        return false;
+    }
+    int32_t degree = 0;
+    for (uint32_t leg = 0u; leg < TURN_LEGS; ++leg)
+    {
+        const bool forward = leg % 2u == 0u;
+        const int64_t side = forward ? 1 : -1;
+        const TurnPoint centre = {at.x - side * TURN_RADIUS * Sine(degree) / FOX_UNIT,
+                                  at.y + side * TURN_RADIUS * Cosine(degree) / FOX_UNIT};
+        uint32_t steps = 0u;
+        for (;;)
+        {
+            const int64_t behind = ((end.x - at.x) * ex + (end.y - at.y) * ey) / FOX_UNIT;
+            if (forward && degree >= 150 && behind > FOX_METRES(1))
+            {
+                const uint32_t mark = plan->count;
+                if (TurnCurve(room, at, Cosine(degree), Sine(degree), end, ex, ey, false, plan))
+                {
+                    return true;
+                }
+                plan->count = mark;
+            }
+            if (degree >= 180)
+            {
+                break;
+            }
+            const TurnPoint next = OnTurn(centre, degree + 1, forward);
+            if (!BodyFits(room, next, Cosine(degree + 1), Sine(degree + 1), false))
+            {
+                break;
+            }
+            at = next;
+            ++degree;
+            ++steps;
+            if (degree % 2 == 0 && !TurnAppend(plan, at))
+            {
+                return false;
+            }
+        }
+        if (steps == 0u || plan->cuspCount == FOX_PATH_MAX_CUSPS)
+        {
+            return false;
+        }
+        const TurnPoint last = plan->points[plan->count - 1u];
+        if ((last.x != at.x || last.y != at.y) && !TurnAppend(plan, at))
+        {
+            return false;
+        }
+        plan->cusps[plan->cuspCount++] = plan->count - 1u;
+    }
+    return false;
+}
+
+/* A dead end's turn from the lane `in` into the lane `out`: the way of the
+ * rear axle, from where it is as the front reaches the end of the lane in
+ * to where it is as the front reaches the start of the lane out. Of the
+ * turns that fit, the one with the fewest legs; false when none does. The
+ * plane's origin and axes are written out. */
+static bool DeadEndTurn(const FoxNetwork *network, uint32_t nodeIndex, const FoxPath *in,
+                        const FoxPath *out, TurnPlan *best, FoxVec *outOrigin, FoxVec *outForward,
+                        FoxVec *outSide)
+{
     const FoxNode *node = &network->nodes[nodeIndex];
-    const int64_t radius =
-        FoxRoadTurnaroundRadius((FoxRoadType)network->roads[in->road].type);
+    const FoxRoad *road = &network->roads[in->road];
     const FoxVec forward = PathEndDirection(in, true);
-    /* Round towards the middle of the road: left where traffic keeps right. */
+    /* Towards the far side: left where traffic keeps right. */
     FoxVec side = FoxVecScale(FoxVecCross(node->up, forward), 1, FOX_UNIT);
     if (node->driveSide == FOX_DRIVE_LEFT)
     {
         side = FoxVecNegate(side);
     }
-    FoxVec *arc = points + TURNAROUND_LEAD_STEPS;
-    int64_t cosine = -(int64_t)FOX_UNIT / 2;
-    int64_t sine = -56756;
-    for (uint32_t step = 0u; step <= TURNAROUND_STEPS; ++step)
+    const FoxVec origin = FoxPolylinePoint(road->centre, road->centreLengths, road->centreCount,
+                                           in->centre[in->count - 1u], NULL);
+    const FoxVec laneEnd = FoxVecSub(in->points[in->count - 1u], origin);
+    const FoxVec outStart = FoxVecSub(out->points[0], origin);
+    const FoxVec outward = PathEndDirection(out, false);
+    const TurnRoom room = {
+        .node = FoxVecDot(FoxVecSub(node->position, origin), forward) / FOX_UNIT,
+        .edge = HalfWidth(road) + FOX_ROAD_SHOULDER - TURN_CURB_ROOM,
+    };
+    const TurnPoint start = {FoxVecDot(laneEnd, forward) / FOX_UNIT - TURN_FRONT,
+                             FoxVecDot(laneEnd, side) / FOX_UNIT};
+    const int64_t ex = FoxVecDot(outward, forward) / FOX_UNIT;
+    const int64_t ey = FoxVecDot(outward, side) / FOX_UNIT;
+    const TurnPoint end = {FoxVecDot(outStart, forward) / FOX_UNIT - ex * TURN_FRONT / FOX_UNIT,
+                           FoxVecDot(outStart, side) / FOX_UNIT - ey * TURN_FRONT / FOX_UNIT};
+    TurnPlan *trial = malloc(sizeof(*trial));
+    if (trial == NULL)
     {
-        arc[step] = FoxVecAdd(node->position,
-                              FoxVecAdd(FoxVecScale(forward, radius * cosine / FOX_UNIT, FOX_UNIT),
-                                        FoxVecScale(side, radius * sine / FOX_UNIT, FOX_UNIT)));
-        const int64_t turned = (cosine * cosStep - sine * sinStep) / FOX_UNIT;
-        sine = (cosine * sinStep + sine * cosStep) / FOX_UNIT;
-        cosine = turned;
+        return false;
     }
-    /* Onto the circle heading thirty degrees outwards, off it thirty degrees
-     * inwards. */
-    const int64_t cos30 = 56756;
-    const int64_t sin30 = (int64_t)FOX_UNIT / 2;
-    const FoxVec onto = FoxVecSub(FoxVecScale(forward, cos30, FOX_UNIT),
-                                  FoxVecScale(side, sin30, FOX_UNIT));
-    const FoxVec off = FoxVecNegate(FoxVecAdd(FoxVecScale(forward, cos30, FOX_UNIT),
-                                              FoxVecScale(side, sin30, FOX_UNIT)));
-    const FoxVec start = in->points[in->count - 1u];
-    const FoxVec end = out->points[0];
-    FoxVec p1;
-    FoxVec p2;
-    Handles(start, forward, arc[0], onto, &p1, &p2);
-    for (uint32_t step = 0u; step < TURNAROUND_LEAD_STEPS; ++step)
+    bool found = false;
+    for (int32_t swing = 0; swing <= TURN_SWINGS; ++swing)
     {
-        points[step] = Cubic(start, p1, p2, arc[0],
-                             (int64_t)step * FOX_UNIT / (int64_t)TURNAROUND_LEAD_STEPS);
+        for (int64_t at = start.x + TURN_FRONT + FOX_METRES(1); at <= TURN_START_REACH;
+             at += TURN_START_STEP)
+        {
+            if (PlanTurn(&room, start, end, ex, ey, swing, at, trial) &&
+                (!found || trial->cuspCount < best->cuspCount))
+            {
+                *best = *trial;
+                found = true;
+            }
+        }
     }
-    Handles(arc[TURNAROUND_STEPS], off, end, PathEndDirection(out, false), &p1, &p2);
-    for (uint32_t step = 1u; step <= TURNAROUND_LEAD_STEPS; ++step)
-    {
-        arc[TURNAROUND_STEPS + step] =
-            Cubic(arc[TURNAROUND_STEPS], p1, p2, end,
-                  (int64_t)step * FOX_UNIT / (int64_t)TURNAROUND_LEAD_STEPS);
-    }
+    free(trial);
+    *outOrigin = origin;
+    *outForward = forward;
+    *outSide = side;
+    return found;
 }
 
 static uint32_t BuildConnection(FoxNetwork *network, uint32_t nodeIndex, uint32_t from, uint32_t to,
                                 uint8_t movement)
 {
-    _Static_assert(TURNAROUND_COUNT <= CONNECTION_MAX_SAMPLES,
-                   "conflict tests compare at most CONNECTION_MAX_SAMPLES points");
     const uint32_t index = FoxNetworkAllocatePath(network);
     if (index == FOX_NETWORK_NONE)
     {
@@ -595,31 +862,41 @@ static uint32_t BuildConnection(FoxNetwork *network, uint32_t nodeIndex, uint32_
     Handles(p0, PathEndDirection(in, true), p3, PathEndDirection(out, false), &p1, &p2);
     const int64_t estimate =
         FoxVecDistance(p0, p1) + FoxVecDistance(p1, p2) + FoxVecDistance(p2, p3);
-    const uint32_t count =
-        movement == MOVE_U_TURN
-            ? TURNAROUND_COUNT
-            : (uint32_t)FoxClamp(estimate / FOX_METRES(1) + 1, CONNECTION_MIN_SAMPLES,
-                                 CONNECTION_MAX_SAMPLES);
+    uint32_t count = (uint32_t)FoxClamp(estimate / FOX_METRES(1) + 1, CONNECTION_MIN_SAMPLES,
+                                        CONNECTION_MAX_SAMPLES);
+    /* A dead end's turn; where none fits, a plain curve round. */
+    TurnPlan *turn = NULL;
+    FoxVec origin = {0};
+    FoxVec forward = {0};
+    FoxVec side = {0};
+    if (movement == MOVE_U_TURN)
+    {
+        turn = malloc(sizeof(*turn));
+        if (turn != NULL &&
+            !DeadEndTurn(network, nodeIndex, in, out, turn, &origin, &forward, &side))
+        {
+            free(turn);
+            turn = NULL;
+        }
+        count = turn != NULL ? turn->count : count;
+    }
 
     FoxPath *path = &network->paths[index];
     ResetPath(path, PATH_CONNECTION);
     if (!AllocatePathArrays(path, count, false))
     {
+        free(turn);
         FreeNewPath(network, index);
         return FOX_NETWORK_NONE;
     }
-    if (movement == MOVE_U_TURN)
+    for (uint32_t sample = 0u; sample < count; ++sample)
     {
-        TurnaroundPoints(network, nodeIndex, &network->paths[from], &network->paths[to],
-                         path->points);
-    }
-    else
-    {
-        for (uint32_t sample = 0u; sample < count; ++sample)
-        {
-            path->points[sample] =
-                Cubic(p0, p1, p2, p3, (int64_t)sample * FOX_UNIT / (int64_t)(count - 1u));
-        }
+        path->points[sample] =
+            turn != NULL
+                ? FoxVecAdd(origin,
+                            FoxVecAdd(FoxVecScale(forward, turn->points[sample].x, FOX_UNIT),
+                                      FoxVecScale(side, turn->points[sample].y, FOX_UNIT)))
+                : Cubic(p0, p1, p2, p3, (int64_t)sample * FOX_UNIT / (int64_t)(count - 1u));
     }
     path->count = count;
     path->length = FoxMax(1, FoxPolylineMeasure(path->points, path->lengths, count));
@@ -628,6 +905,23 @@ static uint32_t BuildConnection(FoxNetwork *network, uint32_t nodeIndex, uint32_
     path->from = from;
     path->to = to;
     path->movement = movement;
+    if (turn != NULL)
+    {
+        /* The points trace the rear axle. Where the legs meet the car stops
+         * to change direction, so that bend sets no pace; to and fro it
+         * keeps to a walking pace. */
+        path->axle = true;
+        path->cuspCount = (uint8_t)turn->cuspCount;
+        for (uint32_t cusp = 0u; cusp < turn->cuspCount; ++cusp)
+        {
+            path->cusps[cusp] = path->lengths[turn->cusps[cusp]];
+        }
+        if (turn->cuspCount != 0u)
+        {
+            path->curveSpeed = MANOEUVRE_SPEED;
+        }
+        free(turn);
+    }
     path->speedLimit = ConnectionSpeed(network, path);
     return index;
 }
@@ -725,6 +1019,62 @@ static int32_t LastCrossing(const int64_t *ax, const int64_t *ay, uint32_t aCoun
     return last;
 }
 
+/* Where two ways that never cross come closer than `reach`, so that the
+ * cars on them would touch: the sample of b nearest to a, and of a nearest
+ * to b, or -1 when they keep apart. */
+static int32_t ClosestPass(const int64_t *ax, const int64_t *ay, const int64_t *bx,
+                           const int64_t *by, uint32_t count, int64_t reach, int32_t *outA)
+{
+    int32_t found = -1;
+    int64_t best = reach * reach;
+    for (uint32_t i = 0u; i < count; ++i)
+    {
+        for (uint32_t j = 0u; j < count; ++j)
+        {
+            const int64_t dx = ax[i] - bx[j];
+            const int64_t dy = ay[i] - by[j];
+            if (dx * dx + dy * dy < best)
+            {
+                best = dx * dx + dy * dy;
+                found = (int32_t)j;
+                *outA = (int32_t)i;
+            }
+        }
+    }
+    return found;
+}
+
+/* The room a car keeps from a way it crosses: with the direction of its
+ * way and the other's where they cross, in plane coordinates. */
+static int64_t CrossRoom(int64_t ax, int64_t ay, int64_t bx, int64_t by)
+{
+    const int64_t lengthA = (int64_t)FoxIntegerSqrt((uint64_t)(ax * ax + ay * ay));
+    const int64_t lengthB = (int64_t)FoxIntegerSqrt((uint64_t)(bx * bx + by * by));
+    if (lengthA == 0 || lengthB == 0)
+    {
+        return MIN_ROOM;
+    }
+    const int64_t sine = FoxAbs(ax * by - ay * bx) * FOX_UNIT / lengthA / lengthB;
+    const int64_t cosine = FoxAbs(ax * bx + ay * by) * FOX_UNIT / lengthA / lengthB;
+    const int64_t reach = CAR_HALF_WIDTH * cosine + (CAR_HALF_WIDTH + CROSS_MARGIN) * FOX_UNIT;
+    if (sine * MAX_ROOM <= reach)
+    {
+        return MAX_ROOM;
+    }
+    return FoxMax(MIN_ROOM, reach / sine);
+}
+
+/* The direction of a sampled way at a sample, from the samples around it. */
+static void SampleDirection(const int64_t *xs, const int64_t *ys, uint32_t count, int32_t sample,
+                            int64_t *outX, int64_t *outY)
+{
+    const uint32_t at = (uint32_t)FoxMax(0, sample);
+    const uint32_t from = at == 0u ? 0u : at - 1u;
+    const uint32_t to = at + 1u < count ? at + 1u : at;
+    *outX = xs[to] - xs[from];
+    *outY = ys[to] - ys[from];
+}
+
 /* The distance along a connection to the end of one of its sampled segments;
  * samples past its end repeat its last point. */
 static int64_t SegmentEnd(const FoxPath *path, int32_t segment)
@@ -798,7 +1148,8 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
         path->conflicts = NULL;
         path->conflictCount = 0u;
     }
-    if (count == 0u)
+    /* At a dead end one car turns round at a time; nothing crosses. */
+    if (count == 0u || node->roadCount < 2u)
     {
         return true;
     }
@@ -827,7 +1178,8 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
     /* matrix[a * count + b]: 0 no conflict, 1 a yields, 2 b yields; meet[a *
      * count + b] how far along b the two meet. */
     int64_t *meet = ok ? malloc((size_t)count * count * sizeof(*meet)) : NULL;
-    ok = ok && meet != NULL;
+    int64_t *room = ok ? malloc((size_t)count * count * sizeof(*room)) : NULL;
+    ok = ok && meet != NULL && room != NULL;
     for (uint32_t a = 0u; ok && a < count; ++a)
     {
         const FoxPath *pa = &network->paths[node->connections[a]];
@@ -845,15 +1197,52 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
             const int32_t onA = LastCrossing(xs + rowB, ys + rowB, CONNECTION_MAX_SAMPLES,
                                              xs + rowA, ys + rowA, CONNECTION_MAX_SAMPLES);
             const bool merge = pa->to == pb->to;
-            if (!merge && onB < 0)
+            int64_t meetB = 0;
+            int64_t meetA = 0;
+            int32_t sampleA = -1;
+            int32_t sampleB = -1;
+            if (merge)
             {
-                continue;
+                /* Lanes that merge share everything to the end. */
+                meetB = pb->length;
+                meetA = pa->length;
             }
-            /* Lanes that merge share everything to the end. */
-            meet[a * count + b] = merge ? pb->length : SegmentEnd(pb, onB);
-            meet[b * count + a] = merge || onA < 0 ? pa->length : SegmentEnd(pa, onA);
-            const bool aYields = Yields(network, node, pa, pb, node->connections[a],
-                                        node->connections[b]);
+            else if (onB >= 0)
+            {
+                meetB = SegmentEnd(pb, onB);
+                meetA = onA < 0 ? pa->length : SegmentEnd(pa, onA);
+                sampleA = onA;
+                sampleB = onB;
+            }
+            else
+            {
+                /* Ways that pass too close for two cars, such as turns
+                 * across from either side of a small intersection, take
+                 * turns as if they crossed where they come closest. */
+                int32_t nearA = 0;
+                const int32_t nearB = ClosestPass(xs + rowA, ys + rowA, xs + rowB, ys + rowB,
+                                                  CONNECTION_MAX_SAMPLES, CLOSE_PASS / 4, &nearA);
+                if (nearB < 0)
+                {
+                    continue;
+                }
+                meetB = nearB < (int32_t)pb->count ? pb->lengths[nearB] : pb->length;
+                meetA = nearA < (int32_t)pa->count ? pa->lengths[nearA] : pa->length;
+                sampleA = nearA;
+                sampleB = nearB;
+            }
+            meet[a * count + b] = meetB;
+            meet[b * count + a] = meetA;
+            int64_t ax = 0;
+            int64_t ay = 0;
+            int64_t bx = 0;
+            int64_t by = 0;
+            SampleDirection(xs + rowA, ys + rowA, CONNECTION_MAX_SAMPLES, sampleA, &ax, &ay);
+            SampleDirection(xs + rowB, ys + rowB, CONNECTION_MAX_SAMPLES, sampleB, &bx, &by);
+            room[a * count + b] = merge || sampleA < 0 ? MIN_ROOM : CrossRoom(ax, ay, bx, by);
+            room[b * count + a] = room[a * count + b];
+            const bool aYields =
+                Yields(network, node, pa, pb, node->connections[a], node->connections[b]);
             matrix[a * count + b] = aYields ? 1u : 2u;
             matrix[b * count + a] = aYields ? 2u : 1u;
         }
@@ -884,6 +1273,7 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
                     .path = node->connections[b],
                     .yields = matrix[a * count + b] == 1u,
                     .otherAt = meet[a * count + b],
+                    .room = room[a * count + b],
                 };
             }
         }
@@ -892,6 +1282,7 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
     free(ys);
     free(matrix);
     free(meet);
+    free(room);
     return ok;
 }
 
@@ -999,6 +1390,34 @@ bool FoxLanesBuildNode(FoxNetwork *network, uint32_t nodeIndex)
             }
             continue;
         }
+        /* Where a road goes straight on, every lane may: the curb lane also
+         * turns to the curb side and the innermost lane across, as drivers
+         * expect. Otherwise the lanes share the roads out in order. */
+        uint32_t straight = outCount;
+        for (uint32_t k = 0u; k < outCount; ++k)
+        {
+            const int64_t x = xs[order[k]];
+            const int64_t y = FoxAbs(ys[order[k]]);
+            const bool better =
+                straight == outCount || y * xs[order[straight]] < FoxAbs(ys[order[straight]]) * x;
+            if (Classify(x, ys[order[k]], node->driveSide) == MOVE_STRAIGHT && better)
+            {
+                straight = k;
+            }
+        }
+        for (uint32_t k = 0u; straight != outCount && k < outCount; ++k)
+        {
+            const NodeEnd *out = &ends[order[k]];
+            const uint32_t first = k > straight ? in->inCount - 1u : 0u;
+            const uint32_t lanes = k == straight ? in->inCount : 1u;
+            ok = ConnectGroup(network, nodeIndex, in->in, first, lanes, out->out, out->outCount,
+                              Classify(xs[order[k]], ys[order[k]], node->driveSide)) &&
+                 ok;
+        }
+        if (straight != outCount)
+        {
+            continue;
+        }
         if (in->inCount >= outCount)
         {
             for (uint32_t k = 0u; k < outCount; ++k)
@@ -1021,8 +1440,7 @@ bool FoxLanesBuildNode(FoxNetwork *network, uint32_t nodeIndex)
                 for (uint32_t k = first; k < last; ++k)
                 {
                     const NodeEnd *out = &ends[order[k]];
-                    ok = ConnectGroup(network, nodeIndex, in->in, lane, 1u, out->out,
-                                      out->outCount,
+                    ok = ConnectGroup(network, nodeIndex, in->in, lane, 1u, out->out, out->outCount,
                                       Classify(xs[order[k]], ys[order[k]], node->driveSide)) &&
                          ok;
                 }
@@ -1045,9 +1463,8 @@ void FoxLanesResolveSigns(FoxNetwork *network, uint32_t nodeIndex)
     {
         const FoxRoad *road = &network->roads[node->roads[slot]];
         const uint8_t setting = road->signSetting[FoxRoadEndAt(road, nodeIndex)];
-        classes[slot] = setting == FOX_SIGN_PRIORITY
-                            ? 256u
-                            : FoxRoadTypeGet((FoxRoadType)road->type)->rank;
+        classes[slot] =
+            setting == FOX_SIGN_PRIORITY ? 256u : FoxRoadTypeGet((FoxRoadType)road->type)->rank;
         if (setting == FOX_SIGN_AUTO || setting == FOX_SIGN_PRIORITY)
         {
             highest = classes[slot] > highest ? classes[slot] : highest;

@@ -11,7 +11,7 @@ kilometre in radius under an always bright sky. The planet is solid through
 and through: it can be dug down to its core and piled up anywhere. Roads are
 drawn as straight lines or curves draped over the ground; where they meet or
 cross, intersections form by themselves, paved up to curved curbs, dead ends
-widen into turning circles, and the
+are rounded off, and the
 roads are marked and signed on their own: lane lines that turn solid before
 junctions, arrows for where each lane leads, priority and give-way signs
 where a bigger road meets a smaller one, speed limits. Traffic lights, other
@@ -21,9 +21,15 @@ their distance, take the fastest route and avoid jams. At intersections they
 keep the rules of the road: the road with priority and the green go through
 without stopping, everyone else waits for a gap, cars turning across the
 oncoming traffic pull in and wait for it, and traffic lights give them an
-arrow of their own when they queue. A test watches the town tick by tick for
-anyone running a red light or a stop sign, two cars meeting where their ways
-cross, or a car with right of way having to brake hard. Each city chooses whether it keeps right or left when it is
+arrow of their own when they queue. Where a road has more lanes, drivers move
+over to the faster one or to the one their route needs; on a street with a
+lane each way they overtake slow trucks through the oncoming lane when it is
+clear far enough. At a dead end they turn round on the road itself, in one
+sweep where it is wide and to and fro where it is not. Beyond the demo town,
+rings of every kind of road circle the planet, joined by meridians to the
+south pole. A test watches the town tick by tick for anyone running a red
+light or a stop sign, two cars meeting where their ways cross, a car with
+right of way having to brake hard, or two cars' bodies overlapping anywhere. Each city chooses whether it keeps right or left when it is
 founded, and districts can be laid over it that drive on the other side.
 
 The simulation uses only integer arithmetic at a fixed tick rate, so the same
@@ -31,7 +37,7 @@ commands give the same city on every machine.
 
 ![An intersection with lights](docs/junction.png)
 
-![A square where five roads meet, and a turning circle](docs/district.png)
+![A square where five roads meet, and a dead end](docs/district.png)
 
 ![The dock and the road panel](docs/tools.png)
 

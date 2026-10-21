@@ -80,6 +80,9 @@ typedef struct FoxTrafficStats
     uint32_t trucks;
     /* Vehicles that have stood for half a minute or more. */
     uint32_t waitingLong;
+    /* Changes of lane and overtakes through the oncoming lane so far. */
+    uint64_t laneChanges;
+    uint64_t overtakes;
 } FoxTrafficStats;
 
 FoxTraffic *FoxTrafficCreate(const FoxTrafficDesc *desc);

@@ -18,6 +18,9 @@
 #define DOUBLE_LINE_SPACING 0.14
 #define DASH 3.0
 #define DASH_GAP 6.0
+/* Guide lines through an intersection: short dashes. */
+#define GUIDE_DASH 0.5
+#define GUIDE_GAP 0.5
 /* Lane lines turn solid this far before an intersection. */
 #define SOLID_NEAR 15.0
 /* Lines across the lanes at a junction stand this far back from it: a stop
@@ -25,6 +28,8 @@
 #define LINE_BACK 0.3
 #define STOP_WIDTH 0.5
 #define TEETH_BACK 0.9
+#define TOOTH_BASE 0.45
+#define TOOTH_GAP 0.25
 #define FILLET_SEGMENTS 8u
 #define CAP_SEGMENTS 12u
 /* Signs stand this far beyond the paved edge. */
@@ -376,9 +381,10 @@ static void Strip(FoxMesh *mesh, const Station *stations, uint32_t count, double
     }
 }
 
-/* A painted line at an offset, solid except for a dashed middle stretch. */
+/* A painted line at an offset, solid except for a stretch of dashes. */
 static void LaneLine(FoxMesh *mesh, const Station *stations, uint32_t count, double at, double from,
-                     double to, double dashFrom, double dashTo, bool dashed)
+                     double to, double dashFrom, double dashTo, bool dashed, double dash,
+                     double gap)
 {
     if (!dashed || dashFrom >= dashTo)
     {
@@ -389,7 +395,7 @@ static void LaneLine(FoxMesh *mesh, const Station *stations, uint32_t count, dou
     Strip(mesh, stations, count, at - LINE_HALF, at + LINE_HALF, MARKING_LIFT, from, dashFrom, 0.0,
           0.0, COLOR_LINE);
     Strip(mesh, stations, count, at - LINE_HALF, at + LINE_HALF, MARKING_LIFT, dashFrom, dashTo,
-          DASH, DASH_GAP, COLOR_LINE);
+          dash, gap, COLOR_LINE);
     Strip(mesh, stations, count, at - LINE_HALF, at + LINE_HALF, MARKING_LIFT, dashTo, to, 0.0, 0.0,
           COLOR_LINE);
 }
@@ -428,15 +434,16 @@ static void Markings(FoxMesh *mesh, const Station *stations, uint32_t count, Fox
         if (info->forwardLanes == 1u)
         {
             /* A street: one dashed line to overtake across. */
-            LaneLine(mesh, stations, count, 0.0, linesFrom, linesTo, dashFrom, dashTo, true);
+            LaneLine(mesh, stations, count, 0.0, linesFrom, linesTo, dashFrom, dashTo, true, DASH,
+                     DASH_GAP);
         }
         else
         {
             /* Bigger roads keep their directions apart with a double line. */
             LaneLine(mesh, stations, count, -DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
-                     false);
+                     false, DASH, DASH_GAP);
             LaneLine(mesh, stations, count, DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
-                     false);
+                     false, DASH, DASH_GAP);
         }
         /* Both directions carry as many lanes, so the lines are symmetric. */
         for (uint32_t index = 1u; index < info->forwardLanes; ++index)
@@ -444,7 +451,7 @@ static void Markings(FoxMesh *mesh, const Station *stations, uint32_t count, Fox
             for (int side = -1; side <= 1; side += 2)
             {
                 LaneLine(mesh, stations, count, (double)side * lane * (double)index, linesFrom,
-                         linesTo, dashFrom, dashTo, true);
+                         linesTo, dashFrom, dashTo, true, DASH, DASH_GAP);
             }
         }
         return;
@@ -452,7 +459,7 @@ static void Markings(FoxMesh *mesh, const Station *stations, uint32_t count, Fox
     for (uint32_t index = 1u; index < info->forwardLanes; ++index)
     {
         LaneLine(mesh, stations, count, lane * ((double)info->forwardLanes / 2.0 - (double)index),
-                 linesFrom, linesTo, dashFrom, dashTo, true);
+                 linesFrom, linesTo, dashFrom, dashTo, true, DASH, DASH_GAP);
     }
 }
 
@@ -493,61 +500,109 @@ static V3 InLane(const LaneFrame *frame, double ahead, double right)
                Scale(frame->up, MARKING_LIFT));
 }
 
-static void LaneQuad(FoxMesh *mesh, const LaneFrame *frame, double back, double front, double left,
-                     double right)
+/* A painted band of half width `half` along points of a lane frame (ahead,
+ * right), its edges mitred where it bends, ending in a head this wide and
+ * long pointing on the way the band ends. */
+#define ARROW_POINTS 12u
+static void ArrowBand(FoxMesh *mesh, const LaneFrame *frame, const double (*points)[2],
+                      uint32_t count, double half, double headHalf, double headLength)
 {
-    Quad(mesh, InLane(frame, back, left), InLane(frame, back, right), InLane(frame, front, right),
-         InLane(frame, front, left), COLOR_LINE);
+    double normals[ARROW_POINTS][2];
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        /* The normals of the segments either side, averaged into a mitre
+         * that keeps the band as wide through the bend. */
+        double sumX = 0.0;
+        double sumY = 0.0;
+        double segmentX = 0.0;
+        double segmentY = 0.0;
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            if ((side == 0u && index == 0u) || (side == 1u && index + 1u == count))
+            {
+                continue;
+            }
+            const double *from = points[side == 0u ? index - 1u : index];
+            const double *to = points[side == 0u ? index : index + 1u];
+            const double dx = to[0] - from[0];
+            const double dy = to[1] - from[1];
+            const double length = sqrt(dx * dx + dy * dy);
+            segmentX = -dy / length;
+            segmentY = dx / length;
+            sumX += segmentX;
+            sumY += segmentY;
+        }
+        const double length = sqrt(sumX * sumX + sumY * sumY);
+        const double mitre = fmax((sumX * segmentX + sumY * segmentY) / length, 0.5);
+        normals[index][0] = sumX / length / mitre;
+        normals[index][1] = sumY / length / mitre;
+    }
+    for (uint32_t index = 0u; index + 1u < count; ++index)
+    {
+        const double *a = points[index];
+        const double *b = points[index + 1u];
+        const double *na = normals[index];
+        const double *nb = normals[index + 1u];
+        Quad(mesh, InLane(frame, a[0] - na[0] * half, a[1] - na[1] * half),
+             InLane(frame, a[0] + na[0] * half, a[1] + na[1] * half),
+             InLane(frame, b[0] + nb[0] * half, b[1] + nb[1] * half),
+             InLane(frame, b[0] - nb[0] * half, b[1] - nb[1] * half), COLOR_LINE);
+    }
+    const double *end = points[count - 1u];
+    const double *before = points[count - 2u];
+    const double dx = end[0] - before[0];
+    const double dy = end[1] - before[1];
+    const double length = sqrt(dx * dx + dy * dy);
+    const double ux = dx / length;
+    const double uy = dy / length;
+    Triangle(mesh, InLane(frame, end[0] + uy * headHalf, end[1] - ux * headHalf),
+             InLane(frame, end[0] - uy * headHalf, end[1] + ux * headHalf),
+             InLane(frame, end[0] + ux * headLength, end[1] + uy * headLength), COLOR_LINE);
 }
 
-/* An arrow for every way a lane leads, painted at its frame. */
+/* An arrow for every way a lane leads, painted at its frame: a stem with
+ * its head for straight on, and for a turn a branch that bends smoothly off
+ * the stem, or the stem itself bending when the lane only turns. */
 static void Arrow(FoxMesh *mesh, const LaneFrame *frame, uint32_t turns)
 {
-    const double stem = 0.08;
-    LaneQuad(mesh, frame, -2.2, (turns & FOX_TURN_STRAIGHT) != 0u ? 0.9 : -0.3, -stem, stem);
-    if ((turns & FOX_TURN_STRAIGHT) != 0u)
+    const double half = 0.08;
+    const double headHalf = 0.3;
+    const double headLength = 0.8;
+    const double bottom = -2.2;
+    const bool straight = (turns & FOX_TURN_STRAIGHT) != 0u;
+    if (straight)
     {
-        Triangle(mesh, InLane(frame, 0.9, -0.32), InLane(frame, 0.9, 0.32), InLane(frame, 1.7, 0.0),
-                 COLOR_LINE);
+        const double stem[2][2] = {{bottom, 0.0}, {0.9, 0.0}};
+        ArrowBand(mesh, frame, stem, 2u, half, headHalf, headLength);
     }
     for (int side = -1; side <= 1; side += 2)
     {
-        const uint32_t bit = side < 0 ? FOX_TURN_LEFT : FOX_TURN_RIGHT;
-        if ((turns & bit) == 0u)
+        if ((turns & (side < 0 ? FOX_TURN_LEFT : FOX_TURN_RIGHT)) == 0u)
         {
             continue;
         }
-        /* A branch leaving the stem at 45 degrees, with its head. */
-        const double s = (double)side;
-        const double reach = 0.75;
-        const double tipAhead = -0.5 + reach;
-        const double tipSide = s * reach;
-        const double nx = 0.7071 * stem;
-        Quad(mesh, InLane(frame, -0.5 - nx, s * nx), InLane(frame, -0.5 + nx, -s * nx),
-             InLane(frame, tipAhead + nx, tipSide - s * nx),
-             InLane(frame, tipAhead - nx, tipSide + s * nx), COLOR_LINE);
-        const double head = 0.3;
-        const double length = 0.6;
-        Triangle(mesh, InLane(frame, tipAhead - 0.7071 * head, tipSide + s * 0.7071 * head),
-                 InLane(frame, tipAhead + 0.7071 * head, tipSide - s * 0.7071 * head),
-                 InLane(frame, tipAhead + 0.7071 * length, tipSide + s * 0.7071 * length),
-                 COLOR_LINE);
-    }
-}
-
-/* The teeth of a give-way line across a lane at its end, pointing at the
- * drivers. */
-static void GiveWayLine(FoxMesh *mesh, const LaneFrame *frame)
-{
-    const double half = LaneWidth() / 2.0;
-    const uint32_t teeth = 5u;
-    const double width = 2.0 * half / (double)teeth;
-    for (uint32_t tooth = 0u; tooth < teeth; ++tooth)
-    {
-        const double left = -half + width * ((double)tooth + 0.15);
-        const double right = -half + width * ((double)tooth + 0.85);
-        Triangle(mesh, InLane(frame, -LINE_BACK, left), InLane(frame, -LINE_BACK, right),
-                 InLane(frame, -TEETH_BACK, (left + right) / 2.0), COLOR_LINE);
+        /* Up the stem, round a bend of 60 degrees and a little on. */
+        const double radius = 0.7;
+        const double from = -0.9;
+        const double turn = PI / 3.0;
+        double points[ARROW_POINTS][2];
+        uint32_t count = 0u;
+        if (!straight)
+        {
+            points[count][0] = bottom;
+            points[count++][1] = 0.0;
+        }
+        const uint32_t arc = 8u;
+        for (uint32_t step = 0u; step <= arc; ++step)
+        {
+            const double angle = turn * (double)step / (double)arc;
+            points[count][0] = from + radius * sin(angle);
+            points[count++][1] = (double)side * radius * (1.0 - cos(angle));
+        }
+        points[count][0] = points[count - 1u][0] + 0.15 * cos(turn);
+        points[count][1] = points[count - 1u][1] + (double)side * 0.15 * sin(turn);
+        ++count;
+        ArrowBand(mesh, frame, points, count, half, headHalf, headLength * 0.85);
     }
 }
 
@@ -746,12 +801,11 @@ static double LinesBack(EndMarking mark)
     return mark == MARK_STOP ? LINE_BACK + STOP_WIDTH : (mark == MARK_TEETH ? TEETH_BACK : 0.0);
 }
 
-/* The stop line across every lane arriving at a road's end, a little
- * before the junction. It reaches over the centre line and the edge line to
- * their outer sides, so the lines along the road run into it and end there
- * in one clean joint. */
-static void StopLine(FoxMesh *mesh, const Station *stations, uint32_t count,
-                     const FoxRoadView *road, uint32_t end, double at)
+/* Where the lanes arriving at a road's end lie across it, from the centre
+ * line to the edge line: over the outer sides of both lines when `over`,
+ * else between their inner sides. False when no lanes arrive there. */
+static bool ArrivingSpan(const FoxRoadView *road, uint32_t end, bool over, double *outLeft,
+                         double *outRight)
 {
     const FoxRoadTypeInfo *info = FoxRoadTypeGet(road->type);
     /* Lanes of direction 0 arrive at nodes[1], to the right of the centre
@@ -759,22 +813,93 @@ static void StopLine(FoxMesh *mesh, const Station *stations, uint32_t count,
     const uint32_t direction = end == 1u ? 0u : 1u;
     if (road->laneCount[direction] == 0u)
     {
-        return;
+        return false;
     }
-    const double outer = FoxRoadMeshHalfWidth(road->type);
-    double left = -outer;
-    double right = outer;
+    const double outer = FoxRoadMeshHalfWidth(road->type) - (over ? 0.0 : 2.0 * EDGE_HALF);
+    *outLeft = -outer;
+    *outRight = outer;
     if (info->backwardLanes != 0u)
     {
-        const double centre =
-            info->forwardLanes == 1u ? LINE_HALF : DOUBLE_LINE_SPACING + LINE_HALF;
+        /* The far side of the centre line, single or double. */
+        const double centre = (info->forwardLanes == 1u ? 0.0 : DOUBLE_LINE_SPACING) + LINE_HALF;
         const bool onRight = (direction == 0u) == (road->driveSide == FOX_DRIVE_RIGHT);
-        left = onRight ? -centre : -outer;
-        right = onRight ? outer : centre;
+        *outLeft = onRight ? (over ? -centre : centre) : -outer;
+        *outRight = onRight ? outer : (over ? centre : -centre);
+    }
+    return true;
+}
+
+/* The stop line across every lane arriving at a road's end, a little
+ * before the junction. It reaches over the centre line and the edge line to
+ * their outer sides, so the lines along the road run into it and end there
+ * in one clean joint. */
+static void StopLine(FoxMesh *mesh, const Station *stations, uint32_t count,
+                     const FoxRoadView *road, uint32_t end, double at)
+{
+    double left = 0.0;
+    double right = 0.0;
+    if (!ArrivingSpan(road, end, true, &left, &right))
+    {
+        return;
     }
     const double near = end == 1u ? at - LINE_BACK - STOP_WIDTH : at + LINE_BACK;
     Strip(mesh, stations, count, left, right, MARKING_LIFT, near, near + STOP_WIDTH, 0.0, 0.0,
           COLOR_LINE);
+}
+
+/* A point `along` a road's centre line and `right` of it, on the markings. */
+static V3 MarkingPoint(const Station *stations, uint32_t count, double along, double right)
+{
+    uint32_t index = 0u;
+    while (index + 2u < count && stations[index + 1u].along < along)
+    {
+        ++index;
+    }
+    const Station *a = &stations[index];
+    const Station *b = &stations[index + 1u];
+    const double span = b->along - a->along;
+    const Station station = Blend(a, b, span > 0.0 ? (along - a->along) / span : 0.0);
+    return Offset(&station, right, MARKING_LIFT);
+}
+
+/* The give-way line: a row of equal teeth pointing at the arriving traffic,
+ * centred between the centre line and the edge line with as much room at
+ * either side as between two teeth. */
+static void GiveWayTeeth(FoxMesh *mesh, const Station *stations, uint32_t count,
+                         const FoxRoadView *road, uint32_t end, double at)
+{
+    double left = 0.0;
+    double right = 0.0;
+    if (count < 2u || !ArrivingSpan(road, end, false, &left, &right))
+    {
+        return;
+    }
+    const double span = right - left;
+    const uint32_t teeth = (uint32_t)floor(fmax(0.0, span / (TOOTH_BASE + TOOTH_GAP)));
+    if (teeth == 0u)
+    {
+        return;
+    }
+    const double room = (span - (double)teeth * TOOTH_BASE) / (double)teeth;
+    /* Towards the junction the base, away from it the point. */
+    const double base = end == 1u ? at - LINE_BACK : at + LINE_BACK;
+    const double point = end == 1u ? at - TEETH_BACK : at + TEETH_BACK;
+    for (uint32_t tooth = 0u; tooth < teeth; ++tooth)
+    {
+        const double low = left + room / 2.0 + (double)tooth * (TOOTH_BASE + room);
+        const double high = low + TOOTH_BASE;
+        const V3 tip = MarkingPoint(stations, count, point, (low + high) / 2.0);
+        const V3 a = MarkingPoint(stations, count, base, low);
+        const V3 b = MarkingPoint(stations, count, base, high);
+        if (end == 1u)
+        {
+            Triangle(mesh, tip, b, a, COLOR_LINE);
+        }
+        else
+        {
+            Triangle(mesh, a, b, tip, COLOR_LINE);
+        }
+    }
 }
 
 /* Lines, arrows and the sign or light where a road's lanes meet a node. */
@@ -797,10 +922,6 @@ static void RoadEnd(const FoxNetwork *network, uint32_t roadIndex, const FoxRoad
             !LaneFrameAt(network, path, view.length, origin, &frame))
         {
             continue;
-        }
-        if (EndMark(network, road, end) == MARK_TEETH)
-        {
-            GiveWayLine(detail, &frame);
         }
         uint32_t turns = FoxNetworkLaneTurns(network, path);
         turns = turns == FOX_TURN_BACK ? 0u : (turns & ~FOX_TURN_BACK);
@@ -863,6 +984,10 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
         {
             StopLine(detail, stations, count, &road, end, end == 0u ? from : to);
         }
+        else if (marks[end] == MARK_TEETH)
+        {
+            GiveWayTeeth(detail, stations, count, &road, end, end == 0u ? from : to);
+        }
     }
     free(stations);
     for (uint32_t end = 0u; end < 2u; ++end)
@@ -893,9 +1018,8 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
 #define SWEEP_GAP (PI * 5.0 / 6.0)
 #define SWEEP_SEGMENTS 12u
 /* A turning circle: the arc round its far side and each flare into it. */
-#define BULB_SEGMENTS 24u
 #define FLARE_SEGMENTS 12u
-#define OUTLINE_CAPACITY (FOX_NODE_MAX_ROADS * (SWEEP_SEGMENTS + 2u) + BULB_SEGMENTS + 16u)
+#define OUTLINE_CAPACITY (FOX_NODE_MAX_ROADS * (SWEEP_SEGMENTS + 2u) + CAP_SEGMENTS + 16u)
 
 /* A road where it meets a node: its station at the trim, the direction away
  * from the node, the right of that direction and its paved half width. */
@@ -908,6 +1032,8 @@ typedef struct RoadEndShape
     double angle;
     FoxRoadType type;
     FoxDriveSide side;
+    /* The sign in force for the traffic arriving at this end. */
+    FoxSign sign;
 } RoadEndShape;
 
 static bool EndShape(const FoxNetwork *network, uint32_t roadIndex, uint32_t node, FoxVec origin,
@@ -929,6 +1055,7 @@ static bool EndShape(const FoxNetwork *network, uint32_t roadIndex, uint32_t nod
     out->paved = FoxRoadMeshHalfWidth(road.type) + SHOULDER;
     out->type = road.type;
     out->side = road.driveSide;
+    out->sign = road.sign[end];
     return true;
 }
 
@@ -1246,54 +1373,119 @@ static void BendCentreLine(const RoadEndShape *a, const RoadEndShape *b, V3 up, 
     const double length = stations[SWEEP_SEGMENTS].along;
     if (first->forwardLanes == 1u && second->forwardLanes == 1u)
     {
-        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, 0.0, 0.0, length, 0.0, length, true);
+        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, 0.0, 0.0, length, 0.0, length, true, DASH,
+                 DASH_GAP);
         return;
     }
     for (int side = -1; side <= 1; side += 2)
     {
         LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, (double)side * DOUBLE_LINE_SPACING, 0.0,
-                 length, 0.0, 0.0, false);
+                 length, 0.0, 0.0, false, DASH, DASH_GAP);
     }
 }
 
-/* A dead end widens into a turning circle about its node, as wide as the
- * lanes turn round on. */
-static void Bulb(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
+/* Whether, going round the node from the end `first` of an order to the
+ * end `second`, the end `other` is met on the way. */
+static bool Between(uint32_t first, uint32_t second, uint32_t other, uint32_t count)
 {
-    const double radius = (double)FoxRoadTurnaroundRadius(end->type) / FOX_UNITS_PER_METRE +
-                          LaneWidth() / 2.0 + SHOULDER;
-    const V3 ex = end->outward;
-    const V3 ey = Scale(end->right, -1.0);
-    const double trim = Dot(Sub(end->station.point, centre), ex);
-    /* The flares join the circle where it still lies well short of the
-     * road's end. */
-    const double join = acos(fmax(fmin(0.5, (trim - 1.0) / radius), -0.3));
+    return other != first && other != second &&
+           (other + count - first) % count < (second + count - first) % count;
+}
+
+/* Where a main road runs straight through an intersection without lights,
+ * its lines carry on across it as guide lines of short dashes, and so does
+ * its edge across the mouths of the roads that give way to it. */
+static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t count, V3 up,
+                       FoxMesh *detail)
+{
+    for (uint32_t first = 0u; first < count; ++first)
+    {
+        for (uint32_t second = first + 1u; second < count; ++second)
+        {
+            const RoadEndShape *a = &ends[order[first]];
+            const RoadEndShape *b = &ends[order[second]];
+            const bool gives = a->sign == FOX_SIGN_YIELD || a->sign == FOX_SIGN_STOP ||
+                               b->sign == FOX_SIGN_YIELD || b->sign == FOX_SIGN_STOP;
+            if (a->type != b->type || Dot(a->outward, b->outward) > -0.94 || gives)
+            {
+                continue;
+            }
+            bool main = true;
+            for (uint32_t other = 0u; other < count; ++other)
+            {
+                const FoxSign sign = ends[order[other]].sign;
+                main = main && (other == first || other == second || sign == FOX_SIGN_YIELD ||
+                                sign == FOX_SIGN_STOP);
+            }
+            if (!main)
+            {
+                continue;
+            }
+            Station stations[SWEEP_SEGMENTS + 1u];
+            CentreCurve(a, b, up, stations);
+            const uint32_t points = SWEEP_SEGMENTS + 1u;
+            const double length = stations[SWEEP_SEGMENTS].along;
+            const FoxRoadTypeInfo *info = FoxRoadTypeGet(a->type);
+            const double lane = LaneWidth();
+            if (info->backwardLanes != 0u)
+            {
+                /* The centre line and the lines either side of it. */
+                LaneLine(detail, stations, points, 0.0, 0.0, length, 0.0, length, true, GUIDE_DASH,
+                         GUIDE_GAP);
+                for (uint32_t index = 1u; index < info->forwardLanes; ++index)
+                {
+                    for (int side = -1; side <= 1; side += 2)
+                    {
+                        LaneLine(detail, stations, points, (double)side * lane * (double)index, 0.0,
+                                 length, 0.0, length, true, GUIDE_DASH, GUIDE_GAP);
+                    }
+                }
+            }
+            for (uint32_t index = 1u; info->backwardLanes == 0u && index < info->forwardLanes;
+                 ++index)
+            {
+                LaneLine(detail, stations, points,
+                         lane * ((double)info->forwardLanes / 2.0 - (double)index), 0.0, length,
+                         0.0, length, true, GUIDE_DASH, GUIDE_GAP);
+            }
+            /* The roads met going round from a to b join on the right of the
+             * way from a to b, the others on its left. */
+            bool joined[2] = {false, false};
+            for (uint32_t other = 0u; other < count; ++other)
+            {
+                if (other != first && other != second)
+                {
+                    joined[Between(first, second, other, count) ? 1u : 0u] = true;
+                }
+            }
+            const double half = FoxRoadMeshHalfWidth(a->type);
+            for (uint32_t side = 0u; side < 2u; ++side)
+            {
+                const double edge = (side == 1u ? 1.0 : -1.0) * (half - EDGE_HALF);
+                if (joined[side])
+                {
+                    Strip(detail, stations, points, edge - EDGE_HALF, edge + EDGE_HALF,
+                          MARKING_LIFT, 0.0, length, GUIDE_DASH, GUIDE_GAP, COLOR_LINE);
+                }
+            }
+            return;
+        }
+    }
+}
+
+/* A dead end runs on to its node and rounds off there in a half circle, the
+ * edge line following the curb round. */
+static void Cap(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
+{
     Outline outline = {.count = 0u};
     Mouth(&outline, end);
-    const V3 inward = Scale(ex, -1.0);
-    for (uint32_t flare = 0u; flare < 2u; ++flare)
+    for (uint32_t step = 0u; step <= CAP_SEGMENTS; ++step)
     {
-        /* Out of the left edge onto the circle, round it, off it into the
-         * right edge. */
-        const double angle = flare == 0u ? join : 2.0 * PI - join;
-        const V3 onCircle = Along(centre, ex, cos(angle) * radius, ey, sin(angle) * radius);
-        const V3 tangent = Add(Scale(ex, -sin(angle)), Scale(ey, cos(angle)));
-        if (flare == 1u)
-        {
-            for (uint32_t step = 0u; step <= BULB_SEGMENTS; ++step)
-            {
-                const double a = join + (2.0 * PI - 2.0 * join) * (double)step / BULB_SEGMENTS;
-                Put(&outline, Along(centre, ex, cos(a) * radius, ey, sin(a) * radius), up, true);
-            }
-        }
-        for (uint32_t step = 1u; step < FLARE_SEGMENTS; ++step)
-        {
-            const double t = (double)step / FLARE_SEGMENTS;
-            Put(&outline,
-                flare == 0u ? CubicPoint(LeftCorner(end), inward, onCircle, tangent, t)
-                            : CubicPoint(onCircle, tangent, RightCorner(end), ex, t),
-                up, true);
-        }
+        /* From the left side round the far end to the right side. */
+        const double a = PI * (double)step / CAP_SEGMENTS;
+        Put(&outline,
+            Along(centre, end->right, -cos(a) * end->paved, end->outward, -sin(a) * end->paved), up,
+            true);
     }
     PaveOutline(&outline, centre, up, base, detail);
 }
@@ -1338,7 +1530,7 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
     }
     if (count == 1u)
     {
-        Bulb(&ends[0], centre, up, base, detail);
+        Cap(&ends[0], centre, up, base, detail);
     }
     else if (count == 2u && RibbonFits(&ends[0], &ends[1], up))
     {
@@ -1350,6 +1542,10 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
         if (count == 2u && detail != NULL)
         {
             BendCentreLine(&ends[0], &ends[1], up, detail);
+        }
+        if (count >= 3u && !node.signals && detail != NULL)
+        {
+            GuideLines(ends, order, count, up, detail);
         }
     }
 }

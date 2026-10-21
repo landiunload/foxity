@@ -44,7 +44,8 @@ bool FoxCityCreate(FoxCity *city, const FoxCityDesc *desc)
             FoxLog(FOX_LOG_WARNING, "part of the grid could not be built");
         }
     }
-    else if (desc->demo && !FoxWorldBuildDemoTown(city->world))
+    else if (desc->demo &&
+             (!FoxWorldBuildDemoTown(city->world) || !FoxWorldBuildPlanetRoads(city->world)))
     {
         FoxLog(FOX_LOG_WARNING, "part of the demo town could not be built");
     }
@@ -75,8 +76,8 @@ void FoxTickTimerRecord(FoxTickTimer *timer, double seconds)
     timer->seconds += seconds;
     timer->slowest = seconds > timer->slowest ? seconds : timer->slowest;
     uint32_t bucket = 0u;
-    for (uint64_t micro = (uint64_t)(seconds * 1e6); micro >= 2u && bucket + 1u < FOX_TICK_TIMER_BUCKETS;
-         micro /= 2u)
+    for (uint64_t micro = (uint64_t)(seconds * 1e6);
+         micro >= 2u && bucket + 1u < FOX_TICK_TIMER_BUCKETS; micro /= 2u)
     {
         ++bucket;
     }
@@ -122,8 +123,8 @@ void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE
 
     fprintf(stream, "-- roads\n");
     fprintf(stream, "roads %u, %.2f km of road, %.2f km of lanes in %u lanes\n", roads.roads,
-            (double)roads.roadLength / FOX_METRES(1000), (double)roads.laneLength / FOX_METRES(1000),
-            roads.lanes);
+            (double)roads.roadLength / FOX_METRES(1000),
+            (double)roads.laneLength / FOX_METRES(1000), roads.lanes);
     for (uint32_t type = 0u; type < FOX_ROAD_TYPE_COUNT; ++type)
     {
         const FoxRoadTypeInfo *info = FoxRoadTypeGet((FoxRoadType)type);
@@ -168,8 +169,9 @@ void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE
         }
     }
     fprintf(stream, " km/h\n");
-    fprintf(stream, "spawned %" PRIu64 ", arrived %" PRIu64 ", removed %" PRIu64
-                    " (%" PRIu64 " stuck a minute)\n",
+    fprintf(stream,
+            "spawned %" PRIu64 ", arrived %" PRIu64 ", removed %" PRIu64 " (%" PRIu64
+            " stuck a minute)\n",
             cars.spawned, cars.arrived, cars.removed, cars.stuck);
     if (cityMinutes > 0.0)
     {
@@ -188,8 +190,7 @@ void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE
                 mean * 1000.0, Percentile(timer, 0.5), Percentile(timer, 0.99),
                 timer->slowest * 1000.0);
         fprintf(stream, "budget used at 1x: %.2f %% of a %.1f ms tick\n",
-                100.0 * mean * FOX_TRAFFIC_TICKS_PER_SECOND,
-                1000.0 / FOX_TRAFFIC_TICKS_PER_SECOND);
+                100.0 * mean * FOX_TRAFFIC_TICKS_PER_SECOND, 1000.0 / FOX_TRAFFIC_TICKS_PER_SECOND);
     }
 }
 

@@ -28,7 +28,7 @@ static int Run(int argumentCount, char **arguments)
     FoxClientOptions options = {
         .seed = 1u,
         .graphics = FOX_GRAPHICS_ANY,
-        .cars = 150u,
+        .cars = 400u,
         .driveSide = FOX_DRIVE_RIGHT,
         .demo = true,
         .gridSpacing = FOX_METRES(80),
@@ -88,7 +88,8 @@ static int Run(int argumentCount, char **arguments)
         }
         else if (strcmp(argument, "--focus-north") == 0)
         {
-            parsed = FoxParseDouble(value, &options.focusNorth) && fabs(options.focusNorth) < 1000.0;
+            parsed =
+                FoxParseDouble(value, &options.focusNorth) && fabs(options.focusNorth) < 1000.0;
         }
         else if (strcmp(argument, "--capture") == 0)
         {
@@ -114,7 +115,8 @@ static int Run(int argumentCount, char **arguments)
         }
         if (!parsed)
         {
-            fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] [--camera-distance M] "
+            fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] "
+                  "[--camera-distance M] "
                   "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
                   "[--tool N] [--graphics d3d12|vulkan] [--no-vsync] [--smoke] "
                   "[--capture FILE.bmp] [--capture-frame N]\n",

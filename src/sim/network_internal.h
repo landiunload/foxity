@@ -25,6 +25,9 @@ typedef enum Movement
     MOVE_U_TURN,
 } Movement;
 
+/* A dead end's turn changes direction at most this often. */
+#define FOX_PATH_MAX_CUSPS 6u
+
 typedef struct FoxConflict
 {
     uint32_t path;
@@ -33,6 +36,10 @@ typedef struct FoxConflict
     /* How far along the other connection the two meet: past it a car on
      * the other one no longer stands in this one's way. */
     int64_t otherAt;
+    /* How far short of where they meet a car keeps clear of the other way,
+     * and how far past it its rear must be: the sharper the angle the two
+     * cross at, the further. The same for both. */
+    int64_t room;
 } FoxConflict;
 
 typedef struct FoxPath
@@ -69,6 +76,12 @@ typedef struct FoxPath
     uint8_t movement;
     FoxConflict *conflicts;
     uint32_t conflictCount;
+    /* A dead end's turn traces the rear axle rather than the front, and is
+     * driven forward up to its first cusp, in reverse to the next, and so
+     * on: how far along each cusp lies. */
+    bool axle;
+    uint8_t cuspCount;
+    int64_t cusps[FOX_PATH_MAX_CUSPS];
 
     /* Owned by the traffic: the cars on the path from front to back; on
      * connections the cars holding or using it, and on lanes the length of

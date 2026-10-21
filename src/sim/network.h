@@ -41,9 +41,6 @@
 #define FOX_LANE_WIDTH INT64_C(3584)
 /* Paved beyond the outer lanes, about 0.4 m. */
 #define FOX_ROAD_SHOULDER INT64_C(410)
-/* At a dead end the lanes turn around on a circle about the end node at
- * least this wide, wider for broad roads. */
-#define FOX_TURNAROUND_MIN_RADIUS (FOX_METRES(13) / 2)
 /* A speed in km/h as units per second. */
 #define FOX_KMH(kmh) ((int32_t)(FOX_METRES(kmh) * 10 / 36))
 /* Speed limits a sign can show. */
@@ -125,8 +122,6 @@ typedef enum FoxLight
 const FoxRoadTypeInfo *FoxRoadTypeGet(FoxRoadType type);
 /* Half the width of a road's lanes, without its shoulders. */
 int64_t FoxRoadHalfWidth(FoxRoadType type);
-/* The radius the lanes of a dead end of this type turn around on. */
-int64_t FoxRoadTurnaroundRadius(FoxRoadType type);
 
 typedef enum FoxRoadResult
 {

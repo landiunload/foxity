@@ -13,7 +13,7 @@
 #define NO_PATCH UINT32_MAX
 /* Details of patches whose middle is further than this from the eye are left
  * out. */
-#define DETAIL_DISTANCE 700.0
+#define DETAIL_DISTANCE 350.0
 /* A lit lamp: a small bright box over the dark one. */
 #define LAMP_VERTICES 36u
 #define LAMP_HALF 0.11f

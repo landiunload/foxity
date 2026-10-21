@@ -54,6 +54,13 @@ void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles);
  * not be built. */
 bool FoxWorldBuildDemoTown(FoxWorld *world);
 
+/* Roads round the whole planet beyond the demo town: rings of a street,
+ * an avenue, a boulevard and a one-way highway at different latitudes,
+ * crossed by three meridians that run from the town's avenues down to the
+ * south pole. Lights stand where big two-way roads cross. False if a road
+ * could not be built. */
+bool FoxWorldBuildPlanetRoads(FoxWorld *world);
+
 /* A square grid around the north pole for loading the city: `lines` roads
  * each way `spacing` apart. Every fourth line is an avenue, the middle ones
  * boulevards, and lights stand where those cross. False if a road could not

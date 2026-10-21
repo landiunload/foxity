@@ -32,13 +32,6 @@ int64_t FoxRoadHalfWidth(FoxRoadType type)
                         : (int64_t)(info->forwardLanes + info->backwardLanes) * FOX_LANE_WIDTH / 2;
 }
 
-int64_t FoxRoadTurnaroundRadius(FoxRoadType type)
-{
-    /* The circle stays outside the road's own lanes, so every lane can swing
-     * out and round. */
-    return FoxMax(FOX_TURNAROUND_MIN_RADIUS, FoxRoadHalfWidth(type) + FOX_LANE_WIDTH / 2);
-}
-
 #define MAX_HALF_WIDTH (6 * FOX_LANE_WIDTH / 2)
 
 /* ---- Polylines -------------------------------------------------------------- */

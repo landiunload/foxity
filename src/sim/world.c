@@ -26,8 +26,8 @@ FoxWorld *FoxWorldCreate(const FoxWorldDesc *desc)
     }
     const FoxNetworkDesc networkDesc = {.driveSide = desc->driveSide, .router = desc->router};
     const FoxTrafficDesc trafficDesc = {.seed = desc->seed, .targetVehicles = desc->targetVehicles};
-    world->planet = FoxPlanetCreate(desc->planetRadius != 0 ? desc->planetRadius
-                                                            : FOX_PLANET_DEFAULT_RADIUS);
+    world->planet =
+        FoxPlanetCreate(desc->planetRadius != 0 ? desc->planetRadius : FOX_PLANET_DEFAULT_RADIUS);
     world->network = FoxNetworkCreate(&networkDesc);
     world->traffic = FoxTrafficCreate(&trafficDesc);
     if (world->planet == NULL || world->network == NULL || world->traffic == NULL)
@@ -241,11 +241,9 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
     }
     /* Lights where the avenues cross, stop signs where two streets meet. */
     const FoxNetwork *network = world->network;
-    const uint32_t centre =
-        FoxNetworkNearestNode(network, Ground(world, 0, 0), FOX_METRES(4));
+    const uint32_t centre = FoxNetworkNearestNode(network, Ground(world, 0, 0), FOX_METRES(4));
     ok = centre != FOX_NETWORK_NONE && FoxWorldSetSignals(world, centre, true) && ok;
-    const uint32_t corner =
-        FoxNetworkNearestNode(network, Ground(world, -80, -80), FOX_METRES(4));
+    const uint32_t corner = FoxNetworkNearestNode(network, Ground(world, -80, -80), FOX_METRES(4));
     FoxNodeView view;
     if (corner != FOX_NETWORK_NONE && FoxNetworkNode(network, corner, &view))
     {
@@ -267,6 +265,129 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
     const uint32_t slow =
         FoxNetworkNearestRoad(network, Ground(world, -80, -120), FOX_METRES(4), NULL);
     ok = slow != FOX_NETWORK_NONE && FoxWorldSetSpeedLimit(world, slow, FOX_KMH(30)) && ok;
+    return ok;
+}
+
+/* sin(degree) in FOX_UNIT for 0..90 degrees, every 3 degrees. */
+static const int32_t sines[31] = {
+    0,     3430,  6850,  10252, 13626, 16962, 20252, 23486, 26656, 29753, 32768,
+    35693, 38521, 41243, 43852, 46341, 48703, 50931, 53020, 54963, 56756, 58393,
+    59870, 61183, 62328, 63303, 64104, 64729, 65177, 65446, 65536,
+};
+
+/* sin of an angle given in tenths of a degree, a multiple of 3 degrees. */
+static int64_t Sine(int32_t tenths)
+{
+    const int32_t angle = ((tenths % 3600) + 3600) % 3600 / 30;
+    if (angle <= 30)
+    {
+        return sines[angle];
+    }
+    if (angle <= 60)
+    {
+        return sines[60 - angle];
+    }
+    return angle <= 90 ? -sines[angle - 60] : -sines[120 - angle];
+}
+
+static int64_t Cosine(int32_t tenths)
+{
+    return Sine(tenths + 900);
+}
+
+/* A point of the planet's surface at a latitude and longitude in tenths of
+ * a degree, multiples of 3 degrees: the town's pole is at 90 degrees, and
+ * longitude runs from the town's east towards its north. */
+static FoxVec OnPlanet(const FoxWorld *world, int32_t latitude, int32_t longitude)
+{
+    const int64_t radius = FoxPlanetRadius(world->planet);
+    const int64_t across = radius * Cosine(latitude) / FOX_UNIT;
+    return (FoxVec){across * Cosine(longitude) / FOX_UNIT, across * Sine(longitude) / FOX_UNIT,
+                    radius * Sine(latitude) / FOX_UNIT};
+}
+
+/* A road all the way round the planet at a latitude, in `pieces` straight
+ * pieces of a multiple of 3 degrees each; their corners keep off the
+ * meridians the town's roads run down. */
+static bool Ring(FoxWorld *world, int32_t latitude, uint32_t pieces, FoxRoadType type)
+{
+    bool ok = true;
+    const int32_t step = 3600 / (int32_t)pieces;
+    for (uint32_t piece = 0u; piece < pieces; ++piece)
+    {
+        const int32_t from = 90 + (int32_t)piece * step;
+        const FoxRoadPlan plan = {
+            .start = OnPlanet(world, latitude, from),
+            .end = OnPlanet(world, latitude, from + step),
+            .type = type,
+        };
+        ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+    }
+    return ok;
+}
+
+bool FoxWorldBuildPlanetRoads(FoxWorld *world)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    /* Rings of every kind of road at different latitudes: a street, an
+     * avenue, a boulevard and a one-way highway, the bigger ones nearer the
+     * equator. */
+    bool ok = Ring(world, 510, 6u, FOX_ROAD_STREET);
+    ok = Ring(world, 210, 15u, FOX_ROAD_AVENUE) && ok;
+    ok = Ring(world, -90, 15u, FOX_ROAD_BOULEVARD) && ok;
+    ok = Ring(world, -390, 15u, FOX_ROAD_HIGHWAY) && ok;
+    /* Meridians from the town's avenues down across every ring to the
+     * south pole, where they meet. */
+    static const struct
+    {
+        int16_t east;
+        int16_t north;
+        int16_t longitude;
+        uint8_t type;
+    } meridians[] = {
+        {0, -200, 2700, FOX_ROAD_AVENUE},
+        {-200, 0, 1800, FOX_ROAD_STREET},
+        {0, 200, 900, FOX_ROAD_BOULEVARD},
+    };
+    static const int16_t latitudes[] = {660, 360, 60, -240, -540, -900};
+    for (size_t index = 0u; index < sizeof(meridians) / sizeof(meridians[0]); ++index)
+    {
+        FoxVec from = PoleOffset(world, meridians[index].east, meridians[index].north);
+        for (size_t step = 0u; step < sizeof(latitudes) / sizeof(latitudes[0]); ++step)
+        {
+            const FoxVec to = OnPlanet(world, latitudes[step], meridians[index].longitude);
+            const FoxRoadPlan plan = {
+                .start = from, .end = to, .type = (FoxRoadType)meridians[index].type};
+            ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+            from = to;
+        }
+    }
+    /* Lights where big roads cross. */
+    for (uint32_t index = 0u; index < FoxNetworkNodeCapacity(world->network); ++index)
+    {
+        FoxNodeView node;
+        if (!FoxNetworkNode(world->network, index, &node) || node.roadCount < 4u || node.signals)
+        {
+            continue;
+        }
+        uint32_t big = 0u;
+        for (uint32_t slot = 0u; slot < node.roadCount; ++slot)
+        {
+            FoxRoadView road;
+            big += FoxNetworkRoad(world->network, node.roads[slot], &road) &&
+                           road.type != FOX_ROAD_STREET && road.type != FOX_ROAD_HIGHWAY
+                       ? 1u
+                       : 0u;
+        }
+        /* Away from the town, which has its own. */
+        if (big == node.roadCount && FoxPlanetUp(node.position).z < FOX_UNIT * 9 / 10)
+        {
+            ok = FoxWorldSetSignals(world, index, true) && ok;
+        }
+    }
     return ok;
 }
 
@@ -292,8 +413,8 @@ bool FoxWorldBuildGrid(FoxWorld *world, uint32_t lines, int64_t spacing)
                                     : (FoxVec){-half, at, FoxPlanetRadius(world->planet)},
                 .end = pass == 0u ? (FoxVec){at, half, FoxPlanetRadius(world->planet)}
                                   : (FoxVec){half, at, FoxPlanetRadius(world->planet)},
-                .type = boulevard ? FOX_ROAD_BOULEVARD
-                                  : (avenue ? FOX_ROAD_AVENUE : FOX_ROAD_STREET),
+                .type =
+                    boulevard ? FOX_ROAD_BOULEVARD : (avenue ? FOX_ROAD_AVENUE : FOX_ROAD_STREET),
             };
             ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
         }

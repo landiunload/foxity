@@ -323,8 +323,8 @@ static void ApplyTimeControls(FoxScene *scene, const FoxControls *controls,
     {
         const uint32_t target = FoxTrafficTarget(FoxWorldTraffic(scene->city.world));
         const uint32_t step = controls->moveFast ? CARS_STEP * 10u : CARS_STEP;
-        const uint32_t next = controls->carsChange > 0 ? target + step
-                                                       : (target > step ? target - step : 0u);
+        const uint32_t next =
+            controls->carsChange > 0 ? target + step : (target > step ? target - step : 0u);
         FoxWorldSetTargetVehicles(scene->city.world, next);
         FoxLog(FOX_LOG_INFO, "the city aims for %u cars", next);
     }
@@ -437,9 +437,9 @@ static void UpdateAssist(FoxScene *scene)
             .lengthStep = FoxSnapLengthMetres(settings->lengthStep),
             .reach = SnapReach(scene),
         };
-        scene->hasAssist = FoxAssistPoint(FoxWorldNetwork(scene->city.world),
-                                          FoxWorldPlanet(scene->city.world), &request,
-                                          &scene->assist);
+        scene->hasAssist =
+            FoxAssistPoint(FoxWorldNetwork(scene->city.world), FoxWorldPlanet(scene->city.world),
+                           &request, &scene->assist);
     }
     if (!scene->hasAssist)
     {
@@ -581,8 +581,8 @@ static void ShapeGround(FoxScene *scene, double realSeconds)
     scene->groundCooldown = GROUND_INTERVAL_SECONDS;
     /* The sphere grows with the view, so the hand shows at any zoom, and
      * with the brush chosen. */
-    const double metres = fmin(fmax(scene->camera.distance / 50.0, 2.0), 8.0) *
-                          FoxBrushScale(scene->settings.brush);
+    const double metres =
+        fmin(fmax(scene->camera.distance / 50.0, 2.0), 8.0) * FoxBrushScale(scene->settings.brush);
     const int64_t radius = (int64_t)(metres * FOX_UNITS_PER_METRE);
     FoxPlanetBox changed;
     const uint32_t samples = scene->settings.tool == FOX_TOOL_DIG
@@ -602,7 +602,8 @@ static void Zone(FoxScene *scene)
                                   : FOX_DRIVE_RIGHT;
     if (FoxWorldAddDriveZone(scene->city.world, scene->hit, DRIVE_ZONE_RADIUS, side))
     {
-        FoxLog(FOX_LOG_INFO, "this district now keeps %s", side == FOX_DRIVE_RIGHT ? "right" : "left");
+        FoxLog(FOX_LOG_INFO, "this district now keeps %s",
+               side == FOX_DRIVE_RIGHT ? "right" : "left");
     }
     else
     {
@@ -784,7 +785,8 @@ static void Append(char *text, size_t *used, const char *format, ...)
     va_end(arguments);
     if (written > 0)
     {
-        *used += (size_t)written < STATISTICS_TEXT - *used ? (size_t)written : STATISTICS_TEXT - *used - 1u;
+        *used += (size_t)written < STATISTICS_TEXT - *used ? (size_t)written
+                                                           : STATISTICS_TEXT - *used - 1u;
     }
 }
 
@@ -818,10 +820,8 @@ static const char *const toolNamesRu[FOX_TOOL_COUNT] = {
     [FOX_TOOL_SPEED_LIMIT] = "ограничения скорости",
 };
 static const char *const roadNamesRu[FOX_ROAD_TYPE_COUNT] = {
-    [FOX_ROAD_STREET] = "улица",
-    [FOX_ROAD_AVENUE] = "проспект",
-    [FOX_ROAD_BOULEVARD] = "бульвар",
-    [FOX_ROAD_ONE_WAY] = "односторонняя",
+    [FOX_ROAD_STREET] = "улица",      [FOX_ROAD_AVENUE] = "проспект",
+    [FOX_ROAD_BOULEVARD] = "бульвар", [FOX_ROAD_ONE_WAY] = "односторонняя",
     [FOX_ROAD_HIGHWAY] = "шоссе",
 };
 
@@ -909,6 +909,8 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
            cars.vehicles != 0u ? 100.0 * cars.standing / cars.vehicles : 0.0, cars.waitingLong);
     Append(text, &used, "Скорость: средняя %.1f, наибольшая %.1f км/ч\n", Kmh(cars.meanSpeed),
            Kmh(cars.maxSpeed));
+    Append(text, &used, "Перестроений %llu, обгонов по встречной %llu\n",
+           (unsigned long long)cars.laneChanges, (unsigned long long)cars.overtakes);
     uint32_t bands[8] = {0u};
     for (uint32_t slot = 0u; slot < FoxTrafficCapacity(traffic); ++slot)
     {
@@ -957,8 +959,8 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
                    Kmh(cars.meanSpeed));
     (void)snprintf(titles[4], sizeof(titles[4]), "Доезжают в минуту: %.0f", arrivalRate);
     const FoxHudGraph graphs[] = {
-        {titles[0], scene->frameHistory, NULL, HISTORY,
-         Highest(scene->frameHistory, NULL, 33.4f), UINT32_C(0xFF50C8F0), 0u},
+        {titles[0], scene->frameHistory, NULL, HISTORY, Highest(scene->frameHistory, NULL, 33.4f),
+         UINT32_C(0xFF50C8F0), 0u},
         {titles[1], scene->tickHistory, NULL, HISTORY, Highest(scene->tickHistory, NULL, 1.0f),
          UINT32_C(0xFFE0A050), 0u},
         {titles[2], scene->movingHistory, scene->standingHistory, HISTORY,
