@@ -1138,7 +1138,8 @@ static uint32_t SignClass(const FoxNetwork *network, const FoxPath *lane)
     return sign == FOX_SIGN_PRIORITY ? 2u : (sign == FOX_SIGN_NONE ? 1u : 0u);
 }
 
-/* Whether connection a yields to b; the caller gives b the opposite. */
+/* Whether connection a yields to b. Of two that cross exactly one yields,
+ * but for two turning across each other's way head on: both do. */
 static bool Yields(const FoxNetwork *network, const FoxNode *node, const FoxPath *a,
                    const FoxPath *b, uint32_t aIndex, uint32_t bIndex)
 {
@@ -1162,10 +1163,15 @@ static bool Yields(const FoxNetwork *network, const FoxNode *node, const FoxPath
     if (x < -(int64_t)FOX_UNIT * 7 / 10)
     {
         /* Head on: the one turning across traffic waits, then the one
-         * turning towards the curb. */
+         * turning towards the curb. Two turning across each other's way
+         * both wait, and whoever came first goes first. */
         if ((a->movement == MOVE_FAR) != (b->movement == MOVE_FAR))
         {
             return a->movement == MOVE_FAR;
+        }
+        if (a->movement == MOVE_FAR)
+        {
+            return true;
         }
         if ((a->movement == MOVE_CURB) != (b->movement == MOVE_CURB))
         {
@@ -1311,10 +1317,10 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
             }
             room[a * count + b] = keep;
             room[b * count + a] = keep;
-            const bool aYields =
-                Yields(network, node, pa, pb, node->connections[a], node->connections[b]);
-            matrix[a * count + b] = aYields ? 1u : 2u;
-            matrix[b * count + a] = aYields ? 2u : 1u;
+            matrix[a * count + b] =
+                Yields(network, node, pa, pb, node->connections[a], node->connections[b]) ? 1u : 2u;
+            matrix[b * count + a] =
+                Yields(network, node, pb, pa, node->connections[b], node->connections[a]) ? 1u : 2u;
         }
     }
     for (uint32_t a = 0u; ok && a < count; ++a)

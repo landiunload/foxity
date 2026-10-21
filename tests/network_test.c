@@ -124,10 +124,14 @@ static void TestCrossing(const FoxPlanet *planet)
             {
                 if (b->conflicts[d].path == record->connections[index])
                 {
-                    mirrored = b->conflicts[d].yields != a->conflicts[c].yields;
+                    /* Two turning across each other's way head on both
+                     * wait, and whoever came first goes first. */
+                    mirrored = b->conflicts[d].yields != a->conflicts[c].yields ||
+                               (a->movement == MOVE_FAR && b->movement == MOVE_FAR &&
+                                a->conflicts[c].yields && b->conflicts[d].yields);
                 }
             }
-            EXPECT(mirrored, "of two conflicting turns exactly one yields");
+            EXPECT(mirrored, "of two conflicting turns exactly one yields, or both turning across");
             ++conflicts;
         }
         /* The avenue is the bigger road: going straight along it never

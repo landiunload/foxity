@@ -9,7 +9,8 @@
  * The yellow lasts long enough for a car at the limit of the fastest road
  * in that cannot stop braking firmly to get to its line. When cars wait to
  * turn across the oncoming lanes after the yellow, an arrow lets them go by
- * themselves for a while, with a yellow of its own.
+ * themselves for a while, with a yellow of its own; once the green has run
+ * its share they get that turn even when nobody waits on the other roads.
  * A short all-red clears the junction between phases. A phase nobody waits
  * for is skipped. */
 
@@ -23,7 +24,7 @@
 #define REACTION TICKS
 #define ALL_RED (2u * TICKS)
 #define MIN_ARROW (3u * TICKS)
-#define MAX_ARROW (6u * TICKS)
+#define MAX_ARROW (12u * TICKS)
 
 void FoxSignalsAssign(FoxNetwork *network, uint32_t nodeIndex)
 {
@@ -173,7 +174,9 @@ void FoxSignalsStep(FoxNetwork *network)
             {
                 break;
             }
-            bool others = false;
+            /* Cars waiting to turn across the oncoming lanes wait for the
+             * arrow as others wait for their green. */
+            bool others = turns;
             for (uint8_t phase = 0u; phase < node->phaseCount && !others; ++phase)
             {
                 others = phase != node->phase && Waiting(network, node, index, phase);
