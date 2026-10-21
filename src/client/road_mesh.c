@@ -746,8 +746,10 @@ static double LinesBack(EndMarking mark)
     return mark == MARK_STOP ? LINE_BACK + STOP_WIDTH : (mark == MARK_TEETH ? TEETH_BACK : 0.0);
 }
 
-/* The stop line across every lane arriving at a road's end, from the centre
- * line to the edge line, a little before the junction. */
+/* The stop line across every lane arriving at a road's end, a little
+ * before the junction. It reaches over the centre line and the edge line to
+ * their outer sides, so the lines along the road run into it and end there
+ * in one clean joint. */
 static void StopLine(FoxMesh *mesh, const Station *stations, uint32_t count,
                      const FoxRoadView *road, uint32_t end, double at)
 {
@@ -759,15 +761,16 @@ static void StopLine(FoxMesh *mesh, const Station *stations, uint32_t count,
     {
         return;
     }
-    const double outer = FoxRoadMeshHalfWidth(road->type) - 2.0 * EDGE_HALF;
+    const double outer = FoxRoadMeshHalfWidth(road->type);
     double left = -outer;
     double right = outer;
     if (info->backwardLanes != 0u)
     {
-        const double inner = info->forwardLanes == 1u ? LINE_HALF : DOUBLE_LINE_SPACING + LINE_HALF;
+        const double centre =
+            info->forwardLanes == 1u ? LINE_HALF : DOUBLE_LINE_SPACING + LINE_HALF;
         const bool onRight = (direction == 0u) == (road->driveSide == FOX_DRIVE_RIGHT);
-        left = onRight ? inner : -outer;
-        right = onRight ? outer : -inner;
+        left = onRight ? -centre : -outer;
+        right = onRight ? outer : centre;
     }
     const double near = end == 1u ? at - LINE_BACK - STOP_WIDTH : at + LINE_BACK;
     Strip(mesh, stations, count, left, right, MARKING_LIFT, near, near + STOP_WIDTH, 0.0, 0.0,
