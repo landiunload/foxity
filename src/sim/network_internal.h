@@ -42,6 +42,14 @@ typedef struct FoxConflict
     int64_t room;
 } FoxConflict;
 
+/* Another way from the same lane, and how far along this one a car's rear
+ * must be before a car taking that way can no longer touch it. */
+typedef struct FoxSibling
+{
+    uint32_t path;
+    int64_t parting;
+} FoxSibling;
+
 typedef struct FoxPath
 {
     uint8_t kind;
@@ -68,14 +76,16 @@ typedef struct FoxPath
     uint32_t *outgoing;
     uint32_t outgoingCount;
 
-    /* Connections: the node, the lanes joined, how it turns and the paths it
-     * conflicts with. */
+    /* Connections: the node, the lanes joined, how it turns, the paths it
+     * conflicts with and the other ways from its lane. */
     uint32_t node;
     uint32_t from;
     uint32_t to;
     uint8_t movement;
     FoxConflict *conflicts;
     uint32_t conflictCount;
+    FoxSibling *siblings;
+    uint32_t siblingCount;
     /* A dead end's turn traces the rear axle rather than the front, and is
      * driven forward up to its first cusp, in reverse to the next, and so
      * on: how far along each cusp lies. */

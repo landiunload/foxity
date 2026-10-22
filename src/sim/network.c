@@ -131,11 +131,13 @@ static void FreePathArrays(FoxPath *path)
     free(path->centre);
     free(path->outgoing);
     free(path->conflicts);
+    free(path->siblings);
     path->points = NULL;
     path->lengths = NULL;
     path->centre = NULL;
     path->outgoing = NULL;
     path->conflicts = NULL;
+    path->siblings = NULL;
 }
 
 void FoxNetworkDestroy(FoxNetwork *network)

@@ -347,6 +347,7 @@ static void FreeNewPath(FoxNetwork *network, uint32_t index)
     free(path->centre);
     free(path->outgoing);
     free(path->conflicts);
+    free(path->siblings);
     const uint32_t generation = path->generation + 1u;
     memset(path, 0, sizeof(*path));
     path->generation = generation;
@@ -1194,6 +1195,57 @@ static bool Yields(const FoxNetwork *network, const FoxNode *node, const FoxPath
     return node->driveSide == FOX_DRIVE_RIGHT ? fromRight : !fromRight;
 }
 
+/* The other ways from the lane of connection `a` of a node and where each
+ * parts from it: past the stretch where cars on the two would touch, a
+ * sample further on for the bodies at their bends. */
+static bool BuildSiblings(FoxNetwork *network, const FoxNode *node, uint32_t a, const int64_t *xs,
+                          const int64_t *ys)
+{
+    FoxPath *path = &network->paths[node->connections[a]];
+    uint32_t siblings = 0u;
+    for (uint32_t b = 0u; b < node->connectionCount; ++b)
+    {
+        siblings += b != a && network->paths[node->connections[b]].from == path->from ? 1u : 0u;
+    }
+    if (siblings == 0u)
+    {
+        return true;
+    }
+    path->siblings = malloc((size_t)siblings * sizeof(*path->siblings));
+    if (path->siblings == NULL)
+    {
+        return false;
+    }
+    const size_t rowA = (size_t)a * CONNECTION_MAX_SAMPLES;
+    for (uint32_t b = 0u; b < node->connectionCount; ++b)
+    {
+        const FoxPath *other = &network->paths[node->connections[b]];
+        if (b == a || other->from != path->from)
+        {
+            continue;
+        }
+        const size_t rowB = (size_t)b * CONNECTION_MAX_SAMPLES;
+        int64_t first = 0;
+        int64_t last = 0;
+        int64_t parting = 0;
+        if (TouchingStretch(path, xs + rowA, ys + rowA, xs + rowB, ys + rowB, &first, &last))
+        {
+            parting = path->length;
+            for (uint32_t i = 0u; i < path->count; ++i)
+            {
+                if (path->lengths[i] > last)
+                {
+                    parting = path->lengths[i];
+                    break;
+                }
+            }
+        }
+        path->siblings[path->siblingCount++] =
+            (FoxSibling){.path = node->connections[b], .parting = parting};
+    }
+    return true;
+}
+
 bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
 {
     FoxNode *node = &network->nodes[nodeIndex];
@@ -1204,6 +1256,9 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
         free(path->conflicts);
         path->conflicts = NULL;
         path->conflictCount = 0u;
+        free(path->siblings);
+        path->siblings = NULL;
+        path->siblingCount = 0u;
     }
     /* At a dead end one car turns round at a time; nothing crosses. */
     if (count == 0u || node->roadCount < 2u)
@@ -1237,6 +1292,10 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
     int64_t *meet = ok ? malloc((size_t)count * count * sizeof(*meet)) : NULL;
     int64_t *room = ok ? malloc((size_t)count * count * sizeof(*room)) : NULL;
     ok = ok && meet != NULL && room != NULL;
+    for (uint32_t a = 0u; ok && a < count; ++a)
+    {
+        ok = BuildSiblings(network, node, a, xs, ys);
+    }
     for (uint32_t a = 0u; ok && a < count; ++a)
     {
         const FoxPath *pa = &network->paths[node->connections[a]];
