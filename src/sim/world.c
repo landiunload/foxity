@@ -5,6 +5,10 @@
 #include <stddef.h>
 #include <stdlib.h>
 
+/* A road or drive zone laid this close to a road still closing takes that
+ * one out first: the intersections it makes may reach this far. */
+#define EDIT_REACH FOX_METRES(40)
+
 struct FoxWorld
 {
     uint64_t tick;
@@ -55,6 +59,13 @@ uint64_t FoxWorldTick(const FoxWorld *world)
     return world == NULL ? 0u : world->tick;
 }
 
+/* Cars leave retired paths before the network frees them. */
+static void Settle(FoxWorld *world)
+{
+    FoxTrafficRemap(world->traffic, world->network);
+    FoxNetworkReleaseRetired(world->network);
+}
+
 void FoxWorldAdvance(FoxWorld *world, uint64_t ticks)
 {
     if (world == NULL)
@@ -65,6 +76,11 @@ void FoxWorldAdvance(FoxWorld *world, uint64_t ticks)
     {
         FoxTrafficStep(world->traffic, world->network);
         ++world->tick;
+        /* A road removed under cars goes for good once they are off it. */
+        if (FoxNetworkSettleClosing(world->network, (FoxVec){0, 0, 0}, 0))
+        {
+            Settle(world);
+        }
     }
 }
 
@@ -93,18 +109,19 @@ uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetB
     return world == NULL ? 0u : FoxPlanetFill(world->planet, center, radius, outChanged);
 }
 
-/* Cars leave retired paths before the network frees them. */
-static void Settle(FoxWorld *world)
-{
-    FoxTrafficRemap(world->traffic, world->network);
-    FoxNetworkReleaseRetired(world->network);
-}
-
 FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan)
 {
-    if (world == NULL)
+    if (world == NULL || plan == NULL)
     {
         return FOX_ROAD_INVALID;
+    }
+    /* Roads still closing where the new one goes go for good first. */
+    const FoxVec middle = FoxVecScale(FoxVecAdd(plan->start, plan->end), 1, 2);
+    const int64_t reach = FoxVecDistance(plan->start, plan->end) / 2 +
+                          (plan->curved ? FoxVecDistance(plan->control, middle) : 0) + EDIT_REACH;
+    if (FoxNetworkSettleClosing(world->network, middle, reach))
+    {
+        Settle(world);
     }
     const FoxRoadResult result = FoxNetworkBuildRoad(world->network, world->planet, plan);
     Settle(world);
@@ -127,6 +144,10 @@ bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDri
     if (world == NULL)
     {
         return false;
+    }
+    if (FoxNetworkSettleClosing(world->network, center, radius + EDIT_REACH))
+    {
+        Settle(world);
     }
     const bool added = FoxNetworkAddDriveZone(world->network, center, radius, side);
     Settle(world);

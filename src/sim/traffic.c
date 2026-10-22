@@ -512,6 +512,15 @@ static uint32_t RandomNode(FoxTraffic *traffic, const FoxNetwork *network, uint3
     return NONE;
 }
 
+/* Whether a way leads onto a road that is closing: nobody takes it any more
+ * but the cars that had leave to before it closed. */
+static bool Closed(const FoxNetwork *network, uint32_t connectionIndex)
+{
+    const FoxPath *connection = FoxNetworkPathRecord(network, connectionIndex);
+    const FoxPath *to = connection == NULL ? NULL : FoxNetworkPathRecord(network, connection->to);
+    return to != NULL && network->roads[to->road].closing;
+}
+
 static bool LaneLeadsTo(const FoxNetwork *network, const FoxPath *lane, uint32_t edge)
 {
     for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
@@ -519,7 +528,7 @@ static bool LaneLeadsTo(const FoxNetwork *network, const FoxPath *lane, uint32_t
         const FoxPath *connection = FoxNetworkPathRecord(network, lane->outgoing[index]);
         const FoxPath *to =
             connection == NULL ? NULL : FoxNetworkPathRecord(network, connection->to);
-        if (to != NULL && EdgeOf(to) == edge)
+        if (to != NULL && EdgeOf(to) == edge && !Closed(network, lane->outgoing[index]))
         {
             return true;
         }
@@ -574,7 +583,8 @@ static uint32_t RouteFrom(const FoxNetwork *network, const Vehicle *vehicle, con
         const FoxPath *connection = FoxNetworkPathRecord(network, lane->outgoing[index]);
         const FoxPath *next = FoxNetworkPathRecord(network, connection->to);
         const uint32_t edge = EdgeOf(next);
-        bool tried = vehicle->kind == FOX_VEHICLE_TRUCK && LeadsToDeadEnd(network, edge);
+        bool tried = (vehicle->kind == FOX_VEHICLE_TRUCK && LeadsToDeadEnd(network, edge)) ||
+                     Closed(network, lane->outgoing[index]);
         for (uint32_t earlier = 0u; earlier < index && !tried; ++earlier)
         {
             const FoxPath *other = FoxNetworkPathRecord(network, lane->outgoing[earlier]);
@@ -687,7 +697,7 @@ static uint32_t RouteConnection(const FoxNetwork *network, const FoxPath *lane, 
         const uint32_t candidate = lane->outgoing[index];
         const FoxPath *connection = FoxNetworkPathRecord(network, candidate);
         const FoxPath *to = FoxNetworkPathRecord(network, connection->to);
-        if (EdgeOf(to) != want)
+        if (EdgeOf(to) != want || Closed(network, candidate))
         {
             continue;
         }
@@ -738,20 +748,29 @@ static bool Shunned(const FoxNetwork *network, uint32_t connectionIndex)
            LaneEnds(network, connectionIndex);
 }
 
-/* A random turn, of those not shunned where there are any. */
+/* A random turn, of those not shunned where there are any, never onto a
+ * closing road; NONE where every way leads onto one. */
 static uint32_t RandomConnection(const FoxNetwork *network, const FoxPath *lane, uint64_t seed)
 {
     uint32_t turns = 0u;
+    uint32_t open = 0u;
     for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
     {
-        turns += Shunned(network, lane->outgoing[index]) ? 0u : 1u;
+        const bool closed = Closed(network, lane->outgoing[index]);
+        open += closed ? 0u : 1u;
+        turns += closed || Shunned(network, lane->outgoing[index]) ? 0u : 1u;
     }
-    const uint32_t choices = turns != 0u ? turns : lane->outgoingCount;
+    const uint32_t choices = turns != 0u ? turns : open;
+    if (choices == 0u)
+    {
+        return NONE;
+    }
     const uint32_t pick = (uint32_t)(FoxHash64(seed) % choices);
     uint32_t seen = 0u;
     for (uint32_t index = 0u; index < lane->outgoingCount; ++index)
     {
-        if (turns != 0u && Shunned(network, lane->outgoing[index]))
+        if (Closed(network, lane->outgoing[index]) ||
+            (turns != 0u && Shunned(network, lane->outgoing[index])))
         {
             continue;
         }
@@ -845,7 +864,8 @@ static uint32_t StandIn(const FoxNetwork *network, const FoxPath *lane)
             (LeadsToDeadEnd(network, EdgeOf(FoxNetworkPathRecord(network, connection->to))) ? 0
                                                                                             : 2) +
             (connection->movement == MOVE_STRAIGHT ? 1 : 0);
-        if (connection->movement != MOVE_U_TURN && score > best)
+        if (connection->movement != MOVE_U_TURN && score > best &&
+            !Closed(network, lane->outgoing[index]))
         {
             best = score;
             found = lane->outgoing[index];
@@ -2022,7 +2042,7 @@ static bool Detour(FoxTraffic *traffic, const FoxNetwork *network, Vehicle *vehi
         const FoxPath *next = FoxNetworkPathRecord(network, connection->to);
         const int32_t order = DetourOrder(connection) + (Shunned(network, candidate) ? 3 : 0);
         if (candidate == vehicle->connection || connection->movement == MOVE_U_TURN ||
-            order >= best ||
+            Closed(network, candidate) || order >= best ||
             (vehicle->kind == FOX_VEHICLE_TRUCK && LeadsToDeadEnd(network, EdgeOf(next))) ||
             !RoomOn(traffic, network, connection->to, DrivingOf(vehicle)->length))
         {
@@ -3260,7 +3280,9 @@ static uint32_t RandomRoad(FoxTraffic *traffic, const FoxNetwork *network)
     for (uint32_t index = 0u; index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        total += road->alive ? road->length * (road->laneCount[0] + road->laneCount[1]) : 0;
+        total += road->alive && !road->closing
+                     ? road->length * (road->laneCount[0] + road->laneCount[1])
+                     : 0;
     }
     if (total <= 0)
     {
@@ -3270,8 +3292,9 @@ static uint32_t RandomRoad(FoxTraffic *traffic, const FoxNetwork *network)
     for (uint32_t index = 0u; index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        const int64_t share =
-            road->alive ? road->length * (road->laneCount[0] + road->laneCount[1]) : 0;
+        const int64_t share = road->alive && !road->closing
+                                  ? road->length * (road->laneCount[0] + road->laneCount[1])
+                                  : 0;
         if (pick < share)
         {
             return index;
@@ -3847,7 +3870,7 @@ static void UpdateCosts(FoxNetwork *network)
     for (uint32_t index = 0u; index < network->roadCapacity; ++index)
     {
         FoxRoad *road = &network->roads[index];
-        if (!road->alive)
+        if (!road->alive || road->closing)
         {
             continue;
         }
@@ -4046,6 +4069,22 @@ static uint32_t MapPath(const FoxNetwork *network, uint32_t pathIndex, int64_t s
     return NONE;
 }
 
+/* Whether a road still ahead on a car's route is gone or rebuilt since the
+ * route was planned. */
+static bool RouteBroken(const FoxNetwork *network, const Vehicle *vehicle)
+{
+    for (uint32_t index = vehicle->routeIndex; index < vehicle->routeLength; ++index)
+    {
+        const uint32_t roadIndex = vehicle->route[index] / 2u;
+        if (roadIndex >= network->roadCapacity || !network->roads[roadIndex].alive ||
+            network->roads[roadIndex].revision > vehicle->routeRevision)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network)
 {
     if (traffic == NULL || network == NULL)
@@ -4088,6 +4127,13 @@ void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network)
         vehicle->holdAt = HOLD_NONE;
         vehicle->changeFrom = NONE;
         vehicle->passOut = PASS_NONE;
+        if (target->kind == PATH_CONNECTION)
+        {
+            /* In the intersection, it holds the way it is on. */
+            vehicle->connection = moved;
+            vehicle->claim = moved;
+            vehicle->permitted = true;
+        }
     }
     /* Claims are counted afresh from the cars that still hold live ones. */
     for (uint32_t index = 0u; index < network->pathCapacity; ++index)
@@ -4131,10 +4177,33 @@ void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network)
         {
             vehicle->clearing = NONE;
         }
-        /* A turn that went away is chosen again; a claim on it went with it. */
+        /* A turn that went away is chosen again; a claim on it went with it.
+         * A driver not holding its way yet whose route goes over a road gone
+         * or rebuilt plans it afresh; one that could take a new shortcut
+         * finds it when it plans again anyway. */
         const FoxPath *path = FoxNetworkPathRecord(network, vehicle->path);
-        if (path->kind == PATH_LANE &&
-            (vehicle->connection == NONE || !FoxNetworkPathLive(network, vehicle->connection)))
+        const bool routed = network->router != NULL && !vehicle->parking &&
+                            vehicle->claim == NONE && RouteBroken(network, vehicle);
+        if (path->kind == PATH_LANE && routed)
+        {
+            PlanRoute(traffic, network, vehicle, vehicle->path, true);
+        }
+        const FoxPath *turn =
+            vehicle->connection != NONE && FoxNetworkPathLive(network, vehicle->connection)
+                ? FoxNetworkPathRecord(network, vehicle->connection)
+                : NULL;
+        /* Its turn stays, and its place in the rounds, while it still leaves
+         * its lane, the route still goes that way and, unless it has leave
+         * to, not onto a closing road. */
+        const FoxPath *beyond =
+            turn != NULL && turn->kind == PATH_CONNECTION && turn->from == vehicle->path &&
+                    (vehicle->claim != NONE || !Closed(network, vehicle->connection))
+                ? FoxNetworkPathRecord(network, turn->to)
+                : NULL;
+        const bool keeps =
+            beyond != NULL && (!routed || vehicle->routeIndex >= vehicle->routeLength ||
+                               EdgeOf(beyond) == vehicle->route[vehicle->routeIndex]);
+        if (path->kind == PATH_LANE && !keeps)
         {
             ChooseConnection(traffic, network, vehicle, true);
             vehicle->permitted = false;

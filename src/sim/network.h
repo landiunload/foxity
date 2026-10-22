@@ -253,8 +253,16 @@ FoxRoadResult FoxNetworkCheckRoad(const FoxNetwork *network, const FoxPlanet *pl
 /* Builds a road. On anything but FOX_ROAD_OK the network is unchanged. */
 FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
                                   const FoxRoadPlan *plan);
-/* Removes a road; nodes left without roads go with it. */
+/* Removes a road; nodes left without roads go with it. A road with cars on
+ * it or on their way onto it closes instead: it is gone from the views,
+ * the routes and the choices of everyone else at once, but it carries those
+ * cars on as it was until FoxNetworkSettleClosing takes it out. */
 bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road);
+/* Takes out the closing roads nobody is on or coming onto any more, and
+ * with `radius` above zero every one reaching within it of `center`, where
+ * the network is about to change; true when one went, and the traffic must
+ * then follow the change. */
+bool FoxNetworkSettleClosing(FoxNetwork *network, FoxVec center, int64_t radius);
 
 /* Lays a zone with its own drive side over every road whose middle lies
  * within `radius` of `center`; later zones win where zones overlap. False

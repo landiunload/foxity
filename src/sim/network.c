@@ -314,7 +314,7 @@ uint32_t FoxNetworkNodeCapacity(const FoxNetwork *network)
 
 uint32_t FoxNetworkRoadCount(const FoxNetwork *network)
 {
-    return network == NULL ? 0u : network->roadCount;
+    return network == NULL ? 0u : network->roadCount - network->closingCount;
 }
 
 uint32_t FoxNetworkNodeCount(const FoxNetwork *network)
@@ -325,7 +325,7 @@ uint32_t FoxNetworkNodeCount(const FoxNetwork *network)
 bool FoxNetworkRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outView)
 {
     if (network == NULL || outView == NULL || road >= network->roadCapacity ||
-        !network->roads[road].alive)
+        !network->roads[road].alive || network->roads[road].closing)
     {
         return false;
     }
@@ -359,13 +359,19 @@ bool FoxNetworkNode(const FoxNetwork *network, uint32_t node, FoxNodeView *outVi
     const FoxNode *record = &network->nodes[node];
     *outView = (FoxNodeView){
         .position = record->position,
-        .roadCount = record->roadCount,
         .radius = record->radius,
         .signals = record->signals,
         .revision = record->revision,
     };
-    memcpy(outView->roads, record->roads, sizeof(outView->roads));
-    return true;
+    /* A closing road is no longer there to see. */
+    for (uint32_t slot = 0u; slot < record->roadCount; ++slot)
+    {
+        if (!network->roads[record->roads[slot]].closing)
+        {
+            outView->roads[outView->roadCount++] = record->roads[slot];
+        }
+    }
+    return outView->roadCount != 0u || record->roadCount == 0u;
 }
 
 bool FoxNetworkPath(const FoxNetwork *network, uint32_t path, FoxPathView *outView)
@@ -461,7 +467,8 @@ uint32_t FoxNetworkNearestRoad(const FoxNetwork *network, FoxVec point, int64_t 
     for (uint32_t index = 0u; network != NULL && index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        if (!road->alive || FoxVecDistance(point, road->middle) > road->boundRadius + maxDistance)
+        if (!road->alive || road->closing ||
+            FoxVecDistance(point, road->middle) > road->boundRadius + maxDistance)
         {
             continue;
         }
@@ -1497,11 +1504,54 @@ FoxRoadResult FoxNetworkBuildRoad(FoxNetwork *network, const FoxPlanet *planet,
     return result;
 }
 
-bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road)
+/* Whether cars are on a road, have leave to come onto it or are leaving it
+ * through an intersection at its end. */
+static bool RoadInUse(const FoxNetwork *network, uint32_t road)
 {
-    if (network == NULL || road >= network->roadCapacity || !network->roads[road].alive)
+    const FoxRoad *record = &network->roads[road];
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
     {
-        return false;
+        for (uint32_t lane = 0u; lane < record->laneCount[direction]; ++lane)
+        {
+            const FoxPath *path = &network->paths[record->lanes[direction][lane]];
+            if (path->vehicleCount != 0u || path->incoming != 0u)
+            {
+                return true;
+            }
+            for (uint32_t index = 0u; index < path->outgoingCount; ++index)
+            {
+                const FoxPath *way = &network->paths[path->outgoing[index]];
+                if (way->vehicleCount != 0u || way->claims != 0u)
+                {
+                    return true;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/* Closes a road: out of the routes, and its intersections look new to the
+ * views, which no longer show it. */
+static void CloseRoad(FoxNetwork *network, uint32_t road)
+{
+    FoxRoad *record = &network->roads[road];
+    RouteRoad(network, road, false);
+    record->closing = true;
+    ++network->closingCount;
+    record->revision = network->revision + 1u;
+    network->nodes[record->nodes[0]].revision = network->revision + 1u;
+    network->nodes[record->nodes[1]].revision = network->revision + 1u;
+    Touch(network);
+}
+
+/* Takes a road out for good, and the nodes it leaves without roads. */
+static void TakeOut(FoxNetwork *network, uint32_t road)
+{
+    if (network->roads[road].closing)
+    {
+        network->roads[road].closing = false;
+        --network->closingCount;
     }
     const uint32_t ends[2] = {network->roads[road].nodes[0], network->roads[road].nodes[1]};
     DeleteRoad(network, road);
@@ -1515,7 +1565,45 @@ bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road)
         MarkDirty(&dirty, ends[index]);
     }
     (void)Refresh(network, &dirty);
+}
+
+bool FoxNetworkRemoveRoad(FoxNetwork *network, uint32_t road)
+{
+    if (network == NULL || road >= network->roadCapacity || !network->roads[road].alive)
+    {
+        return false;
+    }
+    if (RoadInUse(network, road))
+    {
+        if (!network->roads[road].closing)
+        {
+            CloseRoad(network, road);
+        }
+        return true;
+    }
+    TakeOut(network, road);
     return true;
+}
+
+bool FoxNetworkSettleClosing(FoxNetwork *network, FoxVec center, int64_t radius)
+{
+    bool changed = false;
+    for (uint32_t index = 0u;
+         network != NULL && network->closingCount != 0u && index < network->roadCapacity; ++index)
+    {
+        const FoxRoad *road = &network->roads[index];
+        const bool near =
+            radius > 0 && FoxVecDistance(road->middle, center) <= road->boundRadius + radius;
+        /* After one has gone the lanes of the others may be new while their
+         * cars are still on the old ones: whether those are empty waits
+         * for the traffic to follow. */
+        if (road->alive && road->closing && (near || (!changed && !RoadInUse(network, index))))
+        {
+            TakeOut(network, index);
+            changed = true;
+        }
+    }
+    return changed;
 }
 
 bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius, FoxDriveSide side)
@@ -1773,7 +1861,7 @@ uint64_t FoxNetworkHash(const FoxNetwork *network)
     for (uint32_t index = 0u; index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        if (!road->alive)
+        if (!road->alive || road->closing)
         {
             continue;
         }

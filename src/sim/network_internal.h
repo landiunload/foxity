@@ -119,6 +119,9 @@ typedef enum SignalStage
 typedef struct FoxRoad
 {
     bool alive;
+    /* Removed while cars were still on it or on their way onto it: gone for
+     * everyone else, it carries them on as it was until they are off it. */
+    bool closing;
     uint32_t generation;
     uint32_t nodes[2];
     uint8_t type;
@@ -199,6 +202,7 @@ struct FoxNetwork
     FoxRoad *roads;
     uint32_t roadCapacity;
     uint32_t roadCount;
+    uint32_t closingCount;
     FoxNode *nodes;
     uint32_t nodeCapacity;
     uint32_t nodeCount;
