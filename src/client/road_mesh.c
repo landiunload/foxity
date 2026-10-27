@@ -1556,8 +1556,7 @@ static void CornerLine(const RoadEndShape *a, const RoadEndShape *b, double gap,
         }
     }
     raw[count++] = RightCorner(&wideB);
-    double lengths[FILLET_SEGMENTS + SWEEP_SEGMENTS + 2u];
-    lengths[0] = 0.0;
+    double lengths[FILLET_SEGMENTS + SWEEP_SEGMENTS + 2u] = {0.0};
     for (uint32_t index = 1u; index < count; ++index)
     {
         lengths[index] = lengths[index - 1u] + Length(Sub(raw[index], raw[index - 1u]));
