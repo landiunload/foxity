@@ -30,6 +30,8 @@
 #define HASH_CAPACITY 4096u
 /* A missing leaf is first covered by its ancestor this many levels up. */
 #define COVER_LEVELS 2
+/* At most this many cubes, an edit's, are rebuilt in one frame together. */
+#define EDIT_CUBES 16u
 
 typedef struct CubeKey
 {
@@ -762,8 +764,18 @@ void FoxPlanetViewUpdate(FoxPlanetView *view, const FoxPlanet *planet, const Fox
 #define WITHIN_BUDGET()                                                                            \
     (built == 0u || LaiueApplicationMonotonicSeconds() - started < budgetSeconds)
 
-    /* Changed ground first: the player is looking at it. */
-    for (uint32_t index = 0u; index < view->leafCount && WITHIN_BUDGET(); ++index)
+    /* Changed ground first: the player is looking at it. An edit's cubes
+     * change together, whatever the budget, or neighbours rebuilt frames
+     * apart would not meet and the ground would flicker open between them;
+     * only far more than an edit makes falls back to the budget. */
+    uint32_t stale = 0u;
+    for (uint32_t index = 0u; index < view->leafCount; ++index)
+    {
+        const Cube *cube = FindCube(view, view->leaves[index].key);
+        stale += cube != NULL && cube->stale ? 1u : 0u;
+    }
+    for (uint32_t index = 0u; index < view->leafCount && (stale <= EDIT_CUBES || WITHIN_BUDGET());
+         ++index)
     {
         Cube *cube = FindCube(view, view->leaves[index].key);
         if (cube != NULL && cube->stale)

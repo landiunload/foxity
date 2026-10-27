@@ -217,6 +217,18 @@ FoxRoadResult FoxWorldWidenRoad(FoxWorld *world, uint32_t road, uint32_t side, F
     return result;
 }
 
+FoxRoadResult FoxWorldNarrowRoad(FoxWorld *world, uint32_t road, int64_t offset)
+{
+    if (world == NULL)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    SettleNear(world, road);
+    const FoxRoadResult result = FoxNetworkNarrowRoad(world->network, road, offset);
+    Settle(world);
+    return result;
+}
+
 bool FoxWorldTurnStrip(FoxWorld *world, uint32_t road, int64_t offset)
 {
     if (world == NULL)
@@ -319,7 +331,7 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
     const FoxRoadPlan bend = {
         .start = PoleOffset(world, 200, 160),
         .end = PoleOffset(world, 160, 200),
-        .control = PoleOffset(world, 250, 250),
+        .control = PoleOffset(world, 212, 212),
         .curved = true,
         .layout = FoxRoadLayoutPreset(FOX_ROAD_BOULEVARD),
         .speedLimit = FoxRoadPresetSpeed(FOX_ROAD_BOULEVARD),

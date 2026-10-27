@@ -13,6 +13,8 @@
 #define SLOWEST (FOX_METRES(11) / 10)
 #define FASTEST (FOX_METRES(17) / 10)
 #define KEEP_RIGHT (FOX_METRES(2) / 5)
+/* Over this much of a walk's ends a walker comes in to its middle line. */
+#define KEEP_RIGHT_FADE (FOX_METRES(3) / 2)
 /* One in so many ways to choose is a crossing a walker goes over. */
 #define CROSS_ONE_IN 3u
 /* A walker gives up on a crossing after waiting this long. */
@@ -100,7 +102,9 @@ static const FoxPath *Live(const FoxNetwork *network, uint32_t path)
     return record != NULL && !record->retired && record->kind == PATH_WALK ? record : NULL;
 }
 
-/* Where a walker on a path stands, a little to the right of its way. */
+/* Where a walker on a path stands, a little to the right of its way: less so
+ * towards the walk's ends, where it meets the next walk on its middle line,
+ * so turning a corner or back the way it came never jumps it aside. */
 static FoxVec Place(const FoxNetwork *network, const Walker *walker, FoxVec *outFacing)
 {
     FoxVec point = {0, 0, 0};
@@ -115,7 +119,9 @@ static FoxVec Place(const FoxNetwork *network, const Walker *walker, FoxVec *out
     {
         *outFacing = facing;
     }
-    return FoxVecAdd(point, FoxVecScale(right, KEEP_RIGHT, FOX_UNIT));
+    const int64_t length = network->paths[walker->path].length;
+    const int64_t fromEnd = FoxClamp(FoxMin(walker->s, length - walker->s), 0, KEEP_RIGHT_FADE);
+    return FoxVecAdd(point, FoxVecScale(right, KEEP_RIGHT * fromEnd / KEEP_RIGHT_FADE, FOX_UNIT));
 }
 
 static uint32_t AcquireSlot(FoxWalkers *walkers)

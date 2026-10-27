@@ -1,5 +1,7 @@
 #include "client/cars_view.h"
 
+#include "mod/application.h"
+
 #include <math.h>
 #include <stddef.h>
 #include <stdlib.h>
@@ -21,6 +23,12 @@
 /* Walkers on a footway stand on its kerb-high top, on a crossing on the
  * asphalt. */
 #define FOOTWAY_LIFT 0.29f
+/* A move further in one frame than this, metres, plus what the fastest car
+ * covers in the frame, is a jump to glide over; the gliding fades with this
+ * time constant, seconds. */
+#define JUMP_METRES 2.0
+#define FASTEST_METRES_PER_SECOND 60.0
+#define GLIDE_SECONDS 0.25
 
 static const uint32_t paints[COLORS] = {
     UINT32_C(0xFF2B3BD1), UINT32_C(0xFFD8D8D8), UINT32_C(0xFF2A2A2A), UINT32_C(0xFFC2702B),
@@ -39,6 +47,23 @@ typedef struct Batch
     uint32_t capacity;
 } Batch;
 
+/* Where a car or a walker was drawn, and how far it is still drawn off its
+ * place: when the network changes under it and it is moved, it glides over
+ * rather than jumping. */
+typedef struct Glide
+{
+    uint64_t serial;
+    double shown[3];
+    double offset[3];
+    bool known;
+} Glide;
+
+typedef struct Glides
+{
+    Glide *glides;
+    uint32_t capacity;
+} Glides;
+
 struct FoxCarsView
 {
     LaiueGraphicsDeviceV2 *device;
@@ -47,6 +72,11 @@ struct FoxCarsView
     LaiueGraphicsHandle meshes[MODELS];
     uint32_t vertexCounts[MODELS];
     Batch batches[MODELS];
+    Glides cars;
+    Glides people;
+    /* When the last frame was drawn, and the time since, seconds. */
+    double drawnAt;
+    double frameSeconds;
 };
 
 static uint32_t Darken(uint32_t color, float factor)
@@ -216,7 +246,64 @@ void FoxCarsViewDestroy(FoxCarsView *view)
         }
         free(view->batches[model].instances);
     }
+    free(view->cars.glides);
+    free(view->people.glides);
     free(view);
+}
+
+/* Room for as many glides as there are slots; the new ones unknown. */
+static bool GrowGlides(Glides *glides, uint32_t needed)
+{
+    if (needed <= glides->capacity)
+    {
+        return true;
+    }
+    Glide *grown = realloc(glides->glides, (size_t)needed * sizeof(*grown));
+    if (grown == NULL)
+    {
+        return false;
+    }
+    memset(grown + glides->capacity, 0, (size_t)(needed - glides->capacity) * sizeof(*grown));
+    glides->glides = grown;
+    glides->capacity = needed;
+    return true;
+}
+
+/* Where to draw what `serial` names, now at `position`: there, or still a
+ * fading way off it after a jump. */
+static FoxVec Smooth(const FoxCarsView *view, Glides *glides, uint32_t slot, uint64_t serial,
+                     FoxVec position)
+{
+    if (slot >= glides->capacity)
+    {
+        return position;
+    }
+    Glide *glide = &glides->glides[slot];
+    const double at[3] = {(double)position.x, (double)position.y, (double)position.z};
+    if (!glide->known || glide->serial != serial)
+    {
+        *glide = (Glide){.serial = serial, .shown = {at[0], at[1], at[2]}, .known = true};
+        return position;
+    }
+    double jump = 0.0;
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        const double gap = at[axis] + glide->offset[axis] - glide->shown[axis];
+        jump += gap * gap;
+    }
+    const double allowed =
+        (JUMP_METRES + FASTEST_METRES_PER_SECOND * view->frameSeconds) * FOX_UNITS_PER_METRE;
+    const double fade = exp(-view->frameSeconds / GLIDE_SECONDS);
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        if (jump > allowed * allowed)
+        {
+            glide->offset[axis] = glide->shown[axis] - at[axis];
+        }
+        glide->offset[axis] *= fade;
+        glide->shown[axis] = at[axis] + glide->offset[axis];
+    }
+    return (FoxVec){llround(glide->shown[0]), llround(glide->shown[1]), llround(glide->shown[2])};
 }
 
 /* The rotation taking car space (x forward, y left, z up) to the world. */
@@ -389,6 +476,7 @@ uint32_t FoxCarsViewDrawWalkers(FoxCarsView *view, const FoxWalkers *walkers,
     }
     const int64_t mix = Mix(blend);
     uint32_t drawn = 0u;
+    (void)GrowGlides(&view->people, FoxWalkersCapacity(walkers));
     for (uint32_t slot = 0u; slot < FoxWalkersCapacity(walkers); ++slot)
     {
         FoxWalkerView walker;
@@ -397,7 +485,7 @@ uint32_t FoxCarsViewDrawWalkers(FoxCarsView *view, const FoxWalkers *walkers,
         LaiueGraphicsInstanceV2 instance;
         if (!FoxWalkersWalker(walkers, slot, &walker) ||
             !FoxWalkersPose(walkers, network, slot, mix, &position, &facing) ||
-            !Place(camera, position, facing,
+            !Place(camera, Smooth(view, &view->people, slot, walker.serial, position), facing,
                    walker.state == FOX_WALKER_CROSSING ? LIFT : FOOTWAY_LIFT, PEOPLE_DISTANCE,
                    &instance))
         {
@@ -419,6 +507,11 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
     const int64_t mix = Mix(blend);
     uint32_t drawn = 0u;
     const uint32_t capacity = FoxTrafficCapacity(traffic);
+    /* Cars are drawn first each frame: the time since the last one. */
+    const double now = LaiueApplicationMonotonicSeconds();
+    view->frameSeconds = view->drawnAt > 0.0 ? fmin(now - view->drawnAt, 1.0) : 0.0;
+    view->drawnAt = now;
+    (void)GrowGlides(&view->cars, capacity);
     for (uint32_t slot = 0u; slot < capacity; ++slot)
     {
         FoxVehicleView car;
@@ -427,7 +520,8 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
         LaiueGraphicsInstanceV2 instance;
         if (!FoxTrafficVehicle(traffic, slot, &car) ||
             !FoxTrafficVehiclePose(traffic, network, slot, mix, &position, &forward) ||
-            !Place(camera, position, forward, LIFT, DRAW_DISTANCE, &instance))
+            !Place(camera, Smooth(view, &view->cars, slot, car.serial, position), forward, LIFT,
+                   DRAW_DISTANCE, &instance))
         {
             continue;
         }

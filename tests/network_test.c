@@ -352,6 +352,19 @@ static void TestStrips(const FoxPlanet *planet)
     EXPECT(FoxNetworkToggleCrossing(network, road, view.length / 2 + FOX_METRES(2)) &&
                FoxNetworkRoad(network, road, &view) && view.crossingCount == 0u,
            "a click near it takes it off");
+
+    /* Taken away a strip at a time, the last lane with the road. */
+    EXPECT(FoxNetworkNarrowRoad(network, road, strips[2].left + FOX_FOOT_WIDTH / 2) ==
+                   FOX_ROAD_OK &&
+               FoxNetworkRoad(network, road, &view) && !view.layout.foot[1],
+           "the footway goes");
+    EXPECT(FoxNetworkNarrowRoad(network, road, -FOX_LANE_WIDTH / 2) == FOX_ROAD_OK &&
+               FoxNetworkRoad(network, road, &view) && view.layout.lanes[0] == 1u &&
+               view.layout.lanes[1] == 0u,
+           "the lane back goes, the one forward stays");
+    EXPECT(FoxNetworkNarrowRoad(network, road, 0) == FOX_ROAD_OK &&
+               FoxNetworkRoadCount(network) == 0u,
+           "the last lane takes the road");
     FoxNetworkDestroy(network);
 }
 
@@ -576,6 +589,35 @@ static void TestPaths(const FoxPlanet *planet)
     FoxNetworkDestroy(network);
 }
 
+/* A curve tighter than a road's width would fold its inner edge over. */
+static void TestSharpCurve(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    FoxRoadPlan plan = Plan(Pole(200, 160), Pole(160, 200), FOX_ROAD_BOULEVARD);
+    plan.curved = true;
+    plan.control = Pole(250, 250);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_TOO_SHARP,
+           "a boulevard cannot turn back that tightly");
+    plan.layout = FoxRoadLayoutSingle(FOX_LANE_FOOT);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OK, "a footway can");
+    plan = Plan(Pole(200, 160), Pole(160, 200), FOX_ROAD_BOULEVARD);
+    plan.curved = true;
+    plan.control = Pole(212, 212);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OK,
+           "and a boulevard round a wider curve");
+
+    /* Nor do two roads meet almost along each other. */
+    plan = Plan(Pole(-60, 0), Pole(60, 0), FOX_ROAD_STREET);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a street");
+    plan = Plan(Pole(-80, -12), Pole(0, 0), FOX_ROAD_STREET);
+    const FoxRoadResult glancing = FoxNetworkCheckRoad(network, planet, &plan);
+    EXPECT(glancing == FOX_ROAD_TOO_SHARP || glancing == FOX_ROAD_OVERLAP,
+           "a street cannot join it at under twenty degrees");
+    plan = Plan(Pole(-40, -40), Pole(0, 0), FOX_ROAD_STREET);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OK, "at forty-five it can");
+    FoxNetworkDestroy(network);
+}
+
 int main(void)
 {
     FoxPlanet *planet = FoxPlanetCreate(RADIUS);
@@ -590,6 +632,7 @@ int main(void)
     TestStrips(planet);
     TestWayBack(planet);
     TestPaths(planet);
+    TestSharpCurve(planet);
     FoxPlanetDestroy(planet);
     return 0;
 }

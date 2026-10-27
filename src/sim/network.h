@@ -208,6 +208,9 @@ typedef enum FoxRoadResult
     /* Two nodes would be joined twice, or a road would loop onto itself. */
     FOX_ROAD_OVERLAP,
     FOX_ROAD_OUT_OF_MEMORY,
+    /* A curve tighter than the road's width allows: its inner edge would
+     * fold over itself. */
+    FOX_ROAD_TOO_SHARP,
 } FoxRoadResult;
 
 typedef struct FoxRoadPlan
@@ -303,6 +306,9 @@ typedef struct FoxPathView
  * for an empty slot. */
 uint32_t FoxNetworkRoadCapacity(const FoxNetwork *network);
 bool FoxNetworkRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outView);
+/* A removed road cars still drive off, which FoxNetworkRoad no longer shows:
+ * only to be drawn until they are gone. */
+bool FoxNetworkClosingRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outView);
 uint32_t FoxNetworkNodeCapacity(const FoxNetwork *network);
 bool FoxNetworkNode(const FoxNetwork *network, uint32_t node, FoxNodeView *outView);
 uint32_t FoxNetworkRoadCount(const FoxNetwork *network);
@@ -367,6 +373,11 @@ bool FoxNetworkTurnStrip(FoxNetwork *network, uint32_t road, int64_t offset);
 /* Puts a pedestrian crossing over a road `along` its centre line, or takes
  * the one there away. False for a road without car lanes, too near an end
  * or with FOX_ROAD_MAX_CROSSINGS already. */
+/* Takes away the strip `offset` units right of a road's centre line (seen
+ * from nodes[0]), shoulders aside: a car lane, a bike lane or a footway. The
+ * last car lane, or the last strip of a path, takes the whole road;
+ * FOX_ROAD_OVERLAP where a path ending on the road would lose its edge. */
+FoxRoadResult FoxNetworkNarrowRoad(FoxNetwork *network, uint32_t road, int64_t offset);
 bool FoxNetworkToggleCrossing(FoxNetwork *network, uint32_t road, int64_t along);
 
 /* Sets a road's speed limit, FOX_SPEED_LIMIT_MIN..FOX_SPEED_LIMIT_MAX, or
@@ -390,17 +401,30 @@ uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane);
  * its cars off them first. */
 void FoxNetworkReleaseRetired(FoxNetwork *network);
 
-/* The roads and intersections whose ground an edit near them must leave:
- * gathered once per edit so each sample asks only these. */
-#define FOX_GROUND_GUARD_MAX 128u
+/* The pieces of road centre lines and the intersections whose ground an
+ * edit near them must leave: gathered once per edit, only those the edit
+ * can reach, so each sample asks a handful. */
+#define FOX_GROUND_GUARD_MAX 512u
+
+typedef struct FoxGuardPiece
+{
+    FoxVec a;
+    FoxVec b;
+    /* Up from the planet at its middle, of FOX_UNIT. */
+    FoxVec up;
+    FoxVec middle;
+    /* Kept this far across from the line between them; nothing kept lies
+     * further than `bound` from the middle. */
+    int64_t across;
+    int64_t bound;
+} FoxGuardPiece;
 
 typedef struct FoxGroundGuard
 {
-    const FoxNetwork *network;
-    uint32_t roads[FOX_GROUND_GUARD_MAX];
-    uint32_t roadCount;
-    uint32_t nodes[FOX_GROUND_GUARD_MAX];
-    uint32_t nodeCount;
+    FoxGuardPiece pieces[FOX_GROUND_GUARD_MAX];
+    uint32_t pieceCount;
+    /* More was in reach than fits: the edit keeps everything. */
+    bool overflow;
 } FoxGroundGuard;
 
 /* Gathers what an edit of `radius` around `center` could reach. */
@@ -408,8 +432,8 @@ void FoxNetworkGuardGround(const FoxNetwork *network, FoxVec center, int64_t rad
                            FoxGroundGuard *outGuard);
 /* Whether a road or an intersection keeps the ground at a point: across,
  * within its paved width and a margin; up and down, from a few metres under
- * it to as high as an edit reaches, so it can be neither dug away nor
- * buried. */
+ * it to the room a truck needs over it, so it can be neither dug away nor
+ * buried, though ground heaped higher roofs it over as a tunnel. */
 bool FoxGroundGuardKeeps(const FoxGroundGuard *guard, FoxVec point);
 /* Whether a box may hold any ground the guard keeps. */
 bool FoxGroundGuardTouches(const FoxGroundGuard *guard, FoxVec min, FoxVec max);

@@ -381,11 +381,14 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
         }
         order[position] = slot;
     }
+    /* Paths alone run into the middle of the round paving where they meet;
+     * only a bend of two keeps its room to curve. */
+    const bool paths = cars == 0u && count != 2u;
     /* Each road reaches only as far as its edges stay clear of the next
      * road round: where the facing edges of two neighbours would meet, plus
      * the room of the curb rounding that corner. Wide angles never close. */
     const int64_t margin = count == 2u ? BEND_MARGIN : JUNCTION_FILLET;
-    for (uint32_t k = 0u; count >= 2u && k < count; ++k)
+    for (uint32_t k = 0u; !paths && count >= 2u && k < count; ++k)
     {
         const uint32_t a = order[k];
         const uint32_t b = order[(k + 1u) % count];
@@ -406,7 +409,7 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
     }
     /* At an intersection every road also keeps out of the width of the
      * roads crossing its way, however wide the angles are. */
-    for (uint32_t a = 0u; count >= 3u && a < count; ++a)
+    for (uint32_t a = 0u; !paths && count >= 3u && a < count; ++a)
     {
         for (uint32_t b = 0u; b < count; ++b)
         {

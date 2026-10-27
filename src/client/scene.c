@@ -31,6 +31,8 @@
 /* A lane drawn beside a road widens it when both its ends lie within this of
  * the road's edge and it runs along at least half of the road. */
 #define WIDEN_REACH FOX_METRES(5)
+/* Beside a road for a quarter of it or this long, a lane widens it. */
+#define WIDEN_LENGTH FOX_METRES(20)
 #define REPORT_SECONDS 30.0
 /* The statistics panel is refreshed this often. */
 #define STATISTICS_SECONDS 0.25
@@ -87,6 +89,7 @@ static const char *const roadResults[] = {
     [FOX_ROAD_CROWDED] = "too many roads at one junction",
     [FOX_ROAD_OVERLAP] = "it would lie on another road",
     [FOX_ROAD_OUT_OF_MEMORY] = "out of memory",
+    [FOX_ROAD_TOO_SHARP] = "too sharp a curve for its width",
 };
 
 struct FoxScene
@@ -564,9 +567,9 @@ static void AgainstRoad(const FoxRoadView *road, FoxVec point, int64_t *outAlong
     }
 }
 
-/* Whether a lane drawn from `from` to `to` runs beside one road along at
- * least half of it, and then the road, the side it widens and whether the
- * lane runs the road's way. */
+/* Whether a lane drawn from `from` to `to` runs along the edge of one road
+ * for a good part of it, and then the road, the side it widens and whether
+ * the lane runs the road's way. */
 static bool WidenTarget(const FoxScene *scene, FoxVec from, FoxVec to, uint32_t *outRoad,
                         uint32_t *outSide, bool *outForward)
 {
@@ -586,15 +589,20 @@ static bool WidenTarget(const FoxScene *scene, FoxVec from, FoxVec to, uint32_t 
     AgainstRoad(&view, from, &along[0], &right[0]);
     AgainstRoad(&view, to, &along[1], &right[1]);
     const uint32_t side = right[0] < 0 ? 0u : 1u;
+    /* Anywhere from the outer car lane's middle to a little beyond the edge,
+     * both ends on one side. */
+    const int64_t inner = FoxRoadLayoutCarHalfWidth(&view.layout) - FOX_LANE_WIDTH / 2;
     for (uint32_t end = 0u; end < 2u; ++end)
     {
-        const int64_t out = FoxAbs(right[end]) - extent[side];
-        if ((right[end] < 0) != (side == 0u) || out < -FOX_METRES(1) || out > WIDEN_REACH)
+        const int64_t across = FoxAbs(right[end]);
+        if ((right[end] < 0) != (side == 0u) || across < inner ||
+            across > extent[side] + WIDEN_REACH)
         {
             return false;
         }
     }
-    if (FoxAbs(along[1] - along[0]) * 2 < view.length)
+    const int64_t covered = FoxAbs(along[1] - along[0]);
+    if (covered * 4 < view.length && covered < WIDEN_LENGTH)
     {
         return false;
     }
@@ -662,7 +670,8 @@ static void PlaceRoad(FoxScene *scene)
     }
     const FoxVec point = scene->assist.point;
     const uint32_t needed = scene->settings.tool == FOX_TOOL_CURVE ? 2u : 1u;
-    scene->previewPlaced = 0u;
+    /* Whatever the preview showed is stale now: redrawn or taken away. */
+    scene->previewPlaced = UINT32_MAX;
     if (scene->placedCount < needed)
     {
         if (scene->placedCount == 0u)
@@ -700,6 +709,21 @@ static void PlaceRoad(FoxScene *scene)
     }
 }
 
+/* How far right of a road's centre line a point lies, measured as its
+ * strips are: shoulders beside the car lanes left out. */
+static int64_t StripOffset(const FoxRoadView *view, FoxVec point)
+{
+    int64_t along = 0;
+    int64_t right = 0;
+    AgainstRoad(view, point, &along, &right);
+    if (FoxRoadLayoutCarLanes(&view->layout) != 0u &&
+        FoxAbs(right) > FoxRoadLayoutCarHalfWidth(&view->layout))
+    {
+        right += right < 0 ? FOX_ROAD_SHOULDER : -FOX_ROAD_SHOULDER;
+    }
+    return right;
+}
+
 /* The lane under the pointer goes the other way, or round its ways. */
 static void TurnLane(FoxScene *scene)
 {
@@ -710,16 +734,7 @@ static void TurnLane(FoxScene *scene)
     {
         return;
     }
-    int64_t along = 0;
-    int64_t right = 0;
-    AgainstRoad(&view, scene->hit, &along, &right);
-    /* Strips beside car lanes lie beyond the shoulder. */
-    if (FoxRoadLayoutCarLanes(&view.layout) != 0u &&
-        FoxAbs(right) > FoxRoadLayoutCarHalfWidth(&view.layout))
-    {
-        right += right < 0 ? FOX_ROAD_SHOULDER : -FOX_ROAD_SHOULDER;
-    }
-    if (FoxWorldTurnStrip(scene->city.world, road, right))
+    if (FoxWorldTurnStrip(scene->city.world, road, StripOffset(&view, scene->hit)))
     {
         FoxLog(FOX_LOG_INFO, "the lane turns");
     }
@@ -747,14 +762,30 @@ static void ToggleCrossing(FoxScene *scene)
     FoxLog(FOX_LOG_INFO, "pedestrian crossing %s", added ? "laid" : "taken away");
 }
 
-static void Bulldoze(FoxScene *scene)
+/* The strip under the pointer goes, or with Shift the whole road. */
+static void Bulldoze(FoxScene *scene, bool wholeRoad)
 {
     const FoxNetwork *network = FoxWorldNetwork(scene->city.world);
-    const uint32_t road = FoxNetworkNearestRoad(network, scene->hit, FOX_METRES(8), NULL);
-    if (road != FOX_NETWORK_NONE && FoxWorldRemoveRoad(scene->city.world, road))
+    const uint32_t road = FoxNetworkNearestRoad(network, scene->hit, FOX_METRES(12), NULL);
+    FoxRoadView view;
+    if (road == FOX_NETWORK_NONE || !FoxNetworkRoad(network, road, &view))
     {
-        FoxLog(FOX_LOG_INFO, "road removed");
+        return;
     }
+    if (wholeRoad)
+    {
+        if (FoxWorldRemoveRoad(scene->city.world, road))
+        {
+            FoxLog(FOX_LOG_INFO, "road removed");
+        }
+        return;
+    }
+    const FoxRoadResult result =
+        FoxWorldNarrowRoad(scene->city.world, road, StripOffset(&view, scene->hit));
+    FoxLog(result == FOX_ROAD_OK ? FOX_LOG_INFO : FOX_LOG_WARNING, "%s",
+           result == FOX_ROAD_OK        ? "strip removed"
+           : result == FOX_ROAD_OVERLAP ? "a path ending here needs this edge"
+                                        : "no strip under the pointer");
 }
 
 static void ShapeGround(FoxScene *scene, double realSeconds)
@@ -902,7 +933,7 @@ static void ApplyTools(FoxScene *scene, const FoxControls *controls, double real
     case FOX_TOOL_BULLDOZE:
         if (controls->click)
         {
-            Bulldoze(scene);
+            Bulldoze(scene, controls->moveFast);
         }
         break;
     case FOX_TOOL_DIRECTION:

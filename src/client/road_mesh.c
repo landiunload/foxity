@@ -606,11 +606,27 @@ static void Zebra(FoxMesh *mesh, const Station *stations, uint32_t count,
         return;
     }
     const double used = (double)bars * ZEBRA_BAR + (double)(bars - 1u) * ZEBRA_GAP;
+    /* Straight across in the frame where it lies, so the bars stay parallel
+     * on a bend rather than fanning out. */
+    uint32_t index = 0u;
+    while (index + 2u < count && stations[index + 1u].along < at)
+    {
+        ++index;
+    }
+    const double span = stations[index + 1u].along - stations[index].along;
+    const Station middle = Blend(&stations[index], &stations[index + 1u],
+                                 span > 0.0 ? (at - stations[index].along) / span : 0.0);
+    const V3 forward = Unit(Cross(middle.up, middle.right));
+    Station straight[2] = {middle, middle};
+    straight[0].point = Add(middle.point, Scale(forward, -ZEBRA_DEPTH / 2.0));
+    straight[0].along = at - ZEBRA_DEPTH / 2.0;
+    straight[1].point = Add(middle.point, Scale(forward, ZEBRA_DEPTH / 2.0));
+    straight[1].along = at + ZEBRA_DEPTH / 2.0;
     double x = -used / 2.0;
     for (uint32_t bar = 0u; bar < bars; ++bar)
     {
-        Strip(mesh, stations, count, x, x + ZEBRA_BAR, MARKING_LIFT, at - ZEBRA_DEPTH / 2.0,
-              at + ZEBRA_DEPTH / 2.0, 0.0, 0.0, COLOR_LINE);
+        Strip(mesh, straight, 2u, x, x + ZEBRA_BAR, MARKING_LIFT, straight[0].along,
+              straight[1].along, 0.0, 0.0, COLOR_LINE);
         x += ZEBRA_BAR + ZEBRA_GAP;
     }
 }
@@ -1120,7 +1136,9 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
                      FoxMesh *detail, FoxSignalHeads *heads)
 {
     FoxRoadView road;
-    if (!FoxNetworkRoad(network, roadIndex, &road) || road.centreCount < 2u)
+    if ((!FoxNetworkRoad(network, roadIndex, &road) &&
+         !FoxNetworkClosingRoad(network, roadIndex, &road)) ||
+        road.centreCount < 2u)
     {
         return;
     }
@@ -1525,6 +1543,10 @@ static bool SameLayout(const FoxRoadLayout *a, const FoxRoadLayout *b)
 }
 
 #define CORNER_POINTS 10u
+/* Where paths alone meet, a round paving of this many sides. */
+#define PLAZA_SIDES 24u
+/* Metres a corner reaches on into the roads it joins. */
+#define SEAM_OVERLAP 0.03
 
 /* The line round a corner from road a's left edge to road b's right edge,
  * `outA` and `outB` metres beyond their paved edges: from corner to corner,
@@ -1573,6 +1595,10 @@ static void CornerLine(const RoadEndShape *a, const RoadEndShape *b, double gap,
         const double t = span > 0.0 ? (at - lengths[segment]) / span : 0.0;
         out[point] = Add(raw[segment], Scale(Sub(raw[segment + 1u], raw[segment]), t));
     }
+    /* A little way into each road, so what follows the corner overlaps what
+     * runs along the road instead of meeting it edge to edge in a seam. */
+    out[0] = Add(out[0], Scale(a->outward, SEAM_OVERLAP));
+    out[CORNER_POINTS - 1u] = Add(out[CORNER_POINTS - 1u], Scale(b->outward, SEAM_OVERLAP));
 }
 
 /* A quad seen from either side. */
@@ -1857,6 +1883,21 @@ static void Cap(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMes
         return;
     }
     const double outer = end->paved + fmin(end->edge[0], end->edge[1]);
+    /* Straight on from where the road's own footways stop, beside the
+     * paving its lanes leave to turn on, up to the circle. */
+    for (int side = -1; side <= 1; side += 2)
+    {
+        const V3 innerA =
+            Along(end->station.point, end->right, (double)side * end->paved, end->outward, 0.0);
+        const V3 outerA =
+            Along(end->station.point, end->right, (double)side * outer, end->outward, 0.0);
+        const V3 innerB = Along(centre, end->right, (double)side * end->paved, end->outward, 0.0);
+        const V3 outerB = Along(centre, end->right, (double)side * outer, end->outward, 0.0);
+        TwoSided(base, Lift(innerA, up, FOOTWAY_LIFT), Lift(outerA, up, FOOTWAY_LIFT),
+                 Lift(outerB, up, FOOTWAY_LIFT), Lift(innerB, up, FOOTWAY_LIFT), COLOR_FOOTWAY);
+        TwoSided(base, Lift(innerA, up, ASPHALT_LIFT), Lift(innerB, up, ASPHALT_LIFT),
+                 Lift(innerB, up, FOOTWAY_LIFT), Lift(innerA, up, FOOTWAY_LIFT), COLOR_KERB);
+    }
     for (uint32_t step = 0u; step < CAP_SEGMENTS; ++step)
     {
         const double a = PI * (double)step / CAP_SEGMENTS;
@@ -1917,6 +1958,35 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
     if (count == 1u)
     {
         Cap(&ends[0], centre, up, base, detail);
+    }
+    else if (PathsOnly(ends, count) && (count != 2u || !RibbonFits(&ends[0], &ends[1], up)))
+    {
+        /* Paths meet on a round paving as wide as the widest of them, which
+         * they run into. */
+        double radius = 0.0;
+        bool foot = false;
+        for (uint32_t index = 0u; index < count; ++index)
+        {
+            radius = fmax(radius, ends[index].paved);
+            foot = foot || ends[index].layout.foot[0] || ends[index].layout.foot[1];
+        }
+        /* Raised where people walk, red asphalt where only bikes ride. */
+        const double lift = foot ? FOOTWAY_LIFT : ASPHALT_LIFT;
+        const uint32_t color = foot ? COLOR_FOOTWAY : COLOR_BIKE;
+        for (uint32_t side = 0u; side < PLAZA_SIDES; ++side)
+        {
+            const double a = 2.0 * PI * (double)side / PLAZA_SIDES;
+            const double b = 2.0 * PI * (double)(side + 1u) / PLAZA_SIDES;
+            const V3 from = Along(centre, ex, cos(a) * radius, ey, sin(a) * radius);
+            const V3 to = Along(centre, ex, cos(b) * radius, ey, sin(b) * radius);
+            TwoSided(base, Lift(centre, up, lift), Lift(from, up, lift), Lift(to, up, lift),
+                     Lift(centre, up, lift), color);
+            if (foot)
+            {
+                TwoSided(base, Lift(from, up, ASPHALT_LIFT), Lift(to, up, ASPHALT_LIFT),
+                         Lift(to, up, FOOTWAY_LIFT), Lift(from, up, FOOTWAY_LIFT), COLOR_KERB);
+            }
+        }
     }
     else if (count == 2u && RibbonFits(&ends[0], &ends[1], up))
     {

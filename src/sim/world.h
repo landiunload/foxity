@@ -51,6 +51,7 @@ bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDri
  * it or takes one off: see the network's own; the traffic follows. */
 FoxRoadResult FoxWorldWidenRoad(FoxWorld *world, uint32_t road, uint32_t side, FoxLaneKind kind,
                                 bool forward);
+FoxRoadResult FoxWorldNarrowRoad(FoxWorld *world, uint32_t road, int64_t offset);
 bool FoxWorldTurnStrip(FoxWorld *world, uint32_t road, int64_t offset);
 bool FoxWorldToggleCrossing(FoxWorld *world, uint32_t road, int64_t along);
 bool FoxWorldSetSpeedLimit(FoxWorld *world, uint32_t road, int32_t speed);

@@ -324,7 +324,9 @@ static void Track(FoxRoadsView *view, const FoxNetwork *network)
     {
         Tracked *tracked = &view->roads[index];
         FoxRoadView road = {0};
-        const bool alive = index < roadCapacity && FoxNetworkRoad(network, index, &road);
+        /* A removed road shows until the cars on it are gone. */
+        const bool alive = index < roadCapacity && (FoxNetworkRoad(network, index, &road) ||
+                                                    FoxNetworkClosingRoad(network, index, &road));
         if (alive && tracked->present && tracked->revision == road.revision)
         {
             continue;

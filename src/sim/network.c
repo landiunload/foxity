@@ -21,6 +21,11 @@
 #define MAX_HALF_WIDTH (6 * FOX_LANE_WIDTH / 2 + FOX_LANE_WIDTH + FOX_FOOT_WIDTH)
 /* Crossings keep this far from a road's ends and from each other. */
 #define CROSSING_ROOM FOX_METRES(6)
+/* Roads for cars meet at no less than twenty degrees: the cosine, of
+ * FOX_UNIT. */
+#define MEET_MAX_COSINE (FOX_UNIT * 94 / 100)
+/* A curve leaves its inner edge at least this radius. */
+#define INNER_RADIUS FOX_METRES(3)
 /* Roads are checked for keeping clear of each other this often along them. */
 #define CLEAR_STEP FOX_METRES(2)
 /* A path meets a road from the side at no less than about thirty degrees:
@@ -596,6 +601,8 @@ uint32_t FoxNetworkNodeCount(const FoxNetwork *network)
     return network == NULL ? 0u : network->nodeCount;
 }
 
+static void FillRoadView(const FoxRoad *record, FoxRoadView *outView);
+
 bool FoxNetworkRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outView)
 {
     if (network == NULL || outView == NULL || road >= network->roadCapacity ||
@@ -603,7 +610,23 @@ bool FoxNetworkRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outVi
     {
         return false;
     }
-    const FoxRoad *record = &network->roads[road];
+    FillRoadView(&network->roads[road], outView);
+    return true;
+}
+
+bool FoxNetworkClosingRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outView)
+{
+    if (network == NULL || outView == NULL || road >= network->roadCapacity ||
+        !network->roads[road].alive || !network->roads[road].closing)
+    {
+        return false;
+    }
+    FillRoadView(&network->roads[road], outView);
+    return true;
+}
+
+static void FillRoadView(const FoxRoad *record, FoxRoadView *outView)
+{
     *outView = (FoxRoadView){
         .nodes = {record->nodes[0], record->nodes[1]},
         .layout = record->layout,
@@ -622,7 +645,6 @@ bool FoxNetworkRoad(const FoxNetwork *network, uint32_t road, FoxRoadView *outVi
     };
     memcpy(outView->lanes, record->lanes, sizeof(outView->lanes));
     memcpy(outView->crossings, record->zebras, sizeof(outView->crossings));
-    return true;
 }
 
 bool FoxNetworkNode(const FoxNetwork *network, uint32_t node, FoxNodeView *outView)
@@ -773,18 +795,18 @@ uint32_t FoxNetworkNearestRoad(const FoxNetwork *network, FoxVec point, int64_t 
 /* ---- Ground under the roads ------------------------------------------------- */
 
 /* Kept across, beyond the paved edge, and how far under and over the road:
- * over it as high as any edit reaches, so nothing can bury it. */
+ * over it the room a truck needs, so that ground heaped higher roofs the
+ * road over as a tunnel. */
 #define GUARD_MARGIN (FOX_METRES(3) / 2)
 #define GUARD_BELOW FOX_METRES(4)
-#define GUARD_ABOVE (2 * FOX_PLANET_EDIT_MAX_RADIUS)
+#define GUARD_ABOVE FOX_METRES(5)
 /* No kept point lies further than this from the paved centre line or edge. */
 #define GUARD_REACH (GUARD_MARGIN + GUARD_ABOVE + GUARD_BELOW)
 
-/* Whether `offset` from a point on the ground lies within `across` of it
- * sideways and within the guarded band up and down. */
-static bool WithinBand(FoxVec offset, FoxVec ground, int64_t across)
+/* Whether `offset` from a point on the ground, `up` there, lies within
+ * `across` of it sideways and within the guarded band up and down. */
+static bool WithinBand(FoxVec offset, FoxVec up, int64_t across)
 {
-    const FoxVec up = FoxVecDirection(ground);
     const int64_t height = FoxVecDot(offset, up) / FOX_UNIT;
     if (height < -GUARD_BELOW || height > GUARD_ABOVE)
     {
@@ -794,6 +816,41 @@ static bool WithinBand(FoxVec offset, FoxVec ground, int64_t across)
     return sideways <= across * across;
 }
 
+/* The nearest point of a segment to `point`. */
+static FoxVec ClosestPoint(FoxVec a, FoxVec b, FoxVec point)
+{
+    const FoxVec ab = FoxVecSub(b, a);
+    const int64_t lengthSquared = FoxVecDot(ab, ab);
+    const int64_t t =
+        lengthSquared > 0
+            ? FoxClamp(FoxVecDot(FoxVecSub(point, a), ab) * 1024 / lengthSquared, 0, 1024)
+            : 0;
+    return FoxVecAdd(a, FoxVecScale(ab, t, 1024));
+}
+
+static void GuardPiece(FoxGroundGuard *guard, FoxVec center, int64_t radius, FoxVec a, FoxVec b,
+                       int64_t across)
+{
+    if (FoxVecDistance(center, ClosestPoint(a, b, center)) > radius + across + GUARD_REACH)
+    {
+        return;
+    }
+    if (guard->pieceCount == FOX_GROUND_GUARD_MAX)
+    {
+        guard->overflow = true;
+        return;
+    }
+    const FoxVec middle = FoxVecLerp(a, b, FOX_UNIT / 2);
+    guard->pieces[guard->pieceCount++] = (FoxGuardPiece){
+        .a = a,
+        .b = b,
+        .up = FoxPlanetUp(middle),
+        .middle = middle,
+        .across = across,
+        .bound = FoxVecDistance(a, b) / 2 + across + GUARD_REACH,
+    };
+}
+
 void FoxNetworkGuardGround(const FoxNetwork *network, FoxVec center, int64_t radius,
                            FoxGroundGuard *outGuard)
 {
@@ -801,66 +858,56 @@ void FoxNetworkGuardGround(const FoxNetwork *network, FoxVec center, int64_t rad
     {
         return;
     }
-    *outGuard = (FoxGroundGuard){.network = network};
+    outGuard->pieceCount = 0u;
+    outGuard->overflow = false;
     for (uint32_t index = 0u; network != NULL && index < network->roadCapacity; ++index)
     {
         const FoxRoad *road = &network->roads[index];
-        if (road->alive && outGuard->roadCount < FOX_GROUND_GUARD_MAX &&
-            FoxVecDistance(center, road->middle) <=
-                radius + road->boundRadius + FoxRoadReach(road) + GUARD_REACH)
+        const int64_t across = FoxRoadReach(road) + GUARD_MARGIN;
+        if (!road->alive || FoxVecDistance(center, road->middle) >
+                                radius + road->boundRadius + across + GUARD_REACH)
         {
-            outGuard->roads[outGuard->roadCount++] = index;
+            continue;
+        }
+        for (uint32_t segment = 0u; segment + 1u < road->centreCount; ++segment)
+        {
+            GuardPiece(outGuard, center, radius, road->centre[segment], road->centre[segment + 1u],
+                       across);
         }
     }
     for (uint32_t index = 0u; network != NULL && index < network->nodeCapacity; ++index)
     {
         const FoxNode *node = &network->nodes[index];
-        if (node->alive && outGuard->nodeCount < FOX_GROUND_GUARD_MAX &&
-            FoxVecDistance(center, node->position) <= radius + node->radius + GUARD_REACH)
+        if (node->alive)
         {
-            outGuard->nodes[outGuard->nodeCount++] = index;
+            GuardPiece(outGuard, center, radius, node->position, node->position,
+                       node->radius + GUARD_MARGIN);
         }
     }
 }
 
 bool FoxGroundGuardKeeps(const FoxGroundGuard *guard, FoxVec point)
 {
-    if (guard == NULL || guard->network == NULL)
+    if (guard == NULL)
     {
         return false;
     }
-    const FoxNetwork *network = guard->network;
-    for (uint32_t index = 0u; index < guard->nodeCount; ++index)
+    if (guard->overflow)
     {
-        const FoxNode *node = &network->nodes[guard->nodes[index]];
-        if (WithinBand(FoxVecSub(point, node->position), node->position,
-                       node->radius + GUARD_MARGIN))
-        {
-            return true;
-        }
+        return true;
     }
-    for (uint32_t index = 0u; index < guard->roadCount; ++index)
+    for (uint32_t index = 0u; index < guard->pieceCount; ++index)
     {
-        const FoxRoad *road = &network->roads[guard->roads[index]];
-        const int64_t across = FoxRoadReach(road) + GUARD_MARGIN;
-        if (FoxVecDistance(point, road->middle) > road->boundRadius + across + GUARD_REACH)
+        const FoxGuardPiece *piece = &guard->pieces[index];
+        const FoxVec away = FoxVecSub(point, piece->middle);
+        if (FoxVecDot(away, away) > piece->bound * piece->bound)
         {
             continue;
         }
-        for (uint32_t segment = 0u; segment + 1u < road->centreCount; ++segment)
+        const FoxVec closest = ClosestPoint(piece->a, piece->b, point);
+        if (WithinBand(FoxVecSub(point, closest), piece->up, piece->across))
         {
-            const FoxVec a = road->centre[segment];
-            const FoxVec ab = FoxVecSub(road->centre[segment + 1u], a);
-            const int64_t lengthSquared = FoxVecDot(ab, ab);
-            const int64_t t =
-                lengthSquared > 0
-                    ? FoxClamp(FoxVecDot(FoxVecSub(point, a), ab) * 1024 / lengthSquared, 0, 1024)
-                    : 0;
-            const FoxVec closest = FoxVecAdd(a, FoxVecScale(ab, t, 1024));
-            if (WithinBand(FoxVecSub(point, closest), closest, across))
-            {
-                return true;
-            }
+            return true;
         }
     }
     return false;
@@ -868,26 +915,21 @@ bool FoxGroundGuardKeeps(const FoxGroundGuard *guard, FoxVec point)
 
 bool FoxGroundGuardTouches(const FoxGroundGuard *guard, FoxVec min, FoxVec max)
 {
-    if (guard == NULL || guard->network == NULL)
+    if (guard == NULL)
     {
         return false;
     }
-    const FoxNetwork *network = guard->network;
+    if (guard->overflow)
+    {
+        return true;
+    }
     const FoxVec middle = {min.x / 2 + max.x / 2, min.y / 2 + max.y / 2, min.z / 2 + max.z / 2};
     const int64_t half = FoxVecDistance(min, max) / 2 + 1;
-    for (uint32_t index = 0u; index < guard->nodeCount; ++index)
+    for (uint32_t index = 0u; index < guard->pieceCount; ++index)
     {
-        const FoxNode *node = &network->nodes[guard->nodes[index]];
-        if (FoxVecDistance(middle, node->position) <= half + node->radius + GUARD_REACH)
-        {
-            return true;
-        }
-    }
-    for (uint32_t index = 0u; index < guard->roadCount; ++index)
-    {
-        const FoxRoad *road = &network->roads[guard->roads[index]];
-        if (FoxVecDistance(middle, road->middle) <=
-            half + road->boundRadius + FoxRoadReach(road) + GUARD_REACH)
+        const FoxGuardPiece *piece = &guard->pieces[index];
+        if (FoxVecDistance(middle, ClosestPoint(piece->a, piece->b, middle)) <=
+            half + piece->across + GUARD_REACH)
         {
             return true;
         }
@@ -1872,6 +1914,67 @@ static FoxRoadResult CheckTap(const FoxNetwork *network, const RoadWork *work, c
     return FOX_ROAD_OK;
 }
 
+/* Whether a road for cars meets every road at its cuts at a decent angle:
+ * two roads leaving a junction almost together would pave a long wedge
+ * between them. */
+static bool MeetsSquarely(const FoxNetwork *network, const RoadWork *work, uint32_t cutCount)
+{
+    for (uint32_t index = 0u; index < cutCount; ++index)
+    {
+        const Cut *cut = &work->cuts[index];
+        const FoxVec own = PolylineDirection(work->points, work->lengths, work->count, cut->along);
+        /* Which ways the new road leaves the cut: on from its start, back
+         * from its end, both ways from the middle. */
+        FoxVec leaving[2];
+        uint32_t ways = 0u;
+        if (index + 1u != cutCount)
+        {
+            leaving[ways++] = own;
+        }
+        if (index != 0u)
+        {
+            leaving[ways++] = FoxVecNegate(own);
+        }
+        FoxVec others[FOX_NODE_MAX_ROADS + 2u];
+        uint32_t otherCount = 0u;
+        if (cut->kind == CUT_SPLIT)
+        {
+            const FoxRoad *road = &network->roads[cut->road];
+            const FoxVec along = PolylineDirection(road->centre, road->centreLengths,
+                                                   road->centreCount, cut->roadAlong);
+            others[otherCount++] = along;
+            others[otherCount++] = FoxVecNegate(along);
+        }
+        else if (cut->kind == CUT_NODE)
+        {
+            const FoxNode *node = &network->nodes[cut->node];
+            for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+            {
+                const FoxRoad *road = &network->roads[node->roads[slot]];
+                if (FoxRoadLayoutCarLanes(&road->layout) == 0u || road->centreCount < 2u)
+                {
+                    continue;
+                }
+                const bool first = road->nodes[0] == cut->node;
+                const FoxVec from = road->centre[first ? 0u : road->centreCount - 1u];
+                const FoxVec to = road->centre[first ? 1u : road->centreCount - 2u];
+                others[otherCount++] = FoxVecDirection(FoxVecSub(to, from));
+            }
+        }
+        for (uint32_t way = 0u; way < ways; ++way)
+        {
+            for (uint32_t other = 0u; other < otherCount; ++other)
+            {
+                if (FoxVecDot(leaving[way], others[other]) / FOX_UNIT > MEET_MAX_COSINE)
+                {
+                    return false;
+                }
+            }
+        }
+    }
+    return true;
+}
+
 /* Turns the cuts between paths and roads for cars into taps and adoptions,
  * and refuses what cannot meet: a path at a junction for cars, a road for
  * cars ending on a path, two taps too close on one road. */
@@ -1961,6 +2064,37 @@ static FoxRoadResult SortCuts(const FoxNetwork *network, const FoxRoadPlan *plan
     return FOX_ROAD_OK;
 }
 
+/* Whether a centre line bends gently enough for a road of `layout`: at
+ * every bend the radius, the distance between points over the angle turned,
+ * leaves the inner edge some room to curve. */
+static bool CurveFits(const FoxVec *points, uint32_t count, const FoxRoadLayout *layout)
+{
+    int64_t extent[2];
+    FoxRoadLayoutExtent(layout, extent);
+    const int64_t least = FoxMax(extent[0], extent[1]) + INNER_RADIUS;
+    for (uint32_t index = 1u; index + 1u < count; ++index)
+    {
+        /* Over the ground only: hills are no bends. */
+        const FoxVec up = FoxPlanetUp(points[index]);
+        FoxVec before = FoxVecSub(points[index], points[index - 1u]);
+        FoxVec after = FoxVecSub(points[index + 1u], points[index]);
+        before = FoxVecDirection(FoxVecSub(
+            before, FoxVecScale(up, FoxVecDot(before, up), (int64_t)FOX_UNIT * FOX_UNIT)));
+        after = FoxVecDirection(
+            FoxVecSub(after, FoxVecScale(up, FoxVecDot(after, up), (int64_t)FOX_UNIT * FOX_UNIT)));
+        /* The chord of the turn, of FOX_UNIT: about the angle for small ones. */
+        const int64_t turn = FoxVecDistance(before, after);
+        const int64_t span = (FoxVecDistance(points[index - 1u], points[index]) +
+                              FoxVecDistance(points[index], points[index + 1u])) /
+                             2;
+        if (turn != 0 && span * FOX_UNIT / turn < least)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* Lays out a road: its centre line with the ends snapped, and every cut it
  * makes, checked before anything changes. */
 static FoxRoadResult PlanRoad(const FoxNetwork *network, const FoxPlanet *planet,
@@ -1983,6 +2117,10 @@ static FoxRoadResult PlanRoad(const FoxNetwork *network, const FoxPlanet *planet
     if (total > FOX_ROAD_MAX_LENGTH)
     {
         return FOX_ROAD_TOO_LONG;
+    }
+    if (!CurveFits(points, count, &plan->layout))
+    {
+        return FOX_ROAD_TOO_SHARP;
     }
 
     /* Ends first: they snap to nodes and roads, and the centre line follows. */
@@ -2135,6 +2273,10 @@ static FoxRoadResult PlanRoad(const FoxNetwork *network, const FoxPlanet *planet
         {
             return FOX_ROAD_OVERLAP;
         }
+    }
+    if (FoxRoadLayoutCarLanes(&plan->layout) != 0u && !MeetsSquarely(network, work, cutCount))
+    {
+        return FOX_ROAD_TOO_SHARP;
     }
     work->cutCount = cutCount;
     return FOX_ROAD_OK;
@@ -2711,6 +2853,77 @@ bool FoxNetworkTurnStrip(FoxNetwork *network, uint32_t road, int64_t offset)
         return true;
     }
     return false;
+}
+
+FoxRoadResult FoxNetworkNarrowRoad(FoxNetwork *network, uint32_t road, int64_t offset)
+{
+    if (!Editable(network, road))
+    {
+        return FOX_ROAD_INVALID;
+    }
+    const FoxRoad *record = &network->roads[road];
+    FoxRoadLayout layout = record->layout;
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t count = FoxRoadLayoutStrips(&layout, (FoxDriveSide)record->driveSide, strips);
+    uint32_t index = 0u;
+    while (index < count && (offset < strips[index].left || offset >= strips[index].right))
+    {
+        ++index;
+    }
+    if (index == count)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    const FoxRoadStrip *strip = &strips[index];
+    /* The left edge's strips come first: its footway, then its bike lane. */
+    const uint32_t leftBike = layout.foot[0] ? 1u : 0u;
+    if (strip->kind == FOX_LANE_FOOT)
+    {
+        layout.foot[layout.foot[0] && index == 0u ? 0u : 1u] = false;
+    }
+    else if (strip->kind == FOX_LANE_BIKE)
+    {
+        layout.bike[layout.bike[0] != FOX_WAY_NONE && index == leftBike ? 0u : 1u] = FOX_WAY_NONE;
+    }
+    else if (FoxRoadLayoutCarLanes(&layout) == 1u)
+    {
+        /* The last car lane takes the road with it. */
+        return FoxNetworkRemoveRoad(network, road) ? FOX_ROAD_OK : FOX_ROAD_INVALID;
+    }
+    else
+    {
+        const uint32_t direction = strip->way == FOX_WAY_FORWARD ? 0u : 1u;
+        uint32_t lane = 0u;
+        for (uint32_t candidate = 0u; candidate < layout.lanes[direction]; ++candidate)
+        {
+            const int64_t centre =
+                FoxRoadLaneOffset(&layout, (FoxDriveSide)record->driveSide, direction, candidate);
+            lane = centre > strip->left && centre < strip->right ? candidate : lane;
+        }
+        for (uint32_t next = lane; next + 1u < layout.lanes[direction]; ++next)
+        {
+            layout.surface[direction][next] = layout.surface[direction][next + 1u];
+        }
+        --layout.lanes[direction];
+    }
+    if (!FoxRoadLayoutValid(&layout))
+    {
+        return FoxNetworkRemoveRoad(network, road) ? FOX_ROAD_OK : FOX_ROAD_INVALID;
+    }
+    /* Paths ending on the road keep an edge to walk on. */
+    for (uint32_t tap = 0u; tap < record->tapCount; ++tap)
+    {
+        const uint8_t sides = record->tapSides[tap];
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            if (sides == (1u << side) && EdgeWidth(&layout, side) == 0)
+            {
+                return FOX_ROAD_OVERLAP;
+            }
+        }
+    }
+    Relayout(network, road, &layout);
+    return FOX_ROAD_OK;
 }
 
 bool FoxNetworkToggleCrossing(FoxNetwork *network, uint32_t road, int64_t along)

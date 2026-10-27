@@ -196,11 +196,26 @@ static void TestGroundUnderRoads(void)
     EXPECT(FoxPlanetGround(planet, onRoad, &before), "ground under the road");
     FoxPlanetBox changed;
     (void)FoxWorldDig(world, onRoad, FOX_METRES(6), &changed);
-    (void)FoxWorldFill(world, (FoxVec){onRoad.x, onRoad.y, radius + FOX_METRES(3)}, FOX_METRES(5),
-                       &changed);
+    const FoxVec up = FoxPlanetUp(before);
+    const FoxVec above = FoxVecAdd(before, FoxVecScale(up, FOX_METRES(1), FOX_UNIT));
+    const FoxVec down = FoxVecScale(up, -1, 1);
     FoxVec after;
-    EXPECT(FoxPlanetGround(planet, onRoad, &after), "ground still under the road");
-    EXPECT(FoxVecDistance(before, after) < FOX_METRES(1) / 10, "the road keeps its ground");
+    EXPECT(FoxPlanetRaycast(planet, above, down, FOX_METRES(3), &after) &&
+               FoxVecDistance(before, after) < FOX_METRES(1) / 10,
+           "the road keeps its ground");
+    /* Ground heaped over the road roofs it over, a truck's height above. */
+    for (int64_t height = 6; height <= 12; height += 3)
+    {
+        (void)FoxWorldFill(world, FoxVecAdd(before, FoxVecScale(up, FOX_METRES(height), FOX_UNIT)),
+                           FOX_METRES(6), &changed);
+    }
+    EXPECT(FoxPlanetRaycast(planet, above, down, FOX_METRES(3), &after) &&
+               FoxVecDistance(before, after) < FOX_METRES(1) / 10,
+           "the road keeps its ground under the heap");
+    FoxVec roof;
+    EXPECT(!FoxPlanetRaycast(planet, above, up, FOX_METRES(3), &roof),
+           "the road keeps its room above");
+    EXPECT(FoxPlanetRaycast(planet, above, up, FOX_METRES(15), &roof), "and runs on in a tunnel");
     EXPECT(FoxWorldDig(world, offRoad, FOX_METRES(6), &changed) > 0u, "a block can be dug");
     FoxVec dug;
     EXPECT(FoxPlanetGround(planet, offRoad, &dug) && FoxVecLength(dug) < radius - FOX_METRES(3),

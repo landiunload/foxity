@@ -364,6 +364,8 @@ static void OnFrame(void *opaque)
         {
             FoxReviewErase(session->review);
         }
+        /* P types a letter in some layouts: it takes no shot later. */
+        (void)keys->consumeKeyPress(session->input, INPUT_KEY_P);
     }
     if (window->structSize >= LAIUE_WINDOW_SERVICE_V1_TEXT_SIZE && window->consumeText != NULL)
     {
