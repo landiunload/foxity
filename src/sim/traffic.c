@@ -475,11 +475,21 @@ static bool LeadsToDeadEnd(const FoxNetwork *network, uint32_t edge)
         const FoxRoad *road = &network->roads[edge / 2u];
         const uint32_t node = road->nodes[edge % 2u == 0u ? 1u : 0u];
         const FoxNode *record = &network->nodes[node];
-        if (record->roadCount != 2u)
+        const uint32_t cars = FoxNodeCarRoads(network, node);
+        if (cars != 2u)
         {
-            return record->roadCount == 1u;
+            return cars == 1u;
         }
-        const uint32_t next = record->roads[record->roads[0] == edge / 2u ? 1u : 0u];
+        /* The other road cars drive on; paths do not count. */
+        uint32_t next = edge / 2u;
+        for (uint32_t slot = 0u; slot < record->roadCount; ++slot)
+        {
+            const uint32_t other = record->roads[slot];
+            if (other != edge / 2u && FoxRoadLayoutCarLanes(&network->roads[other].layout) != 0u)
+            {
+                next = other;
+            }
+        }
         edge = next * 2u + (network->roads[next].nodes[0] == node ? 0u : 1u);
     }
     return false;
@@ -496,7 +506,7 @@ static bool TruckEnd(const FoxNetwork *network, uint32_t node)
         const uint32_t edge = road * 2u + (network->roads[road].nodes[0] == node ? 0u : 1u);
         if (network->roads[road].laneCount[edge % 2u] != 0u && !LeadsToDeadEnd(network, edge))
         {
-            return record->roadCount >= 3u;
+            return FoxNodeCarRoads(network, node) >= 3u;
         }
     }
     return false;
@@ -512,7 +522,8 @@ static uint32_t RandomNode(FoxTraffic *traffic, const FoxNetwork *network, uint3
     for (uint32_t attempt = 0u; attempt < 16u; ++attempt)
     {
         const uint32_t node = FoxRandomBelow(&traffic->random, network->nodeCapacity);
-        if (network->nodes[node].alive && node != avoid && !(truck && !TruckEnd(network, node)))
+        if (network->nodes[node].alive && node != avoid && FoxNodeCarRoads(network, node) != 0u &&
+            !(truck && !TruckEnd(network, node)))
         {
             return node;
         }
@@ -2663,7 +2674,7 @@ static int64_t SolidAt(const FoxNetwork *network, const FoxPath *lane, bool atEn
 {
     const FoxRoad *road = &network->roads[lane->road];
     const uint32_t node = road->nodes[(lane->direction == 0u) == atEnd ? 1u : 0u];
-    return network->nodes[node].roadCount >= 3u ? SOLID_NEAR : 0;
+    return FoxNodeCarRoads(network, node) >= 3u ? SOLID_NEAR : 0;
 }
 
 /* Whether a car would keep to a lane: its route goes on from there, and
@@ -2736,7 +2747,8 @@ static void ChangeLanes(FoxTraffic *traffic, FoxNetwork *network)
              * brake as hard for the one ahead there. */
             continue;
         }
-        const bool highway = network->roads[lane->road].type == FOX_ROAD_HIGHWAY;
+        /* On fast roads drivers keep to the curb lane unless they pass. */
+        const bool highway = network->roads[lane->road].speedLimit >= FOX_KMH(90);
         uint32_t best = NONE;
         int64_t bestGain = 0;
         for (int32_t side = -1; side <= 1; side += 2)
@@ -3456,6 +3468,108 @@ static void StoppableAt(const Driving *driving, int64_t speed, int64_t distance,
     }
 }
 
+/* ---- Pedestrian crossings ----------------------------------------------------- */
+
+/* Cars stop this far before a crossing somebody walks on, and a crossing
+ * counts as taken by a car within this much of it either way. */
+#define CROSSING_BACK (FOX_METRES(5) / 2)
+/* A walker steps out only when every car coming could still stop short of
+ * the crossing braking comfortably, with this much to spare and after
+ * reacting this long. */
+#define CROSSING_SPARE FOX_METRES(2)
+#define CROSSING_REACTION_MS 1000
+
+static bool WalkedOn(const FoxNetwork *network, uint32_t walk)
+{
+    return walk != NONE && network->paths[walk].claims != 0u;
+}
+
+/* How far ahead on `lane`, from `s` on it, the nearest crossing somebody
+ * walks on starts, the stopping point before it; HOLD_NONE without one, or
+ * once the car's front is past that point. */
+static int64_t CrossingStop(const FoxNetwork *network, const FoxPath *lane, int64_t s)
+{
+    for (uint32_t index = 0u; index < lane->crossingCount; ++index)
+    {
+        const int64_t line = lane->crossingAt[index] - CROSSING_BACK;
+        if (line >= s && WalkedOn(network, lane->crossingWalk[index]))
+        {
+            return line - s;
+        }
+    }
+    return HOLD_NONE;
+}
+
+/* Whether a car `distance` short of where it must stop could stop there
+ * comfortably, or is standing anyway. */
+static bool CouldStop(const Vehicle *vehicle, int64_t distance)
+{
+    const int64_t speed = vehicle->speed;
+    return speed <= STANDING_SPEED ||
+           BrakingDistance(vehicle) + speed * CROSSING_REACTION_MS / 1000 + CROSSING_SPARE <=
+               distance;
+}
+
+bool FoxTrafficCrossingClear(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t walk)
+{
+    const FoxPath *crossing = FoxNetworkPathRecord(network, walk);
+    if (traffic == NULL || crossing == NULL || crossing->road >= network->roadCapacity)
+    {
+        return false;
+    }
+    const FoxRoad *road = &network->roads[crossing->road];
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
+    {
+        for (uint32_t index = 0u; index < road->laneCount[direction]; ++index)
+        {
+            const uint32_t laneIndex = road->lanes[direction][index];
+            const FoxPath *lane = &network->paths[laneIndex];
+            int64_t at = HOLD_NONE;
+            for (uint32_t k = 0u; k < lane->crossingCount; ++k)
+            {
+                at = lane->crossingWalk[k] == walk ? lane->crossingAt[k] : at;
+            }
+            if (at == HOLD_NONE)
+            {
+                continue;
+            }
+            for (uint32_t slot = lane->back; slot != NONE; slot = traffic->vehicles[slot].ahead)
+            {
+                const Vehicle *vehicle = &traffic->vehicles[slot];
+                const int64_t rear = vehicle->s - DrivingOf(vehicle)->length;
+                if (rear < at + CROSSING_BACK && vehicle->s > at - CROSSING_BACK)
+                {
+                    return false;
+                }
+                if (vehicle->s <= at - CROSSING_BACK &&
+                    !CouldStop(vehicle, at - CROSSING_BACK - vehicle->s))
+                {
+                    return false;
+                }
+            }
+            /* Cars in the intersection on their way onto the lane. */
+            const FoxNode *node = &network->nodes[road->nodes[direction == 0u ? 0u : 1u]];
+            for (uint32_t c = 0u; c < node->connectionCount; ++c)
+            {
+                const FoxPath *way = &network->paths[node->connections[c]];
+                if (way->to != laneIndex)
+                {
+                    continue;
+                }
+                for (uint32_t slot = way->back; slot != NONE; slot = traffic->vehicles[slot].ahead)
+                {
+                    const Vehicle *vehicle = &traffic->vehicles[slot];
+                    if (!CouldStop(vehicle, way->length - vehicle->s + at - CROSSING_BACK))
+                    {
+                        return false;
+                    }
+                }
+            }
+        }
+    }
+    return true;
+}
+
 static void Accelerate(const FoxTraffic *traffic, const FoxNetwork *network, Vehicle *vehicle)
 {
     const FoxPath *path = FoxNetworkPathRecord(network, vehicle->path);
@@ -3648,6 +3762,17 @@ static void Accelerate(const FoxTraffic *traffic, const FoxNetwork *network, Veh
         travelled += upcoming->length;
         next = upcoming->kind == PATH_CONNECTION ? upcoming->to : onward;
     }
+    /* Short of a pedestrian crossing somebody walks on, on its lane or the
+     * next one. */
+    if (path->kind == PATH_LANE)
+    {
+        stop = FoxMin(stop, CrossingStop(network, path, vehicle->s));
+    }
+    else
+    {
+        const int64_t beyond = CrossingStop(network, FoxNetworkPathRecord(network, path->to), 0);
+        stop = beyond == HOLD_NONE ? stop : FoxMin(stop, path->length - vehicle->s + beyond);
+    }
     /* Where it waits inside the intersection, and short of a crossing still
      * taken. */
     const int64_t ahead = stop;
@@ -3748,6 +3873,15 @@ static void Integrate(FoxTraffic *traffic, const FoxNetwork *network, Vehicle *v
     {
         room = hold;
         roomSpeed = 0;
+    }
+    if (path->kind == PATH_LANE)
+    {
+        const int64_t crossing = CrossingStop(network, path, vehicle->s);
+        if (crossing != HOLD_NONE && crossing < room)
+        {
+            room = crossing;
+            roomSpeed = 0;
+        }
     }
     const bool turning = path->axle && vehicle->leg < path->cuspCount;
     if (turning && path->cusps[vehicle->leg] - vehicle->s < room)
@@ -4249,11 +4383,15 @@ void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network)
             vehicle->permitted = true;
         }
     }
-    /* Claims are counted afresh from the cars that still hold live ones. */
+    /* Claims are counted afresh from the cars that still hold live ones; the
+     * walkers count theirs on the walks. */
     for (uint32_t index = 0u; index < network->pathCapacity; ++index)
     {
-        network->paths[index].claims = 0u;
-        network->paths[index].incoming = 0u;
+        if (network->paths[index].kind != PATH_WALK)
+        {
+            network->paths[index].claims = 0u;
+            network->paths[index].incoming = 0u;
+        }
     }
     for (uint32_t slot = 0u; slot < traffic->capacity; ++slot)
     {

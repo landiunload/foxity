@@ -195,8 +195,8 @@ static float ShapeDistance(const Shape *shape, float x, float y)
         {
             const float normal =
                 p[4] * PI_F / 180.0f + (2.0f * (float)side + 1.0f) * PI_F / (float)sides;
-            distance = fmaxf(distance,
-                             (x - p[0]) * cosf(normal) + (y - p[1]) * sinf(normal) - apothem);
+            distance =
+                fmaxf(distance, (x - p[0]) * cosf(normal) + (y - p[1]) * sinf(normal) - apothem);
         }
         break;
     }
@@ -222,15 +222,18 @@ typedef enum Icon
     ICON_SPEED,
     ICON_PLAY,
     ICON_PAUSE,
-    ICON_SPEED_1,
-    ICON_SPEED_2,
-    ICON_SPEED_3,
     ICON_CHART,
-    ICON_STREET,
-    ICON_AVENUE,
-    ICON_BOULEVARD,
-    ICON_ONE_WAY,
-    ICON_HIGHWAY,
+    ICON_ASPHALT,
+    ICON_CONCRETE,
+    ICON_BIKE,
+    ICON_FOOT,
+    ICON_DIRECTION,
+    ICON_CROSSING,
+    ICON_PERSON,
+    ICON_CAR,
+    ICON_PLUS,
+    ICON_MINUS,
+    ICON_GROUND,
     ICON_MAGNET,
     ICON_ANGLE,
     ICON_RULER,
@@ -262,33 +265,35 @@ static const Shape pointerShapes[] = {
     SEG(11.5f, 13.5f, 15.0f, 20.0f, 3.0f),
 };
 static const Shape roadShapes[] = {
-    SEG(5.5f, 3.0f, 5.5f, 21.0f, 2.0f),   SEG(18.5f, 3.0f, 18.5f, 21.0f, 2.0f),
-    SEG(12.0f, 3.5f, 12.0f, 6.5f, 2.0f),  SEG(12.0f, 10.5f, 12.0f, 13.5f, 2.0f),
+    SEG(5.5f, 3.0f, 5.5f, 21.0f, 2.0f),    SEG(18.5f, 3.0f, 18.5f, 21.0f, 2.0f),
+    SEG(12.0f, 3.5f, 12.0f, 6.5f, 2.0f),   SEG(12.0f, 10.5f, 12.0f, 13.5f, 2.0f),
     SEG(12.0f, 17.5f, 12.0f, 20.5f, 2.0f),
 };
 static const Shape curveShapes[] = {
-    ARC(22.0f, 22.0f, 17.5f, 180.0f, 90.0f, 2.0f),
-    ARC(22.0f, 22.0f, 6.5f, 180.0f, 90.0f, 2.0f),
-    ARC(22.0f, 22.0f, 12.0f, 186.0f, 10.0f, 2.0f),
-    ARC(22.0f, 22.0f, 12.0f, 220.0f, 10.0f, 2.0f),
+    ARC(22.0f, 22.0f, 17.5f, 180.0f, 90.0f, 2.0f), ARC(22.0f, 22.0f, 6.5f, 180.0f, 90.0f, 2.0f),
+    ARC(22.0f, 22.0f, 12.0f, 186.0f, 10.0f, 2.0f), ARC(22.0f, 22.0f, 12.0f, 220.0f, 10.0f, 2.0f),
     ARC(22.0f, 22.0f, 12.0f, 254.0f, 10.0f, 2.0f),
 };
 static const Shape bulldozeShapes[] = {
-    SEG(4.5f, 6.0f, 19.5f, 6.0f, 2.0f),       SEG(10.0f, 3.5f, 14.0f, 3.5f, 2.0f),
+    SEG(4.5f, 6.0f, 19.5f, 6.0f, 2.0f),          SEG(10.0f, 3.5f, 14.0f, 3.5f, 2.0f),
     FRAME(6.5f, 8.5f, 17.5f, 21.0f, 2.0f, 2.0f), SEG(10.0f, 11.5f, 10.0f, 18.0f, 1.6f),
     SEG(14.0f, 11.5f, 14.0f, 18.0f, 1.6f),
 };
 static const Shape digShapes[] = {
-    SEG(3.0f, 20.0f, 21.0f, 20.0f, 2.0f), SEG(12.0f, 3.0f, 12.0f, 15.0f, 2.0f),
-    SEG(7.5f, 10.5f, 12.0f, 15.0f, 2.0f), SEG(16.5f, 10.5f, 12.0f, 15.0f, 2.0f),
+    SEG(3.0f, 20.0f, 21.0f, 20.0f, 2.0f),
+    SEG(12.0f, 3.0f, 12.0f, 15.0f, 2.0f),
+    SEG(7.5f, 10.5f, 12.0f, 15.0f, 2.0f),
+    SEG(16.5f, 10.5f, 12.0f, 15.0f, 2.0f),
 };
 static const Shape raiseShapes[] = {
-    SEG(3.0f, 20.0f, 21.0f, 20.0f, 2.0f), SEG(12.0f, 15.5f, 12.0f, 3.5f, 2.0f),
-    SEG(7.5f, 8.0f, 12.0f, 3.5f, 2.0f),   SEG(16.5f, 8.0f, 12.0f, 3.5f, 2.0f),
+    SEG(3.0f, 20.0f, 21.0f, 20.0f, 2.0f),
+    SEG(12.0f, 15.5f, 12.0f, 3.5f, 2.0f),
+    SEG(7.5f, 8.0f, 12.0f, 3.5f, 2.0f),
+    SEG(16.5f, 8.0f, 12.0f, 3.5f, 2.0f),
 };
 static const Shape zoneShapes[] = {
-    SEG(8.0f, 20.0f, 8.0f, 4.5f, 2.0f),   SEG(4.5f, 8.0f, 8.0f, 4.5f, 2.0f),
-    SEG(11.5f, 8.0f, 8.0f, 4.5f, 2.0f),   SEG(16.0f, 4.0f, 16.0f, 19.5f, 2.0f),
+    SEG(8.0f, 20.0f, 8.0f, 4.5f, 2.0f),    SEG(4.5f, 8.0f, 8.0f, 4.5f, 2.0f),
+    SEG(11.5f, 8.0f, 8.0f, 4.5f, 2.0f),    SEG(16.0f, 4.0f, 16.0f, 19.5f, 2.0f),
     SEG(12.5f, 16.0f, 16.0f, 19.5f, 2.0f), SEG(19.5f, 16.0f, 16.0f, 19.5f, 2.0f),
 };
 static const Shape signalsShapes[] = {
@@ -312,60 +317,74 @@ static const Shape pauseShapes[] = {
     BOX(6.5f, 5.0f, 10.5f, 19.0f, 1.2f),
     BOX(13.5f, 5.0f, 17.5f, 19.0f, 1.2f),
 };
-static const Shape speed1Shapes[] = {
-    SEG(9.5f, 6.0f, 15.0f, 12.0f, 2.4f),
-    SEG(15.0f, 12.0f, 9.5f, 18.0f, 2.4f),
-};
-static const Shape speed2Shapes[] = {
-    SEG(6.0f, 6.0f, 11.5f, 12.0f, 2.4f),  SEG(11.5f, 12.0f, 6.0f, 18.0f, 2.4f),
-    SEG(12.5f, 6.0f, 18.0f, 12.0f, 2.4f), SEG(18.0f, 12.0f, 12.5f, 18.0f, 2.4f),
-};
-static const Shape speed3Shapes[] = {
-    SEG(3.5f, 7.0f, 8.0f, 12.0f, 2.2f),   SEG(8.0f, 12.0f, 3.5f, 17.0f, 2.2f),
-    SEG(9.5f, 7.0f, 14.0f, 12.0f, 2.2f),  SEG(14.0f, 12.0f, 9.5f, 17.0f, 2.2f),
-    SEG(15.5f, 7.0f, 20.0f, 12.0f, 2.2f), SEG(20.0f, 12.0f, 15.5f, 17.0f, 2.2f),
-};
 static const Shape chartShapes[] = {
     BOX(4.0f, 13.0f, 8.0f, 20.5f, 1.2f),
     BOX(10.0f, 8.0f, 14.0f, 20.5f, 1.2f),
     BOX(16.0f, 3.5f, 20.0f, 20.5f, 1.2f),
 };
-static const Shape streetShapes[] = {
-    SEG(6.5f, 3.0f, 6.5f, 21.0f, 2.0f),   SEG(17.5f, 3.0f, 17.5f, 21.0f, 2.0f),
-    SEG(12.0f, 3.5f, 12.0f, 6.5f, 1.8f),  SEG(12.0f, 10.5f, 12.0f, 13.5f, 1.8f),
-    SEG(12.0f, 17.5f, 12.0f, 20.5f, 1.8f),
+/* A lane of asphalt with its dashed line cut out; one of concrete in slabs. */
+static const Shape asphaltShapes[] = {
+    BOX(5.0f, 2.0f, 19.0f, 22.0f, 2.0f),
+    CUT_SEG(12.0f, 4.0f, 12.0f, 8.0f, 2.0f),
+    CUT_SEG(12.0f, 11.0f, 12.0f, 14.0f, 2.0f),
+    CUT_SEG(12.0f, 17.0f, 12.0f, 20.5f, 2.0f),
 };
-static const Shape avenueShapes[] = {
-    SEG(3.0f, 3.0f, 3.0f, 21.0f, 2.0f),    SEG(21.0f, 3.0f, 21.0f, 21.0f, 2.0f),
-    SEG(11.1f, 3.0f, 11.1f, 21.0f, 1.2f),  SEG(12.9f, 3.0f, 12.9f, 21.0f, 1.2f),
-    SEG(7.0f, 4.0f, 7.0f, 7.0f, 1.5f),     SEG(7.0f, 10.5f, 7.0f, 13.5f, 1.5f),
-    SEG(7.0f, 17.0f, 7.0f, 20.0f, 1.5f),   SEG(17.0f, 4.0f, 17.0f, 7.0f, 1.5f),
-    SEG(17.0f, 10.5f, 17.0f, 13.5f, 1.5f), SEG(17.0f, 17.0f, 17.0f, 20.0f, 1.5f),
+static const Shape concreteShapes[] = {
+    FRAME(5.0f, 2.0f, 19.0f, 22.0f, 1.5f, 2.0f),
+    SEG(5.5f, 8.7f, 18.5f, 8.7f, 1.6f),
+    SEG(5.5f, 15.3f, 18.5f, 15.3f, 1.6f),
 };
-static const Shape boulevardShapes[] = {
-    SEG(2.0f, 3.0f, 2.0f, 21.0f, 2.0f),   SEG(9.5f, 3.0f, 9.5f, 21.0f, 2.0f),
-    SEG(14.5f, 3.0f, 14.5f, 21.0f, 2.0f), SEG(22.0f, 3.0f, 22.0f, 21.0f, 2.0f),
-    BOX(11.0f, 3.0f, 13.0f, 21.0f, 1.0f), SEG(5.75f, 4.0f, 5.75f, 7.0f, 1.5f),
-    SEG(5.75f, 10.5f, 5.75f, 13.5f, 1.5f), SEG(5.75f, 17.0f, 5.75f, 20.0f, 1.5f),
-    SEG(18.25f, 4.0f, 18.25f, 7.0f, 1.5f), SEG(18.25f, 10.5f, 18.25f, 13.5f, 1.5f),
-    SEG(18.25f, 17.0f, 18.25f, 20.0f, 1.5f),
+static const Shape bikeShapes[] = {
+    RING(6.0f, 15.5f, 4.0f, 1.7f),        RING(18.0f, 15.5f, 4.0f, 1.7f),
+    SEG(6.0f, 15.5f, 10.0f, 9.0f, 1.6f),  SEG(10.0f, 9.0f, 16.0f, 9.0f, 1.6f),
+    SEG(16.0f, 9.0f, 18.0f, 15.5f, 1.6f), SEG(10.0f, 9.0f, 12.5f, 15.5f, 1.6f),
+    SEG(12.5f, 15.5f, 16.0f, 9.0f, 1.6f), SEG(15.0f, 5.5f, 17.5f, 5.5f, 1.6f),
+    SEG(16.0f, 5.5f, 16.0f, 9.0f, 1.6f),  SEG(8.5f, 6.5f, 11.5f, 6.5f, 1.6f),
 };
-static const Shape oneWayShapes[] = {
-    SEG(5.0f, 3.0f, 5.0f, 21.0f, 2.0f),  SEG(19.0f, 3.0f, 19.0f, 21.0f, 2.0f),
-    SEG(12.0f, 19.0f, 12.0f, 6.0f, 2.0f), SEG(8.5f, 9.5f, 12.0f, 6.0f, 2.0f),
-    SEG(15.5f, 9.5f, 12.0f, 6.0f, 2.0f),
+static const Shape footShapes[] = {
+    DISC(13.0f, 4.2f, 2.4f),
+    SEG(12.5f, 8.5f, 10.5f, 14.0f, 2.6f),
+    SEG(10.5f, 14.0f, 7.5f, 21.0f, 2.2f),
+    SEG(10.5f, 14.0f, 14.5f, 21.0f, 2.2f),
+    SEG(12.0f, 9.5f, 16.5f, 12.5f, 2.0f),
+    SEG(12.0f, 9.5f, 7.5f, 12.5f, 2.0f),
 };
-static const Shape highwayShapes[] = {
-    SEG(2.5f, 3.0f, 2.5f, 21.0f, 2.0f),   SEG(21.5f, 3.0f, 21.5f, 21.0f, 2.0f),
-    SEG(8.8f, 4.0f, 8.8f, 7.0f, 1.5f),    SEG(8.8f, 10.5f, 8.8f, 13.5f, 1.5f),
-    SEG(8.8f, 17.0f, 8.8f, 20.0f, 1.5f),  SEG(15.2f, 4.0f, 15.2f, 7.0f, 1.5f),
-    SEG(15.2f, 10.5f, 15.2f, 13.5f, 1.5f), SEG(15.2f, 17.0f, 15.2f, 20.0f, 1.5f),
+static const Shape directionShapes[] = {
+    SEG(8.0f, 21.0f, 8.0f, 7.0f, 2.0f),
+    TRI(3.5f, 9.0f, 12.5f, 9.0f, 8.0f, 2.5f),
+    SEG(16.0f, 3.0f, 16.0f, 17.0f, 2.0f),
+    TRI(11.5f, 15.0f, 20.5f, 15.0f, 16.0f, 21.5f),
+};
+static const Shape crossingShapes[] = {
+    BOX(2.5f, 4.0f, 6.0f, 20.0f, 0.8f),
+    BOX(8.0f, 4.0f, 11.0f, 20.0f, 0.8f),
+    BOX(13.0f, 4.0f, 16.0f, 20.0f, 0.8f),
+    BOX(18.0f, 4.0f, 21.5f, 20.0f, 0.8f),
+};
+static const Shape personShapes[] = {
+    DISC(12.0f, 6.5f, 3.8f),
+    BOX(5.5f, 12.0f, 18.5f, 21.5f, 4.5f),
+};
+static const Shape carShapes[] = {
+    BOX(2.5f, 10.5f, 21.5f, 17.0f, 2.5f),
+    BOX(6.5f, 6.0f, 16.5f, 12.0f, 2.5f),
+    DISC(7.0f, 17.5f, 2.6f),
+    DISC(17.0f, 17.5f, 2.6f),
+    CUT_DISC(7.0f, 17.5f, 1.0f),
+    CUT_DISC(17.0f, 17.5f, 1.0f),
+};
+static const Shape plusShapes[] = {
+    SEG(12.0f, 5.0f, 12.0f, 19.0f, 2.4f),
+    SEG(5.0f, 12.0f, 19.0f, 12.0f, 2.4f),
+};
+static const Shape minusShapes[] = {SEG(5.0f, 12.0f, 19.0f, 12.0f, 2.4f)};
+static const Shape groundShapes[] = {
+    TRI(1.5f, 20.0f, 9.5f, 6.0f, 17.5f, 20.0f),
+    TRI(10.5f, 20.0f, 16.0f, 11.0f, 22.5f, 20.0f),
 };
 static const Shape magnetShapes[] = {
-    ARC(12.0f, 12.5f, 6.25f, 0.0f, 180.0f, 4.5f),
-    BOX(3.5f, 3.5f, 8.0f, 12.5f, 0.0f),
-    BOX(16.0f, 3.5f, 20.5f, 12.5f, 0.0f),
-    CUT_SEG(2.0f, 7.0f, 9.5f, 7.0f, 1.2f),
+    ARC(12.0f, 12.5f, 6.25f, 0.0f, 180.0f, 4.5f), BOX(3.5f, 3.5f, 8.0f, 12.5f, 0.0f),
+    BOX(16.0f, 3.5f, 20.5f, 12.5f, 0.0f),         CUT_SEG(2.0f, 7.0f, 9.5f, 7.0f, 1.2f),
     CUT_SEG(14.5f, 7.0f, 22.0f, 7.0f, 1.2f),
 };
 static const Shape angleShapes[] = {
@@ -375,19 +394,19 @@ static const Shape angleShapes[] = {
 };
 static const Shape rulerShapes[] = {
     FRAME(2.0f, 7.5f, 22.0f, 16.5f, 1.5f, 1.8f), SEG(6.0f, 8.5f, 6.0f, 12.5f, 1.4f),
-    SEG(10.0f, 8.5f, 10.0f, 11.0f, 1.4f),         SEG(14.0f, 8.5f, 14.0f, 12.5f, 1.4f),
+    SEG(10.0f, 8.5f, 10.0f, 11.0f, 1.4f),        SEG(14.0f, 8.5f, 14.0f, 12.5f, 1.4f),
     SEG(18.0f, 8.5f, 18.0f, 11.0f, 1.4f),
 };
 static const Shape gridShapes[] = {
     FRAME(3.0f, 3.0f, 21.0f, 21.0f, 2.5f, 1.8f), SEG(9.0f, 3.5f, 9.0f, 20.5f, 1.4f),
-    SEG(15.0f, 3.5f, 15.0f, 20.5f, 1.4f),         SEG(3.5f, 9.0f, 20.5f, 9.0f, 1.4f),
+    SEG(15.0f, 3.5f, 15.0f, 20.5f, 1.4f),        SEG(3.5f, 9.0f, 20.5f, 9.0f, 1.4f),
     SEG(3.5f, 15.0f, 20.5f, 15.0f, 1.4f),
 };
 static const Shape guidesShapes[] = {
-    SEG(2.5f, 15.0f, 5.5f, 15.0f, 1.6f),  SEG(15.5f, 15.0f, 18.5f, 15.0f, 1.6f),
+    SEG(2.5f, 15.0f, 5.5f, 15.0f, 1.6f),   SEG(15.5f, 15.0f, 18.5f, 15.0f, 1.6f),
     SEG(20.5f, 15.0f, 21.5f, 15.0f, 1.6f), SEG(13.5f, 12.5f, 15.5f, 10.5f, 1.6f),
-    SEG(17.5f, 8.5f, 19.5f, 6.5f, 1.6f),  SEG(5.0f, 21.0f, 7.0f, 19.0f, 1.6f),
-    RING(11.0f, 15.0f, 3.0f, 1.8f),       DISC(11.0f, 15.0f, 1.0f),
+    SEG(17.5f, 8.5f, 19.5f, 6.5f, 1.6f),   SEG(5.0f, 21.0f, 7.0f, 19.0f, 1.6f),
+    RING(11.0f, 15.0f, 3.0f, 1.8f),        DISC(11.0f, 15.0f, 1.0f),
 };
 static const Shape tangentShapes[] = {
     SEG(3.0f, 21.0f, 11.0f, 13.0f, 2.0f),
@@ -395,8 +414,8 @@ static const Shape tangentShapes[] = {
     DISC(11.0f, 13.0f, 2.2f),
 };
 static const Shape signAutoShapes[] = {
-    SEG(4.5f, 19.5f, 14.5f, 9.5f, 2.4f),  SEG(17.0f, 3.0f, 17.0f, 7.0f, 1.5f),
-    SEG(15.0f, 5.0f, 19.0f, 5.0f, 1.5f),  SEG(20.0f, 10.0f, 20.0f, 13.0f, 1.3f),
+    SEG(4.5f, 19.5f, 14.5f, 9.5f, 2.4f),   SEG(17.0f, 3.0f, 17.0f, 7.0f, 1.5f),
+    SEG(15.0f, 5.0f, 19.0f, 5.0f, 1.5f),   SEG(20.0f, 10.0f, 20.0f, 13.0f, 1.3f),
     SEG(18.5f, 11.5f, 21.5f, 11.5f, 1.3f), SEG(10.0f, 3.0f, 10.0f, 6.0f, 1.3f),
     SEG(8.5f, 4.5f, 11.5f, 4.5f, 1.3f),
 };
@@ -442,15 +461,18 @@ static const IconDrawing iconDrawings[ICON_COUNT] = {
     [ICON_SPEED] = DRAWING(speedShapes),
     [ICON_PLAY] = DRAWING(playShapes),
     [ICON_PAUSE] = DRAWING(pauseShapes),
-    [ICON_SPEED_1] = DRAWING(speed1Shapes),
-    [ICON_SPEED_2] = DRAWING(speed2Shapes),
-    [ICON_SPEED_3] = DRAWING(speed3Shapes),
     [ICON_CHART] = DRAWING(chartShapes),
-    [ICON_STREET] = DRAWING(streetShapes),
-    [ICON_AVENUE] = DRAWING(avenueShapes),
-    [ICON_BOULEVARD] = DRAWING(boulevardShapes),
-    [ICON_ONE_WAY] = DRAWING(oneWayShapes),
-    [ICON_HIGHWAY] = DRAWING(highwayShapes),
+    [ICON_ASPHALT] = DRAWING(asphaltShapes),
+    [ICON_CONCRETE] = DRAWING(concreteShapes),
+    [ICON_BIKE] = DRAWING(bikeShapes),
+    [ICON_FOOT] = DRAWING(footShapes),
+    [ICON_DIRECTION] = DRAWING(directionShapes),
+    [ICON_CROSSING] = DRAWING(crossingShapes),
+    [ICON_PERSON] = DRAWING(personShapes),
+    [ICON_CAR] = DRAWING(carShapes),
+    [ICON_PLUS] = DRAWING(plusShapes),
+    [ICON_MINUS] = DRAWING(minusShapes),
+    [ICON_GROUND] = DRAWING(groundShapes),
     [ICON_MAGNET] = DRAWING(magnetShapes),
     [ICON_ANGLE] = DRAWING(angleShapes),
     [ICON_RULER] = DRAWING(rulerShapes),
@@ -472,11 +494,12 @@ static const IconDrawing iconDrawings[ICON_COUNT] = {
 
 /* ---- Digits ----------------------------------------------------------------------------- */
 
-/* Figures for measurements, drawn on a 10 by 16 grid; the last two glyphs are
- * the decimal point and the degree sign. */
-#define GLYPH_COUNT 12u
+/* Figures for measurements, drawn on a 10 by 16 grid; the last three glyphs
+ * are the decimal point, the degree sign and the times sign. */
+#define GLYPH_COUNT 13u
 #define GLYPH_POINT 10u
 #define GLYPH_DEGREE 11u
+#define GLYPH_TIMES 12u
 
 static const Shape zeroShapes[] = {FRAME(1.5f, 1.5f, 8.5f, 14.5f, 3.5f, 1.8f)};
 static const Shape oneShapes[] = {
@@ -520,15 +543,20 @@ static const Shape nineShapes[] = {
 };
 static const Shape pointShapes[] = {DISC(2.5f, 13.6f, 1.2f)};
 static const Shape degreeShapes[] = {RING(3.0f, 3.2f, 2.0f, 1.4f)};
+static const Shape timesShapes[] = {
+    SEG(2.0f, 7.0f, 7.5f, 13.5f, 1.7f),
+    SEG(7.5f, 7.0f, 2.0f, 13.5f, 1.7f),
+};
 
 static const IconDrawing glyphDrawings[GLYPH_COUNT] = {
-    DRAWING(zeroShapes),  DRAWING(oneShapes),   DRAWING(twoShapes),   DRAWING(threeShapes),
-    DRAWING(fourShapes),  DRAWING(fiveShapes),  DRAWING(sixShapes),   DRAWING(sevenShapes),
-    DRAWING(eightShapes), DRAWING(nineShapes),  DRAWING(pointShapes), DRAWING(degreeShapes),
+    DRAWING(zeroShapes),  DRAWING(oneShapes),  DRAWING(twoShapes),   DRAWING(threeShapes),
+    DRAWING(fourShapes),  DRAWING(fiveShapes), DRAWING(sixShapes),   DRAWING(sevenShapes),
+    DRAWING(eightShapes), DRAWING(nineShapes), DRAWING(pointShapes), DRAWING(degreeShapes),
+    DRAWING(timesShapes),
 };
 /* How far each glyph moves the pen, in grid units. */
-static const float glyphAdvance[GLYPH_COUNT] = {10.5f, 8.5f, 10.5f, 10.5f, 10.5f, 10.5f,
-                                                10.5f, 10.5f, 10.5f, 10.5f, 5.0f, 7.0f};
+static const float glyphAdvance[GLYPH_COUNT] = {10.5f, 8.5f,  10.5f, 10.5f, 10.5f, 10.5f, 10.5f,
+                                                10.5f, 10.5f, 10.5f, 5.0f,  7.0f,  9.5f};
 
 /* ---- Atlas ------------------------------------------------------------------------------ */
 
@@ -540,12 +568,12 @@ static const float glyphAdvance[GLYPH_COUNT] = {10.5f, 8.5f, 10.5f, 10.5f, 10.5f
 #define GLYPH_CELL_WIDTH 20u
 #define GLYPH_CELL_HEIGHT 32u
 #define ATLAS_WIDTH 512u
-#define ATLAS_HEIGHT 256u
-#define ICON_ROWS 4u
+#define ATLAS_HEIGHT 512u
+#define ICON_ROWS 5u
 #define GLYPH_TOP (ICON_ROWS * ICON_CELL)
 
-_Static_assert(ICONS_PER_ROW * ICON_CELL <= ATLAS_WIDTH, "icons fit the atlas across");
-_Static_assert(ICON_ROWS * ICONS_PER_ROW >= ICON_COUNT, "every icon has a cell");
+_Static_assert(ICONS_PER_ROW *ICON_CELL <= ATLAS_WIDTH, "icons fit the atlas across");
+_Static_assert(ICON_ROWS *ICONS_PER_ROW >= ICON_COUNT, "every icon has a cell");
 _Static_assert(GLYPH_TOP + GLYPH_CELL_HEIGHT <= ATLAS_HEIGHT, "glyphs fit below the icons");
 
 static void Paint(uint8_t *atlas, uint32_t left, uint32_t top, uint32_t width, uint32_t height,
@@ -652,6 +680,10 @@ static uint32_t GlyphOf(char character)
     {
         return (uint32_t)(character - '0');
     }
+    if (character == 'x')
+    {
+        return GLYPH_TIMES;
+    }
     return character == '.' ? GLYPH_POINT : GLYPH_DEGREE;
 }
 
@@ -666,8 +698,8 @@ static float FiguresWidth(const char *text, float height)
     return width;
 }
 
-/* Figures from the left at a vertical centre: digits, '.' and '*' for the
- * degree sign. */
+/* Figures from the left at a vertical centre: digits, '.', '*' for the
+ * degree sign and 'x' for times. */
 static void Figures(FoxUi *ui, const char *text, float left, float centreY, float height,
                     uint32_t color)
 {
@@ -850,10 +882,11 @@ void FoxUiDestroy(FoxUi *ui)
 
 typedef enum DockKind
 {
-    DOCK_TOOL = 0,
+    DOCK_POINTER = 0,
     DOCK_DIVIDER,
+    DOCK_TAB,
     DOCK_PAUSE,
-    DOCK_TIME,
+    DOCK_SPEED,
     DOCK_STATISTICS,
 } DockKind;
 
@@ -865,33 +898,84 @@ typedef struct DockItem
 } DockItem;
 
 static const DockItem dockItems[] = {
-    {DOCK_TOOL, FOX_TOOL_NONE, ICON_POINTER},
+    {DOCK_POINTER, 0u, ICON_POINTER},
     {DOCK_DIVIDER, 0u, 0u},
-    {DOCK_TOOL, FOX_TOOL_ROAD, ICON_ROAD},
-    {DOCK_TOOL, FOX_TOOL_CURVE, ICON_CURVE},
-    {DOCK_TOOL, FOX_TOOL_BULLDOZE, ICON_BULLDOZE},
-    {DOCK_DIVIDER, 0u, 0u},
-    {DOCK_TOOL, FOX_TOOL_SIGNALS, ICON_SIGNALS},
-    {DOCK_TOOL, FOX_TOOL_SIGNS, ICON_SIGNS},
-    {DOCK_TOOL, FOX_TOOL_SPEED_LIMIT, ICON_SPEED},
-    {DOCK_TOOL, FOX_TOOL_DRIVE_ZONE, ICON_ZONE},
-    {DOCK_DIVIDER, 0u, 0u},
-    {DOCK_TOOL, FOX_TOOL_DIG, ICON_DIG},
-    {DOCK_TOOL, FOX_TOOL_RAISE, ICON_RAISE},
+    {DOCK_TAB, FOX_TAB_ROADS, ICON_ROAD},
+    {DOCK_TAB, FOX_TAB_RULES, ICON_SIGNS},
+    {DOCK_TAB, FOX_TAB_GROUND, ICON_GROUND},
+    {DOCK_TAB, FOX_TAB_PEOPLE, ICON_PERSON},
     {DOCK_DIVIDER, 0u, 0u},
     {DOCK_PAUSE, 0u, ICON_PAUSE},
-    {DOCK_TIME, 0u, ICON_SPEED_1},
-    {DOCK_TIME, 1u, ICON_SPEED_2},
-    {DOCK_TIME, 2u, ICON_SPEED_3},
+    {DOCK_SPEED, 0u, ICON_PLAY},
     {DOCK_DIVIDER, 0u, 0u},
     {DOCK_STATISTICS, 0u, ICON_CHART},
 };
 #define DOCK_ITEM_COUNT ((uint32_t)(sizeof(dockItems) / sizeof(dockItems[0])))
 
-static const Icon roadIcons[FOX_ROAD_TYPE_COUNT] = {
-    [FOX_ROAD_STREET] = ICON_STREET,       [FOX_ROAD_AVENUE] = ICON_AVENUE,
-    [FOX_ROAD_BOULEVARD] = ICON_BOULEVARD, [FOX_ROAD_ONE_WAY] = ICON_ONE_WAY,
-    [FOX_ROAD_HIGHWAY] = ICON_HIGHWAY,
+typedef struct ToolButton
+{
+    FoxTool tool;
+    Icon icon;
+} ToolButton;
+
+/* The tools under each tab, in the order of their row. */
+static const ToolButton roadTools[] = {
+    {FOX_TOOL_ROAD, ICON_ROAD},
+    {FOX_TOOL_CURVE, ICON_CURVE},
+    {FOX_TOOL_DIRECTION, ICON_DIRECTION},
+    {FOX_TOOL_BULLDOZE, ICON_BULLDOZE},
+};
+static const ToolButton ruleTools[] = {
+    {FOX_TOOL_SIGNS, ICON_SIGNS},       {FOX_TOOL_SIGNALS, ICON_SIGNALS},
+    {FOX_TOOL_SPEED_LIMIT, ICON_SPEED}, {FOX_TOOL_CROSSING, ICON_CROSSING},
+    {FOX_TOOL_DRIVE_ZONE, ICON_ZONE},
+};
+static const ToolButton groundTools[] = {
+    {FOX_TOOL_DIG, ICON_DIG},
+    {FOX_TOOL_RAISE, ICON_RAISE},
+};
+
+typedef struct TabTools
+{
+    const ToolButton *buttons;
+    uint32_t count;
+} TabTools;
+
+#define TOOLS(buttons) {(buttons), (uint32_t)(sizeof(buttons) / sizeof((buttons)[0]))}
+
+static const TabTools tabTools[FOX_TAB_COUNT] = {
+    [FOX_TAB_ROADS] = TOOLS(roadTools),
+    [FOX_TAB_RULES] = TOOLS(ruleTools),
+    [FOX_TAB_GROUND] = TOOLS(groundTools),
+};
+
+FoxTab FoxToolTab(FoxTool tool)
+{
+    for (uint32_t tab = 0u; tab < FOX_TAB_COUNT; ++tab)
+    {
+        for (uint32_t index = 0u; index < tabTools[tab].count; ++index)
+        {
+            if (tabTools[tab].buttons[index].tool == tool)
+            {
+                return (FoxTab)tab;
+            }
+        }
+    }
+    return FOX_TAB_NONE;
+}
+
+uint32_t FoxTimeScaleFactor(uint32_t scale)
+{
+    static const uint32_t factors[FOX_TIME_SCALE_COUNT] = {1u, 2u, 4u};
+    return factors[scale < FOX_TIME_SCALE_COUNT ? scale : 0u];
+}
+
+/* The kinds of lane the road tools lay. */
+static const Icon laneIcons[FOX_LANE_KIND_COUNT] = {
+    [FOX_LANE_ASPHALT] = ICON_ASPHALT,
+    [FOX_LANE_CONCRETE] = ICON_CONCRETE,
+    [FOX_LANE_BIKE] = ICON_BIKE,
+    [FOX_LANE_FOOT] = ICON_FOOT,
 };
 
 typedef struct SnapButton
@@ -901,8 +985,9 @@ typedef struct SnapButton
 } SnapButton;
 
 static const SnapButton snapButtons[] = {
-    {FOX_SNAP_NETWORK, ICON_MAGNET}, {FOX_SNAP_ANGLE, ICON_ANGLE},   {FOX_SNAP_LENGTH, ICON_RULER},
-    {FOX_SNAP_GRID, ICON_GRID},      {FOX_SNAP_GUIDES, ICON_GUIDES}, {FOX_SNAP_TANGENT, ICON_TANGENT},
+    {FOX_SNAP_NETWORK, ICON_MAGNET}, {FOX_SNAP_ANGLE, ICON_ANGLE},
+    {FOX_SNAP_LENGTH, ICON_RULER},   {FOX_SNAP_GRID, ICON_GRID},
+    {FOX_SNAP_GUIDES, ICON_GUIDES},  {FOX_SNAP_TANGENT, ICON_TANGENT},
 };
 
 static const FoxSign signChoices[] = {FOX_SIGN_AUTO, FOX_SIGN_NONE, FOX_SIGN_PRIORITY,
@@ -982,22 +1067,22 @@ static void RoadPopover(FoxUi *ui, FoxBuildSettings *settings, float anchorX, fl
     const float labelWidth = PANEL_ICON * s + gap;
     const float angleWidth = labelWidth + SEGMENT_WIDTH * s * (float)FOX_ANGLE_STEP_COUNT;
     const float lengthWidth = labelWidth + SEGMENT_WIDTH * s * (float)FOX_LENGTH_STEP_COUNT;
-    const float inner = fmaxf(fmaxf(RowWidth(FOX_ROAD_TYPE_COUNT, s), RowWidth(snapCount, s)),
+    const float inner = fmaxf(fmaxf(RowWidth(FOX_LANE_KIND_COUNT, s), RowWidth(snapCount, s)),
                               fmaxf(angleWidth, lengthWidth));
     const float separator = 9.0f * s;
-    const float height = padding * 2.0f + button * 2.0f + gap + separator * 2.0f +
-                         SEGMENT_HEIGHT * s * 2.0f + gap;
+    const float height =
+        padding * 2.0f + button * 2.0f + gap + separator * 2.0f + SEGMENT_HEIGHT * s * 2.0f + gap;
     float left = 0.0f;
     float top = 0.0f;
     PopoverFrame(ui, anchorX, bottom, inner + padding * 2.0f, height, &left, &top);
     float y = top + padding;
-    float x = left + padding + (inner - RowWidth(FOX_ROAD_TYPE_COUNT, s)) / 2.0f;
-    for (uint32_t type = 0u; type < FOX_ROAD_TYPE_COUNT; ++type)
+    float x = left + padding + (inner - RowWidth(FOX_LANE_KIND_COUNT, s)) / 2.0f;
+    for (uint32_t kind = 0u; kind < FOX_LANE_KIND_COUNT; ++kind)
     {
-        if (Button(ui, x, y, button, PANEL_ICON * s, roadIcons[type],
-                   settings->roadType == (FoxRoadType)type ? LOOK_CHOSEN : LOOK_PLAIN))
+        if (Button(ui, x, y, button, PANEL_ICON * s, laneIcons[kind],
+                   settings->laneKind == (FoxLaneKind)kind ? LOOK_CHOSEN : LOOK_PLAIN))
         {
-            settings->roadType = (FoxRoadType)type;
+            settings->laneKind = (FoxLaneKind)kind;
         }
         x += button + gap;
     }
@@ -1150,12 +1235,109 @@ static void Readout(FoxUi *ui)
     Figures(ui, angle, x, middle, figures, COLOR_ICON);
 }
 
+/* How many cars or people, with a button for fewer and one for more:
+ * -1, 0 or 1 for which was pressed. */
+static int32_t CountRow(FoxUi *ui, float x, float y, Icon icon, uint32_t count, float width)
+{
+    const float s = ui->scale;
+    const float button = PANEL_BUTTON * s;
+    DrawIcon(ui, icon, x + button / 2.0f, y + button / 2.0f, PANEL_ICON * s, COLOR_ICON);
+    int32_t change = 0;
+    if (Button(ui, x + button + PANEL_GAP * s, y, button, PANEL_ICON * s, ICON_MINUS, LOOK_PLAIN))
+    {
+        change = -1;
+    }
+    if (Button(ui, x + width - button, y, button, PANEL_ICON * s, ICON_PLUS, LOOK_PLAIN))
+    {
+        change = 1;
+    }
+    char figures[16];
+    (void)snprintf(figures, sizeof(figures), "%u", count);
+    const float height = DIGIT_HEIGHT * s;
+    const float middle =
+        x + button * 2.0f + PANEL_GAP * s + (width - button * 3.0f - PANEL_GAP * s) / 2.0f;
+    Figures(ui, figures, middle - FiguresWidth(figures, height) / 2.0f, y + button / 2.0f, height,
+            COLOR_ICON);
+    return change;
+}
+
+/* The people tab: how many cars and walkers the city keeps. */
+static void PeoplePopover(FoxUi *ui, const FoxUiStatus *status, FoxUiRequests *requests,
+                          float anchorX, float bottom)
+{
+    const float s = ui->scale;
+    const float padding = PANEL_PADDING * s;
+    const float button = PANEL_BUTTON * s;
+    const float width = button * 3.0f + PANEL_GAP * s + 70.0f * s;
+    float left = 0.0f;
+    float top = 0.0f;
+    PopoverFrame(ui, anchorX, bottom, width + padding * 2.0f,
+                 button * 2.0f + PANEL_GAP * s + padding * 2.0f, &left, &top);
+    requests->carsChange =
+        CountRow(ui, left + padding, top + padding, ICON_CAR, status->cars, width);
+    requests->walkersChange = CountRow(ui, left + padding, top + padding + button + PANEL_GAP * s,
+                                       ICON_PERSON, status->walkers, width);
+}
+
+/* The tools of the open tab in a row over its button; where the chosen one
+ * stands, through outAnchor, or -1 when it is not in the row. */
+static float ToolRow(FoxUi *ui, FoxBuildSettings *settings, float anchorX, float bottom,
+                     float *outTop)
+{
+    const TabTools *row = &tabTools[settings->tab];
+    const float s = ui->scale;
+    const float padding = PANEL_PADDING * s;
+    const float button = PANEL_BUTTON * s;
+    float left = 0.0f;
+    float top = 0.0f;
+    PopoverFrame(ui, anchorX, bottom, RowWidth(row->count, s) + padding * 2.0f,
+                 button + padding * 2.0f, &left, &top);
+    *outTop = top;
+    float anchor = -1.0f;
+    for (uint32_t index = 0u; index < row->count; ++index)
+    {
+        const ToolButton *tool = &row->buttons[index];
+        const float x = left + padding + (float)index * (button + PANEL_GAP * s);
+        const bool chosen = settings->tool == tool->tool;
+        if (chosen)
+        {
+            anchor = x + button / 2.0f;
+        }
+        if (Button(ui, x, top + padding, button, PANEL_ICON * s, tool->icon,
+                   chosen ? LOOK_CHOSEN : LOOK_PLAIN))
+        {
+            /* The chosen tool again folds or unfolds its panel. */
+            ui->folded = chosen && !ui->folded;
+            settings->tool = tool->tool;
+            ui->shownTool = settings->tool;
+            anchor = x + button / 2.0f;
+        }
+    }
+    return anchor;
+}
+
+/* The speed button: x1, x2 or x4, on to the next one at a press. */
+static bool SpeedToggle(FoxUi *ui, float x, float y, float size, const FoxUiStatus *status)
+{
+    const bool hover = Inside(ui, x, y, x + size, y + size);
+    if (hover)
+    {
+        Box(ui, x, y, x + size, y + size, COLOR_HOVER, size * 0.26f);
+    }
+    char label[8];
+    (void)snprintf(label, sizeof(label), "x%u", FoxTimeScaleFactor(status->timeScale));
+    const float height = 17.0f * ui->scale;
+    Figures(ui, label, x + (size - FiguresWidth(label, height)) / 2.0f, y + size / 2.0f, height,
+            status->paused ? COLOR_ICON_DIM : COLOR_ACCENT);
+    return Pressed(ui, x, y, x + size, y + size);
+}
+
 bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
                  FoxBuildSettings *settings, FoxUiRequests *requests)
 {
     if (requests != NULL)
     {
-        *requests = (FoxUiRequests){.timeScale = -1};
+        *requests = (FoxUiRequests){0};
     }
     if (ui == NULL || input == NULL || status == NULL || settings == NULL || requests == NULL)
     {
@@ -1194,7 +1376,7 @@ bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
 
     float x = left + DOCK_PADDING * s;
     const float y = top + DOCK_PADDING * s;
-    float anchor = -1.0f;
+    float tabAnchor = -1.0f;
     for (uint32_t index = 0u; index < DOCK_ITEM_COUNT; ++index)
     {
         const DockItem *item = &dockItems[index];
@@ -1206,23 +1388,30 @@ bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
             x += GROUP_GAP * s;
             continue;
         }
+        if (item->kind == DOCK_SPEED)
+        {
+            requests->nextTimeScale = SpeedToggle(ui, x, y, button, status);
+            x += button + gap;
+            continue;
+        }
         Look look = LOOK_PLAIN;
         Icon icon = (Icon)item->icon;
         switch (item->kind)
         {
-        case DOCK_TOOL:
-            look = settings->tool == (FoxTool)item->value ? LOOK_CHOSEN : LOOK_PLAIN;
+        case DOCK_POINTER:
+            look = settings->tab == FOX_TAB_NONE && settings->tool == FOX_TOOL_NONE ? LOOK_CHOSEN
+                                                                                    : LOOK_PLAIN;
+            break;
+        case DOCK_TAB:
+            look = settings->tab == (FoxTab)item->value ? LOOK_CHOSEN : LOOK_PLAIN;
             if (look == LOOK_CHOSEN)
             {
-                anchor = x + button / 2.0f;
+                tabAnchor = x + button / 2.0f;
             }
             break;
         case DOCK_PAUSE:
             icon = status->paused ? ICON_PLAY : ICON_PAUSE;
             look = status->paused ? LOOK_ON : LOOK_PLAIN;
-            break;
-        case DOCK_TIME:
-            look = !status->paused && status->timeScale == item->value ? LOOK_ON : LOOK_PLAIN;
             break;
         default:
             look = status->statistics ? LOOK_ON : LOOK_PLAIN;
@@ -1232,17 +1421,31 @@ bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
         {
             switch (item->kind)
             {
-            case DOCK_TOOL:
-                /* The chosen tool again folds or unfolds its panel. */
-                ui->folded = settings->tool == (FoxTool)item->value && !ui->folded;
-                settings->tool = (FoxTool)item->value;
-                ui->shownTool = settings->tool;
+            case DOCK_POINTER:
+                settings->tab = FOX_TAB_NONE;
+                settings->tool = FOX_TOOL_NONE;
+                break;
+            case DOCK_TAB:
+                if (settings->tab == (FoxTab)item->value)
+                {
+                    /* The open tab again closes it and puts the tool down. */
+                    settings->tab = FOX_TAB_NONE;
+                    settings->tool = FOX_TOOL_NONE;
+                    tabAnchor = -1.0f;
+                }
+                else
+                {
+                    settings->tab = (FoxTab)item->value;
+                    if (FoxToolTab(settings->tool) != settings->tab)
+                    {
+                        const TabTools *row = &tabTools[settings->tab];
+                        settings->tool = row->count != 0u ? row->buttons[0].tool : FOX_TOOL_NONE;
+                    }
+                    tabAnchor = x + button / 2.0f;
+                }
                 break;
             case DOCK_PAUSE:
                 requests->togglePause = true;
-                break;
-            case DOCK_TIME:
-                requests->timeScale = item->value;
                 break;
             default:
                 requests->toggleStatistics = true;
@@ -1255,26 +1458,36 @@ bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
     }
 
     const float bottom = top - PANEL_ABOVE * s;
-    if (anchor >= 0.0f && !ui->folded)
+    if (tabAnchor >= 0.0f && settings->tab == FOX_TAB_PEOPLE)
     {
-        switch (settings->tool)
+        PeoplePopover(ui, status, requests, tabAnchor, bottom);
+    }
+    else if (tabAnchor >= 0.0f && tabTools[settings->tab].count != 0u)
+    {
+        float rowTop = 0.0f;
+        const float anchor = ToolRow(ui, settings, tabAnchor, bottom, &rowTop);
+        const float above = rowTop - PANEL_ABOVE * s;
+        if (anchor >= 0.0f && !ui->folded)
         {
-        case FOX_TOOL_ROAD:
-        case FOX_TOOL_CURVE:
-            RoadPopover(ui, settings, anchor, bottom);
-            break;
-        case FOX_TOOL_SIGNS:
-            SignPopover(ui, settings, anchor, bottom);
-            break;
-        case FOX_TOOL_SPEED_LIMIT:
-            SpeedPopover(ui, settings, anchor, bottom);
-            break;
-        case FOX_TOOL_DIG:
-        case FOX_TOOL_RAISE:
-            BrushPopover(ui, settings, anchor, bottom);
-            break;
-        default:
-            break;
+            switch (settings->tool)
+            {
+            case FOX_TOOL_ROAD:
+            case FOX_TOOL_CURVE:
+                RoadPopover(ui, settings, anchor, above);
+                break;
+            case FOX_TOOL_SIGNS:
+                SignPopover(ui, settings, anchor, above);
+                break;
+            case FOX_TOOL_SPEED_LIMIT:
+                SpeedPopover(ui, settings, anchor, above);
+                break;
+            case FOX_TOOL_DIG:
+            case FOX_TOOL_RAISE:
+                BrushPopover(ui, settings, anchor, above);
+                break;
+            default:
+                break;
+            }
         }
     }
     if (!ui->over)

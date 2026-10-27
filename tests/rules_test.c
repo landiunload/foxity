@@ -414,7 +414,7 @@ static bool BuildCountryRoad(FoxWorld *world)
             .control = {(int64_t)llround(out * cos(middle)), (int64_t)llround(out * sin(middle)),
                         0},
             .curved = true,
-            .type = FOX_ROAD_STREET,
+            .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET),
         };
         ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
     }

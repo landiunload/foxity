@@ -22,6 +22,8 @@ typedef struct FoxClientOptions
      * presentation path works on this machine. */
     uint32_t smokeFrames;
     uint32_t cars;
+    /* People out walking. */
+    uint32_t walkers;
     /* The city's drive side, chosen when it is founded. */
     FoxDriveSide driveSide;
     /* Starts with the demo town instead of bare ground, or with gridLines
@@ -38,6 +40,10 @@ typedef struct FoxClientOptions
     uint32_t tool;
     /* Presents without waiting for the display's refresh. */
     bool noVerticalSync;
+#if defined(FOX_REVIEW)
+    /* Where the review build keeps its notes; NULL for "review". */
+    const char *reviewDirectory;
+#endif
     /* Non-NULL saves frame captureFrame as a BMP there and exits. */
     const char *capturePath;
     uint32_t captureFrame;

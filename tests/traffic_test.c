@@ -1,4 +1,5 @@
 #include "expect.h"
+#include "sim/network_internal.h"
 #include "sim/world.h"
 #include "test_router.h"
 
@@ -113,6 +114,73 @@ static void TestDeterminism(void)
     FoxWorldDestroy(second);
 }
 
+/* Whether a car stands on a pedestrian crossing somebody walks on. */
+static bool CarOnWalkedCrossing(const FoxWorld *world)
+{
+    const FoxTraffic *traffic = FoxWorldTraffic(world);
+    const FoxNetwork *network = FoxWorldNetwork(world);
+    for (uint32_t slot = 0u; slot < FoxTrafficCapacity(traffic); ++slot)
+    {
+        FoxVehicleView view;
+        if (!FoxTrafficVehicle(traffic, slot, &view))
+        {
+            continue;
+        }
+        const FoxPath *lane = FoxNetworkPathRecord(network, view.path);
+        for (uint32_t index = 0u;
+             lane != NULL && lane->kind == PATH_LANE && index < lane->crossingCount; ++index)
+        {
+            const uint32_t walk = lane->crossingWalk[index];
+            const int64_t at = lane->crossingAt[index];
+            if (walk != FOX_NETWORK_NONE && network->paths[walk].claims != 0u &&
+                view.distance > at - FOX_METRES(1) &&
+                view.distance - view.length < at + FOX_METRES(1))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+/* People walk the town's footways and over its crossings; no car is ever on
+ * a crossing while somebody walks it, and the same seed walks the same. */
+static void TestWalkers(void)
+{
+    uint64_t hashes[2] = {0u, 0u};
+    for (uint32_t run = 0u; run < 2u; ++run)
+    {
+        TestRouterInit(&routerA);
+        const FoxWorldDesc desc = {.seed = 11u,
+                                   .driveSide = FOX_DRIVE_RIGHT,
+                                   .targetVehicles = LOAD,
+                                   .targetWalkers = 300u,
+                                   .router = &routerA.router};
+        FoxWorld *world = FoxWorldCreate(&desc);
+        EXPECT(world != NULL && FoxWorldBuildDemoTown(world), "the town");
+        EXPECT(FoxNetworkGetStats(FoxWorldNetwork(world)).crossings != 0u, "it has crossings");
+        bool unsafe = false;
+        for (uint64_t tick = 0u; tick < SECONDS(240); ++tick)
+        {
+            FoxWorldAdvance(world, 1u);
+            unsafe = unsafe || CarOnWalkedCrossing(world);
+        }
+        const FoxWalkersStats stats = FoxWalkersGetStats(FoxWorldWalkers(world));
+        printf("walkers: %u out, %u waiting, %u crossing, %llu crossed\n", stats.walkers,
+               stats.waiting, stats.crossing, (unsigned long long)stats.crossed);
+        EXPECT(stats.walkers == 300u, "everybody is out walking");
+        EXPECT(stats.crossed != 0u, "people walk over the crossings");
+        EXPECT(!unsafe, "no car is on a crossing while somebody walks it");
+        FoxWorldSetTargetWalkers(world, 100u);
+        FoxWorldAdvance(world, SECONDS(120));
+        EXPECT(FoxWalkersGetStats(FoxWorldWalkers(world)).walkers < 300u,
+               "fewer wanted, some go home");
+        hashes[run] = FoxWorldHash(world);
+        FoxWorldDestroy(world);
+    }
+    EXPECT(hashes[0] == hashes[1], "the same seed walks the same");
+}
+
 /* Digging or filling right on a road leaves the ground it rests on and the
  * air over it; beside the road the ground changes. */
 static void TestGroundUnderRoads(void)
@@ -150,7 +218,7 @@ static void TestEditsUnderTraffic(void)
     const FoxRoadPlan diagonal = {
         .start = {FOX_METRES(-190), FOX_METRES(-130), radius},
         .end = {FOX_METRES(130), FOX_METRES(190), radius},
-        .type = FOX_ROAD_STREET,
+        .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET),
     };
     EXPECT(FoxWorldBuildRoad(world, &diagonal) == FOX_ROAD_OK, "a diagonal through the town");
     ExpectNoOverlap(world);
@@ -205,7 +273,7 @@ static void TestSigns(void)
         FoxRoadView road;
         EXPECT(FoxNetworkRoad(network, node.roads[slot], &road), "a road of the junction");
         const FoxSign sign = SignAt(network, node.roads[slot], mixed);
-        EXPECT(sign == (road.type == FOX_ROAD_AVENUE ? FOX_SIGN_PRIORITY : FOX_SIGN_YIELD),
+        EXPECT(sign == (road.layout.lanes[0] == 2u ? FOX_SIGN_PRIORITY : FOX_SIGN_YIELD),
                "the bigger road has priority and the smaller gives way");
         priority += sign == FOX_SIGN_PRIORITY ? 1u : 0u;
         yield += sign == FOX_SIGN_YIELD ? 1u : 0u;
@@ -373,5 +441,6 @@ int main(void)
     TestDeterminism();
     TestEditsUnderTraffic();
     TestGroundUnderRoads();
+    TestWalkers();
     return 0;
 }

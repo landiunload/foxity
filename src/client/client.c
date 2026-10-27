@@ -7,6 +7,9 @@
 #include "input/input_service.h"
 #include "mod/application.h"
 #include "platform/window_service.h"
+#if defined(FOX_REVIEW)
+#include "client/review.h"
+#endif
 
 #include <stdbool.h>
 #include <stddef.h>
@@ -50,6 +53,11 @@ typedef struct ClientSession
     const char *capturePath;
     uint32_t captureFrame;
     bool captured;
+#if defined(FOX_REVIEW)
+    FoxReview *review;
+    /* P was pressed: this frame is saved for a note. */
+    bool shooting;
+#endif
 } ClientSession;
 
 static bool FieldPresent(uint32_t publishedSize, uint32_t structSize, size_t offset, size_t size)
@@ -66,8 +74,8 @@ static const LaiueWindowServiceV1 *QueryWindow(const FoxModules *modules)
     uint32_t size = 0u;
     const LaiueWindowServiceV1 *service = (const LaiueWindowServiceV1 *)FoxModulesQuery(
         modules, LAIUE_WINDOW_SERVICE_NAME, LAIUE_WINDOW_SERVICE_ABI_VERSION_1,
-        (uint32_t)sizeof(*service), &size);
-    if (service == NULL || service->structSize < sizeof(*service) ||
+        LAIUE_WINDOW_SERVICE_V1_LEGACY_SIZE, &size);
+    if (service == NULL || service->structSize < LAIUE_WINDOW_SERVICE_V1_LEGACY_SIZE ||
         service->abiVersion != LAIUE_WINDOW_SERVICE_ABI_VERSION_1 || service->create == NULL ||
         service->destroy == NULL || service->getNativeHandle == NULL ||
         service->getClientSize == NULL || service->runLoop == NULL ||
@@ -202,9 +210,9 @@ static FoxControls ReadControls(ClientSession *session)
     controls.click = input->wasMouseButtonPressed != NULL &&
                      input->wasMouseButtonPressed(state, INPUT_MOUSE_BUTTON_LEFT);
     controls.held = input->isMouseButtonDown(state, INPUT_MOUSE_BUTTON_LEFT);
-    static const InputKey toolKeys[] = {INPUT_KEY_1, INPUT_KEY_2, INPUT_KEY_3,
-                                        INPUT_KEY_4, INPUT_KEY_5, INPUT_KEY_6,
-                                        INPUT_KEY_7, INPUT_KEY_8, INPUT_KEY_9};
+    static const InputKey toolKeys[] = {INPUT_KEY_1, INPUT_KEY_2, INPUT_KEY_3, INPUT_KEY_4,
+                                        INPUT_KEY_5, INPUT_KEY_6, INPUT_KEY_7, INPUT_KEY_8,
+                                        INPUT_KEY_9, INPUT_KEY_0};
     for (int32_t index = 0; index < (int32_t)(sizeof(toolKeys) / sizeof(toolKeys[0])); ++index)
     {
         if (input->consumeKeyPress(state, toolKeys[index]))
@@ -214,7 +222,7 @@ static FoxControls ReadControls(ClientSession *session)
         }
     }
     controls.nextTimeScale = input->consumeKeyPress(state, INPUT_KEY_V);
-    controls.nextRoadType = input->consumeKeyPress(state, INPUT_KEY_T);
+    controls.nextLaneKind = input->consumeKeyPress(state, INPUT_KEY_T);
     controls.togglePause = input->consumeKeyPress(state, INPUT_KEY_SPACE);
     controls.toggleStatistics = input->consumeKeyPress(state, INPUT_KEY_F3);
     if (input->consumeKeyPress(state, INPUT_KEY_F7) && controls.verticalSync >= 0)
@@ -228,6 +236,8 @@ static FoxControls ReadControls(ClientSession *session)
     }
     controls.carsChange = (input->consumeKeyPress(state, INPUT_KEY_E) ? 1 : 0) -
                           (input->consumeKeyPress(state, INPUT_KEY_G) ? 1 : 0);
+    controls.walkersChange = (input->consumeKeyPress(state, INPUT_KEY_R) ? 1 : 0) -
+                             (input->consumeKeyPress(state, INPUT_KEY_F) ? 1 : 0);
     return controls;
 }
 
@@ -253,8 +263,8 @@ static FILE *OpenForWriting(const char *path)
 static bool CaptureFrame(LaiueGraphicsDeviceV2 *device, const char *path, uint32_t frameWidth,
                          uint32_t frameHeight)
 {
-    if (device->structSize < LAIUE_GRAPHICS_DEVICE_V2_READBACK_SIZE || device->readbackFrame == NULL ||
-        device->getDiagnostics == NULL)
+    if (device->structSize < LAIUE_GRAPHICS_DEVICE_V2_READBACK_SIZE ||
+        device->readbackFrame == NULL || device->getDiagnostics == NULL)
     {
         return false;
     }
@@ -336,9 +346,40 @@ static void OnFrame(void *opaque)
             session->graphicsService->resize(session->device, width, height);
         }
     }
+#if defined(FOX_REVIEW)
+    const bool typing = FoxReviewTyping(session->review);
+    if (session->input != NULL && typing)
+    {
+        /* Escape and Enter end the note, the rest of the keys type it. */
+        const LaiueInputServiceV1 *keys = session->inputService;
+        if (keys->consumeKeyPress(session->input, INPUT_KEY_ESCAPE))
+        {
+            FoxReviewFinish(session->review, false);
+        }
+        if (keys->consumeKeyPress(session->input, INPUT_KEY_ENTER))
+        {
+            FoxReviewFinish(session->review, true);
+        }
+        if (keys->consumeKeyPress(session->input, INPUT_KEY_BACKSPACE))
+        {
+            FoxReviewErase(session->review);
+        }
+    }
+    if (window->structSize >= LAIUE_WINDOW_SERVICE_V1_TEXT_SIZE && window->consumeText != NULL)
+    {
+        uint32_t text[64];
+        const uint32_t count =
+            window->consumeText(session->window, text, (uint32_t)(sizeof(text) / sizeof(text[0])));
+        FoxReviewType(session->review, text, typing ? count : 0u);
+    }
+    session->shooting = !typing && session->input != NULL &&
+                        session->inputService->consumeKeyPress(session->input, INPUT_KEY_P);
+#else
+    const bool typing = false;
+#endif
     /* Escape drops a road being placed, then puts the tool down, and quits
      * when there is neither. */
-    if (session->input != NULL &&
+    if (session->input != NULL && !typing &&
         session->inputService->consumeKeyPress(session->input, INPUT_KEY_ESCAPE) &&
         !FoxSceneCancel(session->scene))
     {
@@ -352,7 +393,21 @@ static void OnFrame(void *opaque)
     int32_t width = 0;
     int32_t height = 0;
     window->getClientSize(session->window, &width, &height);
-    const FoxControls controls = ReadControls(session);
+    FoxControls controls = ReadControls(session);
+    if (typing)
+    {
+        /* While a note is typed only the mouse steers. */
+        controls = (FoxControls){
+            .tool = -1,
+            .zoomSteps = controls.zoomSteps,
+            .rotating = controls.rotating,
+            .rotateX = controls.rotateX,
+            .rotateY = controls.rotateY,
+            .viewWidth = controls.viewWidth,
+            .viewHeight = controls.viewHeight,
+            .verticalSync = controls.verticalSync,
+        };
+    }
     LaiueGraphicsDeviceV2 *device = session->device;
     LaiueGraphicsCameraV2 camera = {.structSize = sizeof(camera)};
     const float aspect = width > 0 && height > 0 ? (float)width / (float)height : 1.0f;
@@ -361,8 +416,11 @@ static void OnFrame(void *opaque)
     {
         (void)device->setCamera(device, &camera);
     }
-    const bool capturing = session->capturePath != NULL && !session->captured &&
-                           session->presentedFrames + 1u >= session->captureFrame;
+    bool capturing = session->capturePath != NULL && !session->captured &&
+                     session->presentedFrames + 1u >= session->captureFrame;
+#if defined(FOX_REVIEW)
+    capturing = capturing || session->shooting;
+#endif
     if (capturing && device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_READBACK_REQUEST_SIZE &&
         device->requestFrameReadback != NULL)
     {
@@ -373,14 +431,44 @@ static void OnFrame(void *opaque)
         if (device->beginFrame(device, (uint32_t)width, (uint32_t)height) != 0u)
         {
             FoxSceneDraw(session->scene);
+#if defined(FOX_REVIEW)
+            FoxReviewDraw(session->review, FoxSceneView(session->scene), elapsed);
+#endif
             if (device->endFrame(device) != 0u)
             {
                 ++session->presentedFrames;
+#if defined(FOX_REVIEW)
+                if (session->shooting)
+                {
+                    session->shooting = false;
+                    capturing = false;
+                    const char *path = FoxReviewNextShot(session->review);
+                    const bool saved = path != NULL && CaptureFrame(device, path, (uint32_t)width,
+                                                                    (uint32_t)height);
+                    FoxLog(saved ? FOX_LOG_INFO : FOX_LOG_ERROR, "%s %s",
+                           saved ? "saved the frame to" : "could not save the frame to",
+                           path != NULL ? path : "the review directory");
+                    if (saved)
+                    {
+                        const FoxCameraView *view = FoxSceneView(session->scene);
+                        char context[256];
+                        (void)snprintf(
+                            context, sizeof(context),
+                            "frame %u, camera near %.1f %.1f %.1f m, %ux%u",
+                            session->presentedFrames,
+                            view != NULL ? (double)view->renderOrigin.x / FOX_UNITS_PER_METRE : 0.0,
+                            view != NULL ? (double)view->renderOrigin.y / FOX_UNITS_PER_METRE : 0.0,
+                            view != NULL ? (double)view->renderOrigin.z / FOX_UNITS_PER_METRE : 0.0,
+                            (unsigned)width, (unsigned)height);
+                        FoxReviewOpenNote(session->review, context);
+                    }
+                }
+#endif
                 if (capturing)
                 {
                     session->captured = true;
-                    const bool saved = CaptureFrame(device, session->capturePath,
-                                                    (uint32_t)width, (uint32_t)height);
+                    const bool saved = CaptureFrame(device, session->capturePath, (uint32_t)width,
+                                                    (uint32_t)height);
                     FoxLog(saved ? FOX_LOG_INFO : FOX_LOG_ERROR, "%s %s",
                            saved ? "saved the frame to" : "could not save the frame to",
                            session->capturePath);
@@ -474,6 +562,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         .seed = options->seed,
         .driveSide = options->driveSide,
         .cars = options->cars,
+        .walkers = options->walkers,
         .demo = options->demo,
         .gridLines = options->gridLines,
         .gridSpacing = options->gridSpacing,
@@ -501,9 +590,19 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         session.capturePath = options->capturePath;
         session.captureFrame = options->captureFrame;
         session.previousSeconds = LaiueApplicationMonotonicSeconds();
+#if defined(FOX_REVIEW)
+        session.review = FoxReviewCreate(
+            session.device, options->reviewDirectory != NULL ? options->reviewDirectory : "review");
+        FoxLog(session.review != NULL ? FOX_LOG_INFO : FOX_LOG_WARNING, "%s",
+               session.review != NULL ? "review build: P saves the frame with a comment"
+                                      : "review notes cannot be saved");
+#endif
         session.windowService->setRawInputCallback(session.window, OnRawInput, &session);
         session.windowService->runLoop(session.window, OnFrame, &session);
         session.windowService->setRawInputCallback(session.window, NULL, NULL);
+#if defined(FOX_REVIEW)
+        FoxReviewDestroy(session.review);
+#endif
         FoxSceneDestroy(session.scene);
     }
 

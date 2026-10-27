@@ -12,10 +12,15 @@
  *
  * Roads are curves draped over the ground between nodes. A node where three
  * or more roads meet is an intersection; one with a single road is a dead end
- * where cars turn around. Each road carries lanes in one or both directions,
- * and which side of the road a direction uses follows the drive side of the
- * place: the city's own, chosen when it is founded, or that of a zone laid
- * over part of the planet.
+ * where cars turn around. A road is laid out across in strips, built one at
+ * a time: lanes for cars, paved in asphalt or concrete, in the middle, and
+ * along either edge a bike lane and outside it a footway half a lane wide.
+ * Car lanes run one way or the other, and a road of a single lane may be
+ * driven both ways; which side of the road a direction uses follows the
+ * drive side of the place: the city's own, chosen when it is founded, or
+ * that of a zone laid over part of the planet. Where a road that runs one
+ * way only ends in a dead end, its innermost lane turns into a slow way back
+ * for the cars caught there, a lone lane into one driven both ways.
  *
  * Cars move along paths: the lanes of roads and the connections that lead
  * from a lane into an intersection and out of it into a lane of another road.
@@ -41,12 +46,17 @@
 #define FOX_LANE_WIDTH INT64_C(3584)
 /* Paved beyond the outer lanes, about 0.4 m. */
 #define FOX_ROAD_SHOULDER INT64_C(410)
+/* A footway is half a lane wide. */
+#define FOX_FOOT_WIDTH (FOX_LANE_WIDTH / 2)
 /* A speed in km/h as units per second. */
 #define FOX_KMH(kmh) ((int32_t)(FOX_METRES(kmh) * 10 / 36))
 /* Speed limits a sign can show. */
 #define FOX_SPEED_LIMIT_MIN FOX_KMH(10)
 #define FOX_SPEED_LIMIT_MAX ((int32_t)FOX_ROUTER_MAX_SPEED)
 #define FOX_ROAD_MAX_LANES 3u
+/* The car lanes and a bike lane and a footway at either edge. */
+#define FOX_ROAD_MAX_STRIPS (2u * FOX_ROAD_MAX_LANES + 4u)
+#define FOX_ROAD_MAX_CROSSINGS 8u
 #define FOX_NODE_MAX_ROADS 6u
 #define FOX_ROAD_MIN_LENGTH FOX_METRES(8)
 #define FOX_ROAD_MAX_LENGTH FOX_METRES(1200)
@@ -63,13 +73,64 @@ typedef enum FoxDriveSide
     FOX_DRIVE_LEFT = 1,
 } FoxDriveSide;
 
+/* What a strip across a road is: a lane cars drive, paved in asphalt or in
+ * concrete; a bike lane; or a footway. */
+typedef enum FoxLaneKind
+{
+    FOX_LANE_ASPHALT = 0,
+    FOX_LANE_CONCRETE,
+    FOX_LANE_BIKE,
+    FOX_LANE_FOOT,
+    FOX_LANE_KIND_COUNT,
+} FoxLaneKind;
+
+/* Which way a strip is used, seen from nodes[0] of its road. */
+typedef enum FoxWay
+{
+    FOX_WAY_NONE = 0,
+    FOX_WAY_FORWARD,
+    FOX_WAY_BACKWARD,
+    FOX_WAY_BOTH,
+} FoxWay;
+
+/* How a road is laid out across. The car lanes lie in the middle, centred on
+ * the centre line, each way's on the side its drive side keeps to; along
+ * either edge may run a bike lane and outside it a footway. A road of only
+ * paths centres its strips on the centre line. */
+typedef struct FoxRoadLayout
+{
+    /* Car lanes: [0] from nodes[0] to nodes[1], [1] back. A shared lane is
+     * one lane driven both ways and counts once each way. */
+    uint8_t lanes[2];
+    bool shared;
+    /* Each car lane's paving, FOX_LANE_ASPHALT or FOX_LANE_CONCRETE, by
+     * direction and lane from the curb. */
+    uint8_t surface[2][FOX_ROAD_MAX_LANES];
+    /* At either edge, [0] on the left seen from nodes[0] and [1] on the
+     * right: a bike lane's way, FOX_WAY_NONE for none, and whether a
+     * footway runs outside it. */
+    uint8_t bike[2];
+    bool foot[2];
+} FoxRoadLayout;
+
+/* One strip across a road: what it is, which way it is used and where its
+ * left and right edges lie, units right of the centre line. */
+typedef struct FoxRoadStrip
+{
+    uint8_t kind;
+    uint8_t way;
+    int64_t left;
+    int64_t right;
+} FoxRoadStrip;
+
+/* Ready layouts for building whole roads at once, as the demo city does. */
 typedef enum FoxRoadType
 {
-    /* One lane each way, 50 km/h. */
+    /* One lane each way and footways, 50 km/h. */
     FOX_ROAD_STREET = 0,
-    /* Two lanes each way, 60 km/h. */
+    /* Two lanes each way and footways, 60 km/h. */
     FOX_ROAD_AVENUE,
-    /* Three lanes each way, 70 km/h. */
+    /* Three lanes each way, bike lanes and footways, 70 km/h. */
     FOX_ROAD_BOULEVARD,
     /* Two lanes one way, 50 km/h. */
     FOX_ROAD_ONE_WAY,
@@ -78,16 +139,30 @@ typedef enum FoxRoadType
     FOX_ROAD_TYPE_COUNT,
 } FoxRoadType;
 
-typedef struct FoxRoadTypeInfo
-{
-    const char *name;
-    /* The default limit, units per second. */
-    int32_t speedLimit;
-    uint8_t forwardLanes;
-    uint8_t backwardLanes;
-    /* Where larger roads meet smaller ones, the larger get the priority sign. */
-    uint8_t rank;
-} FoxRoadTypeInfo;
+/* A ready layout, and its limit in units per second; a road of
+ * FOX_ROAD_STREET for an unknown type. */
+FoxRoadLayout FoxRoadLayoutPreset(FoxRoadType type);
+int32_t FoxRoadPresetSpeed(FoxRoadType type);
+/* A single strip of `kind`, a lane cars drive from nodes[0] for the paving
+ * kinds: what a road is when it is first drawn. */
+FoxRoadLayout FoxRoadLayoutSingle(FoxLaneKind kind);
+/* Whether a layout can be built: some strip, no more car lanes each way
+ * than FOX_ROAD_MAX_LANES, a shared lane only alone, known pavings. */
+bool FoxRoadLayoutValid(const FoxRoadLayout *layout);
+/* Car lanes across the road, a shared one counted once. */
+uint32_t FoxRoadLayoutCarLanes(const FoxRoadLayout *layout);
+/* Half the width of the car lanes, zero without any. */
+int64_t FoxRoadLayoutCarHalfWidth(const FoxRoadLayout *layout);
+/* How far the road reaches to the left [0] and right [1] of its centre
+ * line, without shoulders. */
+void FoxRoadLayoutExtent(const FoxRoadLayout *layout, int64_t outExtent[2]);
+/* The strips from left to right, seen from nodes[0], where traffic keeps to
+ * `side`; returns how many. */
+uint32_t FoxRoadLayoutStrips(const FoxRoadLayout *layout, FoxDriveSide side,
+                             FoxRoadStrip outStrips[FOX_ROAD_MAX_STRIPS]);
+/* The default limit of a layout, units per second: by its car lanes, a
+ * shared lane slower. */
+int32_t FoxRoadLayoutSpeed(const FoxRoadLayout *layout);
 
 /* The sign facing the traffic that arrives at a road end. */
 typedef enum FoxSign
@@ -118,11 +193,6 @@ typedef enum FoxLight
 #define FOX_TURN_RIGHT 4u
 #define FOX_TURN_BACK 8u
 
-/* NULL for an unknown type. */
-const FoxRoadTypeInfo *FoxRoadTypeGet(FoxRoadType type);
-/* Half the width of a road's lanes, without its shoulders. */
-int64_t FoxRoadHalfWidth(FoxRoadType type);
-
 typedef enum FoxRoadResult
 {
     FOX_ROAD_OK = 0,
@@ -148,7 +218,9 @@ typedef struct FoxRoadPlan
      * Bezier curve. */
     FoxVec control;
     bool curved;
-    FoxRoadType type;
+    FoxRoadLayout layout;
+    /* The limit, units per second; zero for the layout's. */
+    int32_t speedLimit;
 } FoxRoadPlan;
 
 typedef struct FoxNetwork FoxNetwork;
@@ -172,7 +244,8 @@ FoxDriveSide FoxNetworkDriveSideAt(const FoxNetwork *network, FoxVec point);
 typedef struct FoxRoadView
 {
     uint32_t nodes[2];
-    FoxRoadType type;
+    /* As built; the lanes may differ where it runs one way into a dead end. */
+    FoxRoadLayout layout;
     FoxDriveSide driveSide;
     const FoxVec *centre;
     uint32_t centreCount;
@@ -191,6 +264,9 @@ typedef struct FoxRoadView
      * FOX_SIGN_AUTO) and the one the mayor chose. */
     FoxSign sign[2];
     FoxSign signSetting[2];
+    /* Pedestrian crossings, how far along the centre line each lies. */
+    int64_t crossings[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t crossingCount;
     /* The network revision of the road's last change. */
     uint64_t revision;
 } FoxRoadView;
@@ -199,6 +275,8 @@ typedef struct FoxNodeView
 {
     FoxVec position;
     uint32_t roadCount;
+    /* Of them, those with car lanes: three make it an intersection for cars. */
+    uint32_t carRoadCount;
     uint32_t roads[FOX_NODE_MAX_ROADS];
     /* The radius of the intersection's paved area. */
     int64_t radius;
@@ -270,8 +348,25 @@ bool FoxNetworkSettleClosing(FoxNetwork *network, FoxVec center, int64_t radius)
 bool FoxNetworkAddDriveZone(FoxNetwork *network, FoxVec center, int64_t radius, FoxDriveSide side);
 uint32_t FoxNetworkDriveZoneCount(const FoxNetwork *network);
 
+/* Adds a strip of `kind` along an edge of a road, [0] its left seen from
+ * nodes[0] and [1] its right: a car lane runs `forward` from nodes[0] or
+ * back, as does a bike lane, outside the car lanes; a footway goes on the
+ * outside. FOX_ROAD_INVALID when the layout would not be valid, or when it
+ * would not fit between the roads around. */
+FoxRoadResult FoxNetworkWidenRoad(FoxNetwork *network, uint32_t road, uint32_t side,
+                                  FoxLaneKind kind, bool forward);
+/* Turns the strip of a road at `offset` across it, units right of the
+ * centre line: a car lane goes the other way, a lone car lane one way, the
+ * other, both ways in turn, and a bike lane the same. False where no car or
+ * bike lane lies there. */
+bool FoxNetworkTurnStrip(FoxNetwork *network, uint32_t road, int64_t offset);
+/* Puts a pedestrian crossing over a road `along` its centre line, or takes
+ * the one there away. False for a road without car lanes, too near an end
+ * or with FOX_ROAD_MAX_CROSSINGS already. */
+bool FoxNetworkToggleCrossing(FoxNetwork *network, uint32_t road, int64_t along);
+
 /* Sets a road's speed limit, FOX_SPEED_LIMIT_MIN..FOX_SPEED_LIMIT_MAX, or
- * back to its type's with zero. False for an invalid road or speed. */
+ * back to its layout's with zero. False for an invalid road or speed. */
 bool FoxNetworkSetSpeedLimit(FoxNetwork *network, uint32_t road, int32_t speed);
 /* Sets the sign facing the traffic arriving at nodes[end] of a road. */
 bool FoxNetworkSetSign(FoxNetwork *network, uint32_t road, uint32_t end, FoxSign sign);
@@ -319,7 +414,10 @@ bool FoxGroundGuardTouches(const FoxGroundGuard *guard, FoxVec min, FoxVec max);
 typedef struct FoxNetworkStats
 {
     uint32_t roads;
-    uint32_t roadsByType[FOX_ROAD_TYPE_COUNT];
+    /* Roads by how many car lanes they carry across, and those of paths only. */
+    uint32_t roadsByLanes[2u * FOX_ROAD_MAX_LANES + 1u];
+    uint32_t crossings;
+    int64_t footwayLength;
     uint32_t nodes;
     /* Nodes by what they are: three or more roads, two, one. */
     uint32_t junctions;

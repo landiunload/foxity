@@ -66,7 +66,7 @@ static int32_t ConnectionSpeed(const FoxNetwork *network, const FoxPath *connect
     const FoxRoad *to = &network->roads[network->paths[connection->to].road];
     int64_t speed = FoxMin(FoxMin(from->speedLimit, to->speedLimit), connection->curveSpeed);
     const uint8_t sign = from->sign[in->direction == 0u ? 1u : 0u];
-    if (sign == FOX_SIGN_NONE && network->nodes[connection->node].roadCount >= 3u &&
+    if (sign == FOX_SIGN_NONE && FoxNodeCarRoads(network, connection->node) >= 3u &&
         !network->nodes[connection->node].signals)
     {
         speed = FoxMin(speed, UNSIGNED_SPEED);
@@ -200,10 +200,59 @@ int64_t FoxCentreToLane(const FoxPath *lane, int64_t centre)
 
 /* ---- Node measurements ------------------------------------------------------ */
 
+/* Half the width that meets the node: the car lanes, or a path's strips. */
 static int64_t HalfWidth(const FoxRoad *road)
 {
-    const FoxRoadTypeInfo *type = FoxRoadTypeGet((FoxRoadType)road->type);
-    return (int64_t)(type->forwardLanes + type->backwardLanes) * FOX_LANE_WIDTH / 2;
+    const int64_t cars = FoxRoadLayoutCarHalfWidth(&road->driven);
+    if (cars != 0)
+    {
+        return cars;
+    }
+    int64_t extent[2];
+    FoxRoadLayoutExtent(&road->driven, extent);
+    return FoxMax(extent[0], extent[1]);
+}
+
+/* The way back out of a dead end a road running one way into it leaves its
+ * cars: a lone lane is driven both ways, else the innermost lane turns. */
+static FoxRoadLayout Driven(const FoxNetwork *network, const FoxRoad *road)
+{
+    FoxRoadLayout layout = road->layout;
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
+    {
+        /* Lanes of direction 0 run into nodes[1]. */
+        const uint32_t into = road->nodes[1u - direction];
+        if (layout.lanes[direction] == 0u || layout.lanes[1u - direction] != 0u ||
+            FoxNodeCarRoads(network, into) != 1u)
+        {
+            continue;
+        }
+        if (layout.lanes[direction] == 1u)
+        {
+            layout.shared = true;
+            layout.lanes[1u - direction] = 1u;
+            layout.surface[1u - direction][0] = layout.surface[direction][0];
+        }
+        else
+        {
+            --layout.lanes[direction];
+            layout.lanes[1u - direction] = 1u;
+            layout.surface[1u - direction][0] = layout.surface[direction][layout.lanes[direction]];
+        }
+    }
+    return layout;
+}
+
+/* The way back out of a dead end is driven slowly. */
+#define WAY_BACK_SPEED FOX_KMH(20)
+
+/* The limit on a lane of a road: the road's, but only the way-back speed on
+ * a way back out of a dead end, and no more than its bends allow. */
+static int32_t LaneLimit(const FoxRoad *road, uint32_t direction, int32_t curveSpeed)
+{
+    const bool wayBack = road->layout.lanes[direction] == 0u && road->driven.lanes[direction] != 0u;
+    const int64_t limit = wayBack ? FoxMin(road->speedLimit, WAY_BACK_SPEED) : road->speedLimit;
+    return (int32_t)FoxMin(limit, curveSpeed);
 }
 
 /* The direction a road leaves a node in, FOX_UNIT long. */
@@ -227,16 +276,23 @@ uint32_t FoxRoadEndAt(const FoxRoad *road, uint32_t node)
  * has no lanes to turn into. */
 static int64_t DeadEndTrim(const FoxRoad *road)
 {
-    switch ((FoxRoadType)road->type)
+    const FoxRoadLayout *layout = &road->driven;
+    if (layout->lanes[0] == 0u || layout->lanes[1] == 0u)
     {
-    case FOX_ROAD_STREET:
-        return FOX_METRES(23) / 2;
-    case FOX_ROAD_AVENUE:
-        return FOX_METRES(21) / 2;
-    case FOX_ROAD_BOULEVARD:
-        return FOX_METRES(33) / 2;
-    default:
         return FOX_METRES(2);
+    }
+    if (layout->shared)
+    {
+        return FOX_METRES(23) / 2;
+    }
+    switch (FoxMax(layout->lanes[0], layout->lanes[1]))
+    {
+    case 1:
+        return FOX_METRES(23) / 2;
+    case 2:
+        return FOX_METRES(21) / 2;
+    default:
+        return FOX_METRES(33) / 2;
     }
 }
 
@@ -248,6 +304,12 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
 {
     FoxNode *node = &network->nodes[index];
     const uint32_t count = node->roadCount;
+    const uint32_t cars = FoxNodeCarRoads(network, index);
+    for (uint32_t slot = 0u; slot < count; ++slot)
+    {
+        FoxRoad *road = &network->roads[node->roads[slot]];
+        road->driven = Driven(network, road);
+    }
     FoxVec leaving[FOX_NODE_MAX_ROADS];
     int64_t paved[FOX_NODE_MAX_ROADS];
     int64_t trims[FOX_NODE_MAX_ROADS];
@@ -261,7 +323,8 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
         leaving[slot] = LeavingDirection(road, FoxRoadEndAt(road, index));
         paved[slot] = HalfWidth(road) + FOX_ROAD_SHOULDER;
         widest = FoxMax(widest, HalfWidth(road));
-        trims[slot] = count == 1u ? DeadEndTrim(road) : (count == 2u ? MIN_BEND_TRIM : 0);
+        const bool carRoad = FoxRoadLayoutCarLanes(&road->driven) != 0u;
+        trims[slot] = carRoad && cars == 1u ? DeadEndTrim(road) : (count == 2u ? MIN_BEND_TRIM : 0);
         /* Round the node anticlockwise seen from above. */
         PlaneCoordinates(leaving[slot], leaving[0], node->up, &xs[slot], &ys[slot]);
         uint32_t position = slot;
@@ -353,10 +416,11 @@ static void FreeNewPath(FoxNetwork *network, uint32_t index)
     path->generation = generation;
 }
 
-/* One lane along a road's centre line between its trims, `offset` units to
- * the right of the centre (seen from nodes[0] towards nodes[1]). */
-static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direction, uint8_t lane,
-                          int64_t offset)
+/* A path of `kind` along a road's centre line from `first` to `last` of
+ * it, `offset` units to the right of the centre (seen from nodes[0]
+ * towards nodes[1]), running that way. */
+static uint32_t BuildAlong(FoxNetwork *network, uint32_t roadIndex, uint8_t kind, int64_t offset,
+                           int64_t first, int64_t last)
 {
     const uint32_t index = FoxNetworkAllocatePath(network);
     if (index == FOX_NETWORK_NONE)
@@ -364,15 +428,13 @@ static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direc
         return FOX_NETWORK_NONE;
     }
     const FoxRoad *road = &network->roads[roadIndex];
-    const int64_t first = road->trim[0];
-    const int64_t last = FoxMax(first + FOX_METRES(1), road->length - road->trim[1]);
     uint32_t count = 2u;
     for (uint32_t point = 0u; point < road->centreCount; ++point)
     {
         count += road->centreLengths[point] > first && road->centreLengths[point] < last ? 1u : 0u;
     }
     FoxPath *path = &network->paths[index];
-    ResetPath(path, PATH_LANE);
+    ResetPath(path, kind);
     if (!AllocatePathArrays(path, count, true))
     {
         FreeNewPath(network, index);
@@ -417,6 +479,28 @@ static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direc
         path->centre[written] = along;
         ++written;
     }
+    path->count = count;
+    path->length = FoxPolylineMeasure(path->points, path->lengths, count);
+    path->road = roadIndex;
+    path->roadGeneration = road->generation;
+    return index;
+}
+
+/* One lane along a road's centre line between its trims, `offset` units to
+ * the right of the centre (seen from nodes[0] towards nodes[1]). */
+static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direction, uint8_t lane,
+                          int64_t offset)
+{
+    const FoxRoad *road = &network->roads[roadIndex];
+    const int64_t first = road->trim[0];
+    const int64_t last = FoxMax(first + FOX_METRES(1), road->length - road->trim[1]);
+    const uint32_t index = BuildAlong(network, roadIndex, PATH_LANE, offset, first, last);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return FOX_NETWORK_NONE;
+    }
+    FoxPath *path = &network->paths[index];
+    const uint32_t count = path->count;
     if (direction == 1u)
     {
         for (uint32_t low = 0u, high = count - 1u; low < high; ++low, --high)
@@ -429,15 +513,269 @@ static uint32_t BuildLane(FoxNetwork *network, uint32_t roadIndex, uint8_t direc
             path->centre[high] = along;
         }
     }
-    path->count = count;
     path->length = FoxPolylineMeasure(path->points, path->lengths, count);
     path->curveSpeed = CurveSpeed(path->points, count);
-    path->speedLimit = (int32_t)FoxMin(road->speedLimit, path->curveSpeed);
-    path->road = roadIndex;
-    path->roadGeneration = road->generation;
+    path->speedLimit = LaneLimit(road, direction, path->curveSpeed);
     path->direction = direction;
     path->lane = lane;
     return index;
+}
+
+/* ---- Walks ------------------------------------------------------------------- */
+
+/* Makes two walk ends meet. */
+static void Join(FoxNetwork *network, uint32_t a, uint32_t aEnd, uint32_t b, uint32_t bEnd)
+{
+    FoxPath *first = &network->paths[a];
+    FoxPath *second = &network->paths[b];
+    if (first->joinCount[aEnd] < FOX_WALK_MAX_JOINS && second->joinCount[bEnd] < FOX_WALK_MAX_JOINS)
+    {
+        first->joins[aEnd][first->joinCount[aEnd]++] = FOX_WALK_END(b, bEnd);
+        second->joins[bEnd][second->joinCount[bEnd]++] = FOX_WALK_END(a, aEnd);
+    }
+}
+
+void FoxLanesRetireWalks(FoxNetwork *network, FoxRoad *road)
+{
+    for (uint32_t side = 0u; side < 2u; ++side)
+    {
+        for (uint32_t piece = 0u; piece < road->walkCount[side]; ++piece)
+        {
+            (void)FoxNetworkRetirePath(network, road->walks[side][piece]);
+        }
+        road->walkCount[side] = 0u;
+    }
+    for (uint32_t crossing = 0u; crossing < FOX_ROAD_MAX_CROSSINGS; ++crossing)
+    {
+        if (road->crossingWalks[crossing] != FOX_NETWORK_NONE)
+        {
+            (void)FoxNetworkRetirePath(network, road->crossingWalks[crossing]);
+        }
+        road->crossingWalks[crossing] = FOX_NETWORK_NONE;
+    }
+}
+
+/* The middle of a road's footway on one side, units right of its centre
+ * line; false without one. */
+static bool FootwayOffset(const FoxRoad *road, uint32_t side, int64_t *outOffset)
+{
+    if (!road->layout.foot[side])
+    {
+        return false;
+    }
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t count =
+        FoxRoadLayoutStrips(&road->layout, (FoxDriveSide)road->driveSide, strips);
+    const FoxRoadStrip *strip = &strips[side == 0u ? 0u : count - 1u];
+    *outOffset = (strip->left + strip->right) / 2;
+    return true;
+}
+
+/* The footways along a road, cut where crossings lead over it, and the walks
+ * over those crossings; and on every lane where it is crossed. */
+static bool BuildWalks(FoxNetwork *network, uint32_t roadIndex)
+{
+    FoxRoad *road = &network->roads[roadIndex];
+    FoxLanesRetireWalks(network, road);
+    const int64_t first = road->trim[0];
+    const int64_t last = FoxMax(first + FOX_METRES(1), road->length - road->trim[1]);
+    /* The crossings between the trims, in order. */
+    int64_t cuts[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t cutIndex[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t cutCount = 0u;
+    for (uint32_t crossing = 0u; crossing < road->crossingCount; ++crossing)
+    {
+        if (road->crossings[crossing] > first + FOX_METRES(1) &&
+            road->crossings[crossing] < last - FOX_METRES(1))
+        {
+            cutIndex[cutCount] = crossing;
+            cuts[cutCount++] = road->crossings[crossing];
+        }
+    }
+    bool ok = true;
+    int64_t offsets[2] = {0, 0};
+    bool footways[2] = {false, false};
+    for (uint32_t side = 0u; side < 2u; ++side)
+    {
+        footways[side] = FootwayOffset(road, side, &offsets[side]);
+        for (uint32_t piece = 0u; footways[side] && piece <= cutCount; ++piece)
+        {
+            const int64_t from = piece == 0u ? first : cuts[piece - 1u];
+            const int64_t to = piece == cutCount ? last : cuts[piece];
+            const uint32_t walk =
+                BuildAlong(network, roadIndex, PATH_WALK, offsets[side], from, to);
+            road = &network->roads[roadIndex];
+            if (walk == FOX_NETWORK_NONE)
+            {
+                ok = false;
+                break;
+            }
+            network->paths[walk].walkKind = WALK_FOOTWAY;
+            if (piece != 0u)
+            {
+                Join(network, road->walks[side][piece - 1u], 1u, walk, 0u);
+            }
+            road->walks[side][road->walkCount[side]++] = walk;
+        }
+    }
+    for (uint32_t cut = 0u;
+         ok && footways[0] && footways[1] && road->walkCount[0] == cutCount + 1u &&
+         road->walkCount[1] == cutCount + 1u && cut < cutCount;
+         ++cut)
+    {
+        const uint32_t index = FoxNetworkAllocatePath(network);
+        road = &network->roads[roadIndex];
+        if (index == FOX_NETWORK_NONE)
+        {
+            ok = false;
+            break;
+        }
+        FoxPath *walk = &network->paths[index];
+        ResetPath(walk, PATH_WALK);
+        if (!AllocatePathArrays(walk, 2u, false))
+        {
+            FreeNewPath(network, index);
+            ok = false;
+            break;
+        }
+        /* Straight over, from the left footway to the right one. */
+        walk->points[0] = network->paths[road->walks[0][cut]]
+                              .points[network->paths[road->walks[0][cut]].count - 1u];
+        walk->points[1] = network->paths[road->walks[1][cut]]
+                              .points[network->paths[road->walks[1][cut]].count - 1u];
+        walk->count = 2u;
+        walk->length = FoxPolylineMeasure(walk->points, walk->lengths, 2u);
+        walk->walkKind = WALK_CROSSING;
+        walk->road = roadIndex;
+        walk->roadGeneration = road->generation;
+        walk->roadAlong = cuts[cut];
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            const uint32_t before = road->walks[side][cut];
+            const uint32_t after = road->walks[side][cut + 1u];
+            Join(network, index, side, before, 1u);
+            Join(network, index, side, after, 0u);
+        }
+        road->crossingWalks[cutIndex[cut]] = index;
+    }
+    /* Every lane knows where it is crossed, and whether anyone walks there. */
+    road = &network->roads[roadIndex];
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
+    {
+        for (uint32_t lane = 0u; lane < road->laneCount[direction]; ++lane)
+        {
+            FoxPath *path = &network->paths[road->lanes[direction][lane]];
+            path->crossingCount = 0u;
+            for (uint32_t cut = 0u; cut < cutCount; ++cut)
+            {
+                const uint32_t at = direction == 0u ? cut : cutCount - 1u - cut;
+                path->crossingAt[path->crossingCount] = FoxCentreToLane(path, cuts[at]);
+                path->crossingWalk[path->crossingCount++] = road->crossingWalks[cutIndex[at]];
+            }
+        }
+    }
+    return ok;
+}
+
+/* The walk round each corner of a node, from the footway along the left of
+ * one road leaving it to the footway along the right of the next one round
+ * anticlockwise: the pavement between the two. */
+static bool BuildCorners(FoxNetwork *network, uint32_t nodeIndex)
+{
+    FoxNode *node = &network->nodes[nodeIndex];
+    const uint32_t count = node->roadCount;
+    /* The footway ends at this node meet only the corners built now. */
+    for (uint32_t slot = 0u; slot < count; ++slot)
+    {
+        FoxRoad *road = &network->roads[node->roads[slot]];
+        const uint32_t end = FoxRoadEndAt(road, nodeIndex);
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            if (road->walkCount[side] != 0u)
+            {
+                const uint32_t piece = end == 0u ? 0u : road->walkCount[side] - 1u;
+                network->paths[road->walks[side][piece]].joinCount[end] = 0u;
+            }
+        }
+    }
+    if (count < 2u)
+    {
+        return true;
+    }
+    int64_t xs[FOX_NODE_MAX_ROADS];
+    int64_t ys[FOX_NODE_MAX_ROADS];
+    uint32_t order[FOX_NODE_MAX_ROADS];
+    FoxVec first = {0, 0, 0};
+    for (uint32_t slot = 0u; slot < count; ++slot)
+    {
+        const FoxRoad *road = &network->roads[node->roads[slot]];
+        const FoxVec leaving = LeavingDirection(road, FoxRoadEndAt(road, nodeIndex));
+        first = slot == 0u ? leaving : first;
+        PlaneCoordinates(leaving, first, node->up, &xs[slot], &ys[slot]);
+        uint32_t position = slot;
+        while (position > 0u &&
+               AngleLess(xs[slot], ys[slot], xs[order[position - 1u]], ys[order[position - 1u]]))
+        {
+            order[position] = order[position - 1u];
+            --position;
+        }
+        order[position] = slot;
+    }
+    uint32_t *corners = malloc((size_t)count * sizeof(*corners));
+    if (corners == NULL)
+    {
+        return false;
+    }
+    bool ok = true;
+    uint32_t built = 0u;
+    for (uint32_t k = 0u; k < count; ++k)
+    {
+        const uint32_t a = node->roads[order[k]];
+        const uint32_t b = node->roads[order[(k + 1u) % count]];
+        const FoxRoad *roadA = &network->roads[a];
+        const FoxRoad *roadB = &network->roads[b];
+        const uint32_t endA = FoxRoadEndAt(roadA, nodeIndex);
+        const uint32_t endB = FoxRoadEndAt(roadB, nodeIndex);
+        /* Leaving from nodes[0] the left is side 0; leaving from nodes[1] it
+         * is side 1. */
+        const uint32_t sideA = endA == 0u ? 0u : 1u;
+        const uint32_t sideB = endB == 0u ? 1u : 0u;
+        if (roadA->walkCount[sideA] == 0u || roadB->walkCount[sideB] == 0u)
+        {
+            continue;
+        }
+        const uint32_t walkA = roadA->walks[sideA][endA == 0u ? 0u : roadA->walkCount[sideA] - 1u];
+        const uint32_t walkB = roadB->walks[sideB][endB == 0u ? 0u : roadB->walkCount[sideB] - 1u];
+        const uint32_t index = FoxNetworkAllocatePath(network);
+        if (index == FOX_NETWORK_NONE)
+        {
+            ok = false;
+            break;
+        }
+        FoxPath *walk = &network->paths[index];
+        ResetPath(walk, PATH_WALK);
+        if (!AllocatePathArrays(walk, 2u, false))
+        {
+            FreeNewPath(network, index);
+            ok = false;
+            break;
+        }
+        const FoxPath *pathA = &network->paths[walkA];
+        const FoxPath *pathB = &network->paths[walkB];
+        walk->points[0] = pathA->points[endA == 0u ? 0u : pathA->count - 1u];
+        walk->points[1] = pathB->points[endB == 0u ? 0u : pathB->count - 1u];
+        walk->count = 2u;
+        walk->length = FoxPolylineMeasure(walk->points, walk->lengths, 2u);
+        walk->walkKind = WALK_CORNER;
+        walk->node = nodeIndex;
+        Join(network, index, 0u, walkA, endA);
+        Join(network, index, 1u, walkB, endB);
+        corners[built++] = index;
+    }
+    node = &network->nodes[nodeIndex];
+    node->corners = corners;
+    node->cornerCount = built;
+    return ok;
 }
 
 bool FoxLanesBuildRoad(FoxNetwork *network, uint32_t roadIndex)
@@ -453,19 +791,14 @@ bool FoxLanesBuildRoad(FoxNetwork *network, uint32_t roadIndex)
         }
         road->laneCount[direction] = 0u;
     }
-    const FoxRoadTypeInfo *type = FoxRoadTypeGet((FoxRoadType)road->type);
-    const uint8_t counts[2] = {type->forwardLanes, type->backwardLanes};
-    const int64_t side = road->driveSide == FOX_DRIVE_RIGHT ? 1 : -1;
-    const bool twoWay = counts[1] != 0u;
+    road->driven = Driven(network, road);
+    const FoxRoadLayout layout = road->driven;
     for (uint8_t direction = 0u; direction < 2u; ++direction)
     {
-        for (uint8_t lane = 0u; lane < counts[direction]; ++lane)
+        for (uint8_t lane = 0u; lane < layout.lanes[direction]; ++lane)
         {
-            /* Twice the offset in lane widths: the curb lane is outermost. A
-             * one-way road is centred on its centre line. */
-            const int64_t doubled = twoWay ? 2 * (int64_t)counts[direction] - (int64_t)lane * 2 - 1
-                                           : (int64_t)counts[direction] - (int64_t)lane * 2 - 1;
-            const int64_t offset = (direction == 0u ? side : -side) * doubled * FOX_LANE_WIDTH / 2;
+            const int64_t offset =
+                FoxRoadLaneOffset(&layout, (FoxDriveSide)road->driveSide, direction, lane);
             const uint32_t path = BuildLane(network, roadIndex, direction, lane, offset);
             if (path == FOX_NETWORK_NONE)
             {
@@ -476,7 +809,7 @@ bool FoxLanesBuildRoad(FoxNetwork *network, uint32_t roadIndex)
             road->lanes[direction][road->laneCount[direction]++] = path;
         }
     }
-    return ok;
+    return BuildWalks(network, roadIndex) && ok;
 }
 
 /* ---- Connections ------------------------------------------------------------- */
@@ -1261,7 +1594,7 @@ bool FoxLanesBuildConflicts(FoxNetwork *network, uint32_t nodeIndex)
         path->siblingCount = 0u;
     }
     /* At a dead end one car turns round at a time; nothing crosses. */
-    if (count == 0u || node->roadCount < 2u)
+    if (count == 0u || FoxNodeCarRoads(network, nodeIndex) < 2u)
     {
         return true;
     }
@@ -1432,11 +1765,20 @@ bool FoxLanesBuildNode(FoxNetwork *network, uint32_t nodeIndex)
     free(node->connections);
     node->connections = NULL;
     node->connectionCount = 0u;
+    for (uint32_t index = 0u; index < node->cornerCount; ++index)
+    {
+        ok = FoxNetworkRetirePath(network, node->corners[index]) && ok;
+    }
+    free(node->corners);
+    node->corners = NULL;
+    node->cornerCount = 0u;
     if (!node->alive)
     {
         return ok;
     }
-    if (node->roadCount < 3u)
+    ok = BuildCorners(network, nodeIndex) && ok;
+    node = &network->nodes[nodeIndex];
+    if (FoxNodeCarRoads(network, nodeIndex) < 3u)
     {
         node->signals = false;
     }
@@ -1455,7 +1797,7 @@ bool FoxLanesBuildNode(FoxNetwork *network, uint32_t nodeIndex)
         NodeEnd *entry = &ends[endCount++];
         *entry = (NodeEnd){
             .road = roadIndex,
-            .rank = FoxRoadTypeGet((FoxRoadType)road->type)->rank,
+            .rank = (uint8_t)FoxRoadLayoutCarLanes(&road->layout),
         };
         for (uint32_t lane = 0u; lane < road->laneCount[inDirection]; ++lane)
         {
@@ -1598,8 +1940,7 @@ void FoxLanesResolveSigns(FoxNetwork *network, uint32_t nodeIndex)
     {
         const FoxRoad *road = &network->roads[node->roads[slot]];
         const uint8_t setting = road->signSetting[FoxRoadEndAt(road, nodeIndex)];
-        classes[slot] =
-            setting == FOX_SIGN_PRIORITY ? 256u : FoxRoadTypeGet((FoxRoadType)road->type)->rank;
+        classes[slot] = setting == FOX_SIGN_PRIORITY ? 256u : FoxRoadLayoutCarLanes(&road->layout);
         if (setting == FOX_SIGN_AUTO || setting == FOX_SIGN_PRIORITY)
         {
             highest = classes[slot] > highest ? classes[slot] : highest;
@@ -1611,7 +1952,7 @@ void FoxLanesResolveSigns(FoxNetwork *network, uint32_t nodeIndex)
         FoxRoad *road = &network->roads[node->roads[slot]];
         const uint32_t end = FoxRoadEndAt(road, nodeIndex);
         uint8_t sign = road->signSetting[end];
-        if (node->signals || node->roadCount < 3u)
+        if (node->signals || FoxNodeCarRoads(network, nodeIndex) < 3u)
         {
             /* Lights rule; bends and dead ends need no sign. */
             sign = FOX_SIGN_NONE;
@@ -1634,7 +1975,7 @@ void FoxLanesApplyRoadSpeed(FoxNetwork *network, uint32_t roadIndex)
         for (uint32_t lane = 0u; lane < road->laneCount[direction]; ++lane)
         {
             FoxPath *path = &network->paths[road->lanes[direction][lane]];
-            path->speedLimit = (int32_t)FoxMin(road->speedLimit, path->curveSpeed);
+            path->speedLimit = LaneLimit(road, direction, path->curveSpeed);
         }
     }
 }

@@ -24,6 +24,8 @@ typedef struct FoxCityDesc
     uint64_t seed;
     FoxDriveSide driveSide;
     uint32_t cars;
+    /* People out walking the footways. */
+    uint32_t walkers;
     /* Builds the demo town right away, or with gridLines a square grid of
      * that many roads each way gridSpacing apart. */
     bool demo;

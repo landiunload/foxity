@@ -2,6 +2,7 @@
 #define FOX_CLIENT_SCENE_H
 
 #include "app/modules.h"
+#include "client/camera.h"
 #include "client/ui.h"
 #include "graphics/graphics_device_v2.h"
 #include "mesh/mesher_service.h"
@@ -23,6 +24,7 @@ typedef struct FoxSceneDesc
     uint64_t seed;
     FoxDriveSide driveSide;
     uint32_t cars;
+    uint32_t walkers;
     bool demo;
     /* Non-zero builds a grid of this many roads each way instead of the
      * demo town. */
@@ -67,13 +69,15 @@ typedef struct FoxControls
     bool held;
     /* -1 keeps the tool. */
     int32_t tool;
-    bool nextRoadType;
+    /* On to the next kind of lane the road tools lay. */
+    bool nextLaneKind;
     bool togglePause;
-    /* Steps through one, three and ten times real time. */
+    /* Steps through one, two and four times real time. */
     bool nextTimeScale;
-    /* +1 or -1 asks for more or fewer cars; with moveFast ten times as
-     * many. */
+    /* +1 or -1 asks for more or fewer cars, and people; with moveFast ten
+     * times as many. */
     int32_t carsChange;
+    int32_t walkersChange;
     bool toggleStatistics;
     /* Whether presenting waits for the display: 1 on, 0 off, -1 the device
      * cannot tell; shown on the statistics panel. */
@@ -89,6 +93,8 @@ void FoxSceneDestroy(FoxScene *scene);
 bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSeconds,
                     float aspectRatio, float outViewProjection[16]);
 void FoxSceneDraw(FoxScene *scene);
+/* The camera of the last update; NULL before there is one. */
+const FoxCameraView *FoxSceneView(const FoxScene *scene);
 
 /* Drops a road being placed, or else puts the tool down. False when there
  * was neither, so the caller may treat the key as a request to quit. */

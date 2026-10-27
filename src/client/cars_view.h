@@ -5,14 +5,15 @@
 #include "graphics/graphics_device_v2.h"
 #include "sim/network.h"
 #include "sim/traffic.h"
+#include "sim/walkers.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The visible cars: one small mesh per paint colour, drawn as GPU instances
- * placed and turned along their lanes, blended between the last two ticks so
- * motion is smooth at any frame rate. Where the device has no instancing,
- * each car is drawn on its own without turning. */
+/* The visible cars and people: one small mesh per paint or shirt colour,
+ * drawn as GPU instances placed and turned along their ways, blended between
+ * the last two ticks so motion is smooth at any frame rate. Where the device
+ * has no instancing, each is drawn on its own without turning. */
 
 typedef struct FoxCarsView FoxCarsView;
 
@@ -23,5 +24,9 @@ void FoxCarsViewDestroy(FoxCarsView *view);
  * number of cars submitted. */
 uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const FoxNetwork *network,
                          const FoxCameraView *camera, float blend);
+/* The people walking, likewise; on the footways, a kerb above the road. */
+uint32_t FoxCarsViewDrawWalkers(FoxCarsView *view, const FoxWalkers *walkers,
+                                const FoxNetwork *network, const FoxCameraView *camera,
+                                float blend);
 
 #endif

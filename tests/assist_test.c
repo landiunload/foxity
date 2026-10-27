@@ -2,8 +2,8 @@
 #include "expect.h"
 
 #include <math.h>
-#include <stdio.h>
 #include <stdint.h>
+#include <stdio.h>
 
 /* Drawing assistance over a small network near the pole: an east-west
  * street from -50 m to 50 m and a north-south one at 100 m east. */
@@ -41,7 +41,7 @@ int main(void)
     EXPECT(planet != NULL && network != NULL, "the planet and the network are created");
     FoxRoadPlan plan = {.start = Ground(planet, -50.0, 0.0),
                         .end = Ground(planet, 50.0, 0.0),
-                        .type = FOX_ROAD_STREET};
+                        .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET)};
     EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "the street is built");
     plan.start = Ground(planet, 100.0, -50.0);
     plan.end = Ground(planet, 100.0, 50.0);
@@ -113,7 +113,8 @@ int main(void)
     request.curveControl = true;
     request.snaps = FOX_SNAP_TANGENT;
     assist = Snap(network, planet, request);
-    EXPECT(Near(planet, assist.point, 70.0, 0.0), "a curve leaves a dead end the way the road went");
+    EXPECT(Near(planet, assist.point, 70.0, 0.0),
+           "a curve leaves a dead end the way the road went");
 
     FoxNetworkReleaseRetired(network);
     FoxNetworkDestroy(network);

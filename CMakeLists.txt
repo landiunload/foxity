@@ -14,6 +14,7 @@ option(FOX_ENGINE_FETCH
 set(FOX_ENGINE_REVISION "origin/main" CACHE STRING
     "Fetched laiue Git revision; origin/main tracks development, locked uses engine.lock")
 option(FOX_BUILD_HEADLESS "Build the headless simulation executable" ON)
+option(FOX_REVIEW_BUILD "Build FoxityReview, which saves frames with testers' comments; never shipped" OFF)
 
 set(CMAKE_C_STANDARD 17)
 set(CMAKE_C_STANDARD_REQUIRED ON)

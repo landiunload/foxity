@@ -26,10 +26,19 @@ void FoxRoadsViewDestroy(FoxRoadsView *view);
 /* Follows the network's changes. Call before the frame begins. */
 void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double budgetSeconds);
 
-/* Shows a planned centre line, or nothing for count zero. `valid` picks the
- * colour of a road that can be built or of one that cannot. */
+/* How a planned road is shown: as one that can be built, one that cannot,
+ * or a lane that widens the road it runs beside. */
+typedef enum FoxPreviewLook
+{
+    FOX_PREVIEW_BUILD = 0,
+    FOX_PREVIEW_REFUSED,
+    FOX_PREVIEW_WIDEN,
+} FoxPreviewLook;
+
+/* Shows a planned centre line as wide as its layout, or nothing for count
+ * zero. */
 void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t count,
-                            FoxRoadType type, bool valid);
+                            const FoxRoadLayout *layout, FoxPreviewLook look);
 
 /* What the tools draw on the ground besides the planned road. */
 typedef struct FoxOverlayLine

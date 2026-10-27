@@ -13,7 +13,10 @@ static FoxVec Pole(int64_t eastMetres, int64_t northMetres)
 
 static FoxRoadPlan Plan(FoxVec start, FoxVec end, FoxRoadType type)
 {
-    return (FoxRoadPlan){.start = start, .end = end, .type = type};
+    return (FoxRoadPlan){.start = start,
+                         .end = end,
+                         .layout = FoxRoadLayoutPreset(type),
+                         .speedLimit = FoxRoadPresetSpeed(type)};
 }
 
 static FoxNetwork *NewNetwork(FoxDriveSide side)
@@ -137,14 +140,14 @@ static void TestCrossing(const FoxPlanet *planet)
         /* The avenue is the bigger road: going straight along it never
          * yields to the street. */
         const FoxPath *in = FoxNetworkPathRecord(network, a->from);
-        if (in->road != FOX_NETWORK_NONE && network->roads[in->road].type == FOX_ROAD_AVENUE &&
+        if (in->road != FOX_NETWORK_NONE && network->roads[in->road].layout.lanes[0] == 2u &&
             a->movement == MOVE_STRAIGHT)
         {
             for (uint32_t c = 0u; c < a->conflictCount; ++c)
             {
                 const FoxPath *b = FoxNetworkPathRecord(network, a->conflicts[c].path);
                 const FoxPath *bIn = FoxNetworkPathRecord(network, b->from);
-                if (network->roads[bIn->road].type == FOX_ROAD_STREET)
+                if (network->roads[bIn->road].layout.lanes[0] == 1u)
                 {
                     EXPECT(!a->conflicts[c].yields, "the avenue has priority over the street");
                 }
@@ -246,15 +249,17 @@ static void TestCurve(const FoxPlanet *planet)
 static void TestThroughDeadEnd(const FoxPlanet *planet)
 {
     FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
-    EXPECT(FoxNetworkBuildRoad(
-               network, planet,
-               &(FoxRoadPlan){.start = Pole(0, 0), .end = Pole(0, 60), .type = FOX_ROAD_STREET}) ==
+    EXPECT(FoxNetworkBuildRoad(network, planet,
+                               &(FoxRoadPlan){.start = Pole(0, 0),
+                                              .end = Pole(0, 60),
+                                              .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET)}) ==
                FOX_ROAD_OK,
            "a street ending in the open");
     EXPECT(FoxNetworkBuildRoad(network, planet,
                                &(FoxRoadPlan){.start = Pole(-60, 60),
                                               .end = Pole(60, 60),
-                                              .type = FOX_ROAD_STREET}) == FOX_ROAD_OK,
+                                              .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET)}) ==
+               FOX_ROAD_OK,
            "a street across its end");
     EXPECT(FoxNetworkRoadCount(network) == 3u, "the crossing street is cut at the end");
     EXPECT(FoxNetworkNodeCount(network) == 4u, "the end became a junction");
@@ -279,12 +284,110 @@ static void TestThroughBend(const FoxPlanet *planet)
     const FoxRoadPlan across = {
         .start = {bend.x, bend.y - FOX_METRES(60), RADIUS},
         .end = {bend.x, bend.y + FOX_METRES(60), RADIUS},
-        .type = FOX_ROAD_STREET,
+        .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET),
     };
     EXPECT(FoxNetworkBuildRoad(network, planet, &across) == FOX_ROAD_OK,
            "a street across the bend");
     EXPECT(FoxNetworkRoadCount(network) == 4u && FoxNetworkNodeCount(network) == 5u,
            "both roads are cut once where they cross");
+    FoxNetworkDestroy(network);
+}
+
+/* A road drawn a strip at a time: one lane, then one back beside it and a
+ * footway; a lone lane turned one way, the other and both ways. */
+static void TestStrips(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    const FoxRoadPlan lane = {
+        .start = Pole(-50, 0), .end = Pole(50, 0), .layout = FoxRoadLayoutSingle(FOX_LANE_ASPHALT)};
+    EXPECT(FoxNetworkBuildRoad(network, planet, &lane) == FOX_ROAD_OK, "a single lane");
+    const uint32_t road = FirstRoad(network);
+    FoxRoadView view;
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.layout.lanes[0] == 1u &&
+               view.layout.lanes[1] == 0u,
+           "one lane the way it was drawn");
+    EXPECT(view.speedLimit == FOX_KMH(50), "a lone lane keeps 50 km/h");
+
+    EXPECT(FoxNetworkTurnStrip(network, road, 0), "the lane turns");
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.layout.lanes[0] == 0u &&
+               view.layout.lanes[1] == 1u,
+           "now it runs back");
+    EXPECT(FoxNetworkTurnStrip(network, road, 0), "the lane turns again");
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.layout.shared,
+           "now it is driven both ways");
+    EXPECT(view.speedLimit == FOX_KMH(30), "a shared lane is slow");
+    EXPECT(FoxNetworkTurnStrip(network, road, 0) && FoxNetworkRoad(network, road, &view) &&
+               !view.layout.shared && view.layout.lanes[0] == 1u,
+           "and back to one way");
+
+    EXPECT(FoxNetworkWidenRoad(network, road, 0u, FOX_LANE_CONCRETE, false) == FOX_ROAD_OK,
+           "a concrete lane back beside it");
+    EXPECT(FoxNetworkWidenRoad(network, road, 1u, FOX_LANE_FOOT, true) == FOX_ROAD_OK,
+           "a footway on the right");
+    EXPECT(FoxNetworkWidenRoad(network, road, 1u, FOX_LANE_FOOT, true) == FOX_ROAD_INVALID,
+           "only one footway a side");
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.laneCount[0] == 1u &&
+               view.laneCount[1] == 1u && view.layout.foot[1] && !view.layout.foot[0],
+           "a street with a footway");
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t count = FoxRoadLayoutStrips(&view.layout, FOX_DRIVE_RIGHT, strips);
+    EXPECT(count == 3u && strips[0].kind == FOX_LANE_CONCRETE &&
+               strips[0].way == FOX_WAY_BACKWARD && strips[1].kind == FOX_LANE_ASPHALT &&
+               strips[1].way == FOX_WAY_FORWARD && strips[2].kind == FOX_LANE_FOOT,
+           "the lanes keep right and the footway runs outside");
+    EXPECT(strips[2].right - strips[2].left == FOX_FOOT_WIDTH, "a footway is half a lane");
+    for (uint32_t direction = 0u; direction < 2u; ++direction)
+    {
+        const FoxPath *path = FoxNetworkPathRecord(network, view.lanes[direction][0]);
+        FoxVec point;
+        EXPECT(
+            FoxNetworkPathPoint(network, view.lanes[direction][0], path->length / 2, &point, NULL),
+            "a lane point");
+        /* Forward, going east, keeps to the south of the centre line. */
+        EXPECT(direction == 0u ? point.y < 0 : point.y > 0, "each way on its side");
+    }
+
+    EXPECT(FoxNetworkToggleCrossing(network, road, view.length / 2), "a crossing goes on");
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.crossingCount == 1u, "one crossing");
+    EXPECT(FoxNetworkToggleCrossing(network, road, view.length / 2 + FOX_METRES(2)) &&
+               FoxNetworkRoad(network, road, &view) && view.crossingCount == 0u,
+           "a click near it takes it off");
+    FoxNetworkDestroy(network);
+}
+
+/* A road running one way into a dead end leaves its cars a slow way back. */
+static void TestWayBack(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    FoxRoadPlan plan = Plan(Pole(-50, 0), Pole(50, 0), FOX_ROAD_ONE_WAY);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a one-way road");
+    FoxRoadView view;
+    EXPECT(FoxNetworkRoad(network, FirstRoad(network), &view) && view.laneCount[0] == 1u &&
+               view.laneCount[1] == 1u && view.layout.lanes[1] == 0u,
+           "its inner lane runs back out of the dead end");
+    const FoxPath *back = FoxNetworkPathRecord(network, view.lanes[1][0]);
+    EXPECT(back->speedLimit <= FOX_KMH(20), "slowly");
+    const FoxPath *in = FoxNetworkPathRecord(network, view.lanes[0][0]);
+    EXPECT(in->outgoingCount != 0u, "the dead end lets the cars turn round");
+    FoxNetworkDestroy(network);
+
+    network = NewNetwork(FOX_DRIVE_RIGHT);
+    plan = (FoxRoadPlan){
+        .start = Pole(-50, 0), .end = Pole(50, 0), .layout = FoxRoadLayoutSingle(FOX_LANE_ASPHALT)};
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a lone lane");
+    EXPECT(FoxNetworkRoad(network, FirstRoad(network), &view) && view.laneCount[0] == 1u &&
+               view.laneCount[1] == 1u && !view.layout.shared,
+           "driven both ways out of its dead end");
+    /* Joined on beyond, the dead end is gone and so is the way back. */
+    plan = (FoxRoadPlan){
+        .start = Pole(50, 0), .end = Pole(150, 0), .layout = FoxRoadLayoutSingle(FOX_LANE_ASPHALT)};
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "the lane goes on");
+    uint32_t oneWay = 0u;
+    for (uint32_t index = 0u; index < FoxNetworkRoadCapacity(network); ++index)
+    {
+        oneWay += FoxNetworkRoad(network, index, &view) && view.laneCount[1] == 0u ? 1u : 0u;
+    }
+    EXPECT(oneWay == 1u, "only the last piece, into the new dead end, keeps a way back");
     FoxNetworkDestroy(network);
 }
 
@@ -299,6 +402,8 @@ int main(void)
     TestCurve(planet);
     TestThroughDeadEnd(planet);
     TestThroughBend(planet);
+    TestStrips(planet);
+    TestWayBack(planet);
     FoxPlanetDestroy(planet);
     return 0;
 }

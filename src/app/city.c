@@ -29,6 +29,7 @@ bool FoxCityCreate(FoxCity *city, const FoxCityDesc *desc)
         .seed = desc->seed,
         .driveSide = desc->driveSide,
         .targetVehicles = desc->cars,
+        .targetWalkers = desc->walkers,
         .router = city->routed ? &city->navigation.router : NULL,
     };
     city->world = FoxWorldCreate(&worldDesc);
@@ -125,12 +126,17 @@ void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE
     fprintf(stream, "roads %u, %.2f km of road, %.2f km of lanes in %u lanes\n", roads.roads,
             (double)roads.roadLength / FOX_METRES(1000),
             (double)roads.laneLength / FOX_METRES(1000), roads.lanes);
-    for (uint32_t type = 0u; type < FOX_ROAD_TYPE_COUNT; ++type)
+    fprintf(stream, "  paths only %u\n", roads.roadsByLanes[0]);
+    for (uint32_t lanes = 1u; lanes <= 2u * FOX_ROAD_MAX_LANES; ++lanes)
     {
-        const FoxRoadTypeInfo *info = FoxRoadTypeGet((FoxRoadType)type);
-        fprintf(stream, "  %-15s %5u  (%.0f km/h)\n", info->name, roads.roadsByType[type],
-                Kmh(info->speedLimit));
+        if (roads.roadsByLanes[lanes] != 0u)
+        {
+            fprintf(stream, "  %u car lane%s across %u\n", lanes, lanes == 1u ? "" : "s",
+                    roads.roadsByLanes[lanes]);
+        }
     }
+    fprintf(stream, "%.2f km of footway, %u pedestrian crossings\n",
+            (double)roads.footwayLength / FOX_METRES(1000), roads.crossings);
     fprintf(stream, "nodes %u: %u junctions (%u with lights), %u bends, %u dead ends\n",
             roads.nodes, roads.junctions, roads.signalled, roads.bends, roads.deadEnds);
     fprintf(stream, "signs at junctions: %u priority, %u give way, %u stop, %u none\n",

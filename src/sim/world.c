@@ -15,6 +15,7 @@ struct FoxWorld
     FoxPlanet *planet;
     FoxNetwork *network;
     FoxTraffic *traffic;
+    FoxWalkers *walkers;
 };
 
 FoxWorld *FoxWorldCreate(const FoxWorldDesc *desc)
@@ -30,11 +31,14 @@ FoxWorld *FoxWorldCreate(const FoxWorldDesc *desc)
     }
     const FoxNetworkDesc networkDesc = {.driveSide = desc->driveSide, .router = desc->router};
     const FoxTrafficDesc trafficDesc = {.seed = desc->seed, .targetVehicles = desc->targetVehicles};
+    const FoxWalkersDesc walkersDesc = {.seed = desc->seed, .target = desc->targetWalkers};
     world->planet =
         FoxPlanetCreate(desc->planetRadius != 0 ? desc->planetRadius : FOX_PLANET_DEFAULT_RADIUS);
     world->network = FoxNetworkCreate(&networkDesc);
     world->traffic = FoxTrafficCreate(&trafficDesc);
-    if (world->planet == NULL || world->network == NULL || world->traffic == NULL)
+    world->walkers = FoxWalkersCreate(&walkersDesc);
+    if (world->planet == NULL || world->network == NULL || world->traffic == NULL ||
+        world->walkers == NULL)
     {
         FoxWorldDestroy(world);
         return NULL;
@@ -48,6 +52,7 @@ void FoxWorldDestroy(FoxWorld *world)
     {
         return;
     }
+    FoxWalkersDestroy(world->walkers);
     FoxTrafficDestroy(world->traffic);
     FoxNetworkDestroy(world->network);
     FoxPlanetDestroy(world->planet);
@@ -59,10 +64,11 @@ uint64_t FoxWorldTick(const FoxWorld *world)
     return world == NULL ? 0u : world->tick;
 }
 
-/* Cars leave retired paths before the network frees them. */
+/* Cars and walkers leave retired paths before the network frees them. */
 static void Settle(FoxWorld *world)
 {
     FoxTrafficRemap(world->traffic, world->network);
+    FoxWalkersRemap(world->walkers, world->network);
     FoxNetworkReleaseRetired(world->network);
 }
 
@@ -75,6 +81,7 @@ void FoxWorldAdvance(FoxWorld *world, uint64_t ticks)
     for (uint64_t step = 0u; step < ticks; ++step)
     {
         FoxTrafficStep(world->traffic, world->network);
+        FoxWalkersStep(world->walkers, world->network, world->traffic);
         ++world->tick;
         /* A road removed under cars goes for good once they are off it. */
         if (FoxNetworkSettleClosing(world->network, (FoxVec){0, 0, 0}, 0))
@@ -97,6 +104,11 @@ const FoxNetwork *FoxWorldNetwork(const FoxWorld *world)
 const FoxTraffic *FoxWorldTraffic(const FoxWorld *world)
 {
     return world == NULL ? NULL : world->traffic;
+}
+
+const FoxWalkers *FoxWorldWalkers(const FoxWorld *world)
+{
+    return world == NULL ? NULL : world->walkers;
 }
 
 static bool GuardTouches(const void *context, FoxVec min, FoxVec max)
@@ -180,6 +192,55 @@ bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDri
     return added;
 }
 
+/* Roads still closing near a road about to change go for good first. */
+static void SettleNear(FoxWorld *world, uint32_t road)
+{
+    FoxRoadView view;
+    if (FoxNetworkRoad(world->network, road, &view) &&
+        FoxNetworkSettleClosing(world->network, view.centre[view.centreCount / 2u],
+                                view.length / 2 + EDIT_REACH))
+    {
+        Settle(world);
+    }
+}
+
+FoxRoadResult FoxWorldWidenRoad(FoxWorld *world, uint32_t road, uint32_t side, FoxLaneKind kind,
+                                bool forward)
+{
+    if (world == NULL)
+    {
+        return FOX_ROAD_INVALID;
+    }
+    SettleNear(world, road);
+    const FoxRoadResult result = FoxNetworkWidenRoad(world->network, road, side, kind, forward);
+    Settle(world);
+    return result;
+}
+
+bool FoxWorldTurnStrip(FoxWorld *world, uint32_t road, int64_t offset)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    SettleNear(world, road);
+    const bool turned = FoxNetworkTurnStrip(world->network, road, offset);
+    Settle(world);
+    return turned;
+}
+
+bool FoxWorldToggleCrossing(FoxWorld *world, uint32_t road, int64_t along)
+{
+    if (world == NULL)
+    {
+        return false;
+    }
+    SettleNear(world, road);
+    const bool toggled = FoxNetworkToggleCrossing(world->network, road, along);
+    Settle(world);
+    return toggled;
+}
+
 bool FoxWorldSetSpeedLimit(FoxWorld *world, uint32_t road, int32_t speed)
 {
     return world != NULL && FoxNetworkSetSpeedLimit(world->network, road, speed);
@@ -200,6 +261,14 @@ void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles)
     if (world != NULL)
     {
         FoxTrafficSetTarget(world->traffic, vehicles);
+    }
+}
+
+void FoxWorldSetTargetWalkers(FoxWorld *world, uint32_t walkers)
+{
+    if (world != NULL)
+    {
+        FoxWalkersSetTarget(world->walkers, walkers);
     }
 }
 
@@ -230,7 +299,8 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         const FoxRoadPlan northSouth = {
             .start = PoleOffset(world, line * 80, -200),
             .end = PoleOffset(world, line * 80, 200),
-            .type = type,
+            .layout = FoxRoadLayoutPreset(type),
+            .speedLimit = FoxRoadPresetSpeed(type),
         };
         ok = FoxWorldBuildRoad(world, &northSouth) == FOX_ROAD_OK && ok;
     }
@@ -240,7 +310,8 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         const FoxRoadPlan eastWest = {
             .start = PoleOffset(world, -200, line * 80),
             .end = PoleOffset(world, 200, line * 80),
-            .type = type,
+            .layout = FoxRoadLayoutPreset(type),
+            .speedLimit = FoxRoadPresetSpeed(type),
         };
         ok = FoxWorldBuildRoad(world, &eastWest) == FOX_ROAD_OK && ok;
     }
@@ -250,14 +321,16 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         .end = PoleOffset(world, 160, 200),
         .control = PoleOffset(world, 250, 250),
         .curved = true,
-        .type = FOX_ROAD_BOULEVARD,
+        .layout = FoxRoadLayoutPreset(FOX_ROAD_BOULEVARD),
+        .speedLimit = FoxRoadPresetSpeed(FOX_ROAD_BOULEVARD),
     };
     ok = FoxWorldBuildRoad(world, &bend) == FOX_ROAD_OK && ok;
     /* A short street out of town that ends in a turning circle. */
     const FoxRoadPlan spur = {
         .start = PoleOffset(world, -120, -200),
         .end = PoleOffset(world, -120, -260),
-        .type = FOX_ROAD_STREET,
+        .layout = FoxRoadLayoutPreset(FOX_ROAD_STREET),
+        .speedLimit = FoxRoadPresetSpeed(FOX_ROAD_STREET),
     };
     ok = FoxWorldBuildRoad(world, &spur) == FOX_ROAD_OK && ok;
     /* East of town the avenue runs on into a square where five roads meet at
@@ -282,9 +355,23 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
             .end = PoleOffset(world, road[2], road[3]),
             .control = PoleOffset(world, road[4], road[5]),
             .curved = road[4] != 0,
-            .type = (FoxRoadType)road[6],
+            .layout = FoxRoadLayoutPreset((FoxRoadType)road[6]),
+            .speedLimit = FoxRoadPresetSpeed((FoxRoadType)road[6]),
         };
         ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+    }
+    /* A pedestrian crossing halfway along every third road long enough. */
+    for (uint32_t index = 0u; index < FoxNetworkRoadCapacity(world->network); index += 3u)
+    {
+        FoxRoadView road;
+        if (FoxNetworkRoad(world->network, index, &road) &&
+            road.length - road.trim[0] - road.trim[1] > FOX_METRES(40))
+        {
+            ok =
+                FoxWorldToggleCrossing(
+                    world, index, road.trim[0] + (road.length - road.trim[0] - road.trim[1]) / 2) &&
+                ok;
+        }
     }
     /* Lights where the avenues cross, stop signs where two streets meet. */
     const FoxNetwork *network = world->network;
@@ -374,7 +461,8 @@ static bool Ring(FoxWorld *world, int32_t latitude, int32_t first, uint32_t piec
             .control = {across * Cosine(middle) / FOX_UNIT, across * Sine(middle) / FOX_UNIT,
                         radius * Sine(latitude) / FOX_UNIT},
             .curved = true,
-            .type = type,
+            .layout = FoxRoadLayoutPreset(type),
+            .speedLimit = FoxRoadPresetSpeed(type),
         };
         ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
     }
@@ -417,7 +505,11 @@ bool FoxWorldBuildPlanetRoads(FoxWorld *world)
         {
             const FoxVec to = OnPlanet(world, latitudes[step], meridians[index].longitude);
             const FoxRoadPlan plan = {
-                .start = from, .end = to, .type = (FoxRoadType)meridians[index].type};
+                .start = from,
+                .end = to,
+                .layout = FoxRoadLayoutPreset((FoxRoadType)meridians[index].type),
+                .speedLimit = FoxRoadPresetSpeed((FoxRoadType)meridians[index].type),
+            };
             ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
             from = to;
         }
@@ -436,7 +528,7 @@ bool FoxWorldBuildPlanetRoads(FoxWorld *world)
         {
             FoxRoadView road;
             big += FoxNetworkRoad(world->network, node.roads[slot], &road) &&
-                           road.type != FOX_ROAD_STREET
+                           FoxRoadLayoutCarLanes(&road.layout) > 2u
                        ? 1u
                        : 0u;
         }
@@ -466,13 +558,15 @@ bool FoxWorldBuildGrid(FoxWorld *world, uint32_t lines, int64_t spacing)
             const int64_t at = (int64_t)line * spacing - half;
             const bool boulevard = line == middle;
             const bool avenue = line % 4u == 0u || line + 1u == lines;
+            const FoxRoadType type =
+                boulevard ? FOX_ROAD_BOULEVARD : (avenue ? FOX_ROAD_AVENUE : FOX_ROAD_STREET);
             const FoxRoadPlan plan = {
                 .start = pass == 0u ? (FoxVec){at, -half, FoxPlanetRadius(world->planet)}
                                     : (FoxVec){-half, at, FoxPlanetRadius(world->planet)},
                 .end = pass == 0u ? (FoxVec){at, half, FoxPlanetRadius(world->planet)}
                                   : (FoxVec){half, at, FoxPlanetRadius(world->planet)},
-                .type =
-                    boulevard ? FOX_ROAD_BOULEVARD : (avenue ? FOX_ROAD_AVENUE : FOX_ROAD_STREET),
+                .layout = FoxRoadLayoutPreset(type),
+                .speedLimit = FoxRoadPresetSpeed(type),
             };
             ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
         }
@@ -490,7 +584,7 @@ bool FoxWorldBuildGrid(FoxWorld *world, uint32_t lines, int64_t spacing)
         {
             FoxRoadView road;
             big += FoxNetworkRoad(world->network, node.roads[slot], &road) &&
-                           road.type != FOX_ROAD_STREET
+                           FoxRoadLayoutCarLanes(&road.layout) > 2u
                        ? 1u
                        : 0u;
         }
@@ -510,5 +604,6 @@ uint64_t FoxWorldHash(const FoxWorld *world)
     }
     uint64_t hash = FoxHashCombine(world->tick, FoxPlanetHash(world->planet));
     hash = FoxHashCombine(hash, FoxNetworkHash(world->network));
+    hash = FoxHashCombine(hash, FoxWalkersHash(world->walkers));
     return FoxHashCombine(hash, FoxTrafficHash(world->traffic));
 }

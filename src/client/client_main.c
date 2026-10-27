@@ -2,6 +2,7 @@
 #include "client/client.h"
 #include "client/ui.h"
 #include "sim/traffic.h"
+#include "sim/walkers.h"
 
 #include <math.h>
 #include <stdbool.h>
@@ -29,6 +30,7 @@ static int Run(int argumentCount, char **arguments)
         .seed = 1u,
         .graphics = FOX_GRAPHICS_ANY,
         .cars = 400u,
+        .walkers = 400u,
         .driveSide = FOX_DRIVE_RIGHT,
         .demo = true,
         .gridSpacing = FOX_METRES(80),
@@ -67,6 +69,18 @@ static int Run(int argumentCount, char **arguments)
         {
             parsed = FoxParseUint64(value, &number) && number <= FOX_TRAFFIC_MAX_VEHICLES;
             options.cars = (uint32_t)number;
+        }
+#if defined(FOX_REVIEW)
+        else if (strcmp(argument, "--review-dir") == 0)
+        {
+            parsed = value != NULL && value[0] != '\0';
+            options.reviewDirectory = value;
+        }
+#endif
+        else if (strcmp(argument, "--walkers") == 0)
+        {
+            parsed = FoxParseUint64(value, &number) && number <= FOX_WALKERS_MAX;
+            options.walkers = (uint32_t)number;
         }
         else if (strcmp(argument, "--camera-distance") == 0)
         {
@@ -115,7 +129,8 @@ static int Run(int argumentCount, char **arguments)
         }
         if (!parsed)
         {
-            fputs("usage: Foxity [--seed N] [--cars N] [--drive right|left] [--empty] "
+            fputs("usage: Foxity [--seed N] [--cars N] [--walkers N] [--drive right|left] "
+                  "[--empty] "
                   "[--camera-distance M] "
                   "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
                   "[--tool N] [--graphics d3d12|vulkan] [--no-vsync] [--smoke] "

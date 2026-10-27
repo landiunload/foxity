@@ -5,11 +5,13 @@
 #include "sim/planet.h"
 #include "sim/router.h"
 #include "sim/traffic.h"
+#include "sim/walkers.h"
 
 #include <stdbool.h>
 #include <stdint.h>
 
-/* The city: the planet, its roads and its cars, advanced in fixed ticks.
+/* The city: the planet, its roads, its cars and the people walking it,
+ * advanced in fixed ticks.
  * Every change goes through the commands below, so a recorded list of
  * commands with their ticks replays the same city anywhere. */
 
@@ -24,6 +26,7 @@ typedef struct FoxWorldDesc
     /* Zero picks FOX_PLANET_DEFAULT_RADIUS. */
     int64_t planetRadius;
     uint32_t targetVehicles;
+    uint32_t targetWalkers;
     /* Optional, see router.h; must outlive the world. */
     const FoxRouter *router;
 } FoxWorldDesc;
@@ -37,16 +40,24 @@ void FoxWorldAdvance(FoxWorld *world, uint64_t ticks);
 const FoxPlanet *FoxWorldPlanet(const FoxWorld *world);
 const FoxNetwork *FoxWorldNetwork(const FoxWorld *world);
 const FoxTraffic *FoxWorldTraffic(const FoxWorld *world);
+const FoxWalkers *FoxWorldWalkers(const FoxWorld *world);
 
 uint32_t FoxWorldDig(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
 uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
 FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan);
 bool FoxWorldRemoveRoad(FoxWorld *world, uint32_t road);
 bool FoxWorldAddDriveZone(FoxWorld *world, FoxVec center, int64_t radius, FoxDriveSide side);
+/* Widens a road by a strip, turns one, or puts a pedestrian crossing on
+ * it or takes one off: see the network's own; the traffic follows. */
+FoxRoadResult FoxWorldWidenRoad(FoxWorld *world, uint32_t road, uint32_t side, FoxLaneKind kind,
+                                bool forward);
+bool FoxWorldTurnStrip(FoxWorld *world, uint32_t road, int64_t offset);
+bool FoxWorldToggleCrossing(FoxWorld *world, uint32_t road, int64_t along);
 bool FoxWorldSetSpeedLimit(FoxWorld *world, uint32_t road, int32_t speed);
 bool FoxWorldSetSign(FoxWorld *world, uint32_t road, uint32_t end, FoxSign sign);
 bool FoxWorldSetSignals(FoxWorld *world, uint32_t node, bool on);
 void FoxWorldSetTargetVehicles(FoxWorld *world, uint32_t vehicles);
+void FoxWorldSetTargetWalkers(FoxWorld *world, uint32_t walkers);
 
 /* A small grid town around the north pole: what the headless run, the
  * tests and a client started with --demo drive on. The avenues cross at

@@ -22,6 +22,7 @@
  * cannot in red. */
 #define COLOR_PREVIEW UINT32_C(0xFFFF8A1A)
 #define COLOR_PREVIEW_BAD UINT32_C(0xFF3C46F0)
+#define COLOR_PREVIEW_WIDEN UINT32_C(0xFF46C850)
 /* The width of the tools' lines and rings, metres. */
 #define OVERLAY_LINE_HALF 0.12
 #define OVERLAY_RING_WIDTH 0.35
@@ -470,7 +471,7 @@ void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double bu
 }
 
 void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t count,
-                            FoxRoadType type, bool valid)
+                            const FoxRoadLayout *layout, FoxPreviewLook look)
 {
     if (view == NULL)
     {
@@ -478,14 +479,16 @@ void FoxRoadsViewSetPreview(FoxRoadsView *view, const FoxVec *centre, uint32_t c
     }
     ReleaseBuffer(view, &view->previewBuffer);
     view->previewCount = 0u;
-    if (centre == NULL || count < 2u || FoxRoadTypeGet(type) == NULL)
+    if (centre == NULL || count < 2u || layout == NULL)
     {
         return;
     }
     view->previewOrigin = centre[0];
     FoxMeshReset(&view->base);
-    FoxRoadMeshPreview(centre, count, type, valid ? COLOR_PREVIEW : COLOR_PREVIEW_BAD,
-                       view->previewOrigin, &view->base);
+    const uint32_t color = look == FOX_PREVIEW_BUILD     ? COLOR_PREVIEW
+                           : look == FOX_PREVIEW_REFUSED ? COLOR_PREVIEW_BAD
+                                                         : COLOR_PREVIEW_WIDEN;
+    FoxRoadMeshPreview(centre, count, layout, color, view->previewOrigin, &view->base);
     if (!view->base.failed && view->base.count != 0u &&
         UploadVertices(view->device, view->base.vertices, view->base.count, &view->previewBuffer))
     {

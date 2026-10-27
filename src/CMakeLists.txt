@@ -17,6 +17,8 @@ add_library(fox_core STATIC
     sim/space.h
     sim/traffic.c
     sim/traffic.h
+    sim/walkers.c
+    sim/walkers.h
     sim/world.c
     sim/world.h)
 target_include_directories(fox_core PUBLIC "${CMAKE_CURRENT_SOURCE_DIR}")
@@ -93,4 +95,24 @@ if(FOX_BUILD_CLIENT)
         OUTPUT_NAME "Foxity"
         VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:foxity>")
     fox_deploy_engine_modules(foxity ${FOX_CLIENT_ENGINE_MODULES})
+
+    # For testers only, never shipped: P saves the frame with a comment.
+    if(FOX_REVIEW_BUILD)
+        add_executable(foxity_review WIN32
+            client/client.c
+            client/client.h
+            client/client_main.c
+            client/review.c
+            client/review.h)
+        target_compile_definitions(foxity_review PRIVATE FOX_REVIEW)
+        target_link_libraries(foxity_review PRIVATE fox_client)
+        if(WIN32)
+            target_link_libraries(foxity_review PRIVATE shell32)
+        endif()
+        fox_configure_c_target(foxity_review)
+        set_target_properties(foxity_review PROPERTIES
+            OUTPUT_NAME "FoxityReview"
+            VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:foxity_review>")
+        fox_deploy_engine_modules(foxity_review ${FOX_CLIENT_ENGINE_MODULES})
+    endif()
 endif()

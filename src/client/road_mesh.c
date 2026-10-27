@@ -8,8 +8,18 @@
 /* Heights above the ground: the asphalt, then everything painted on it. */
 #define ASPHALT_LIFT 0.15
 #define MARKING_LIFT 0.19
+/* Concrete lanes lie over the asphalt; footways stand a kerb above it. */
+#define CONCRETE_LIFT 0.17
+#define FOOTWAY_LIFT 0.29
 /* What the tools show lies over the markings. */
-#define OVERLAY_LIFT 0.3
+#define OVERLAY_LIFT 0.36
+/* Concrete is laid in slabs this long. */
+#define SLAB 5.0
+#define JOINT 0.08
+/* A zebra: its depth along the road, and its bars and the gaps between. */
+#define ZEBRA_DEPTH 3.0
+#define ZEBRA_BAR 0.5
+#define ZEBRA_GAP 0.5
 #define RING_SEGMENTS 32u
 /* Paved beyond the outer lanes. */
 #define SHOULDER ((double)FOX_ROAD_SHOULDER / FOX_UNITS_PER_METRE)
@@ -39,6 +49,11 @@
 #define PI 3.14159265358979323846
 
 #define COLOR_ASPHALT UINT32_C(0xFF3C3A38)
+#define COLOR_CONCRETE UINT32_C(0xFF8E9294)
+#define COLOR_JOINT UINT32_C(0xFF5E6264)
+#define COLOR_BIKE UINT32_C(0xFF3E4C9A)
+#define COLOR_FOOTWAY UINT32_C(0xFFAEB2B4)
+#define COLOR_KERB UINT32_C(0xFF8A8E90)
 #define COLOR_LINE UINT32_C(0xFFE6E6E6)
 #define COLOR_POLE UINT32_C(0xFF8C8C8C)
 #define COLOR_HOUSING UINT32_C(0xFF262626)
@@ -400,66 +415,203 @@ static void LaneLine(FoxMesh *mesh, const Station *stations, uint32_t count, dou
           COLOR_LINE);
 }
 
-double FoxRoadMeshHalfWidth(FoxRoadType type)
+static double Metres(int64_t units)
 {
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet(type);
-    return info == NULL ? 0.0
-                        : (double)(info->forwardLanes + info->backwardLanes) *
-                              (double)FOX_LANE_WIDTH / 2.0 / FOX_UNITS_PER_METRE;
+    return (double)units / FOX_UNITS_PER_METRE;
 }
 
 static double LaneWidth(void)
 {
-    return (double)FOX_LANE_WIDTH / FOX_UNITS_PER_METRE;
+    return Metres(FOX_LANE_WIDTH);
 }
 
-/* The lane markings of a road type over [from, to] of a centre line: edge
- * lines there, and the centre line and lane lines over [linesFrom, linesTo],
- * dashed in [dashFrom, dashTo]. */
-static void Markings(FoxMesh *mesh, const Station *stations, uint32_t count, FoxRoadType type,
-                     double from, double to, double linesFrom, double linesTo, double dashFrom,
-                     double dashTo)
+/* Half the width of the car lanes, metres; zero without any. */
+static double CarHalf(const FoxRoadLayout *layout)
 {
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet(type);
-    const double half = FoxRoadMeshHalfWidth(type);
-    const double lane = LaneWidth();
-    for (int side = -1; side <= 1; side += 2)
+    return Metres(FoxRoadLayoutCarHalfWidth(layout));
+}
+
+/* Half the width a road meets its nodes with, metres: its car lanes and
+ * their shoulders, or the strips of a path. */
+static double PavedHalf(const FoxRoadLayout *layout)
+{
+    if (FoxRoadLayoutCarLanes(layout) != 0u)
     {
-        const double edge = (double)side * (half - EDGE_HALF);
+        return CarHalf(layout) + SHOULDER;
+    }
+    int64_t extent[2];
+    FoxRoadLayoutExtent(layout, extent);
+    return Metres(FoxMax(extent[0], extent[1]));
+}
+
+double FoxRoadMeshReach(const FoxRoadLayout *layout)
+{
+    int64_t extent[2];
+    FoxRoadLayoutExtent(layout, extent);
+    return Metres(FoxMax(extent[0], extent[1])) +
+           (FoxRoadLayoutCarLanes(layout) != 0u ? SHOULDER : 0.0);
+}
+
+/* The width of what runs along one edge beyond the shoulder, metres. */
+static double EdgeWidth(const FoxRoadLayout *layout, uint32_t side)
+{
+    return (layout->bike[side] != FOX_WAY_NONE ? Metres(FOX_LANE_WIDTH) : 0.0) +
+           (layout->foot[side] ? Metres(FOX_FOOT_WIDTH) : 0.0);
+}
+
+/* A strip's edges in metres right of the centre line, as drawn: beside car
+ * lanes the edge strips stand beyond the shoulder. */
+static void StripEdges(const FoxRoadLayout *layout, const FoxRoadStrip *strip, double *outLeft,
+                       double *outRight)
+{
+    double shift = 0.0;
+    if (FoxRoadLayoutCarLanes(layout) != 0u &&
+        (strip->kind == FOX_LANE_BIKE || strip->kind == FOX_LANE_FOOT))
+    {
+        shift = strip->left < 0 ? -SHOULDER : SHOULDER;
+    }
+    *outLeft = Metres(strip->left) + shift;
+    *outRight = Metres(strip->right) + shift;
+}
+
+/* A kerb's face from the asphalt up to a footway, along an offset. */
+static void KerbFace(FoxMesh *mesh, const Station *stations, uint32_t count, double at, double from,
+                     double to)
+{
+    for (uint32_t index = 0u; index + 1u < count; ++index)
+    {
+        const Station *a = &stations[index];
+        const Station *b = &stations[index + 1u];
+        const double low = fmax(from, a->along);
+        const double high = fmin(to, b->along);
+        const double span = b->along - a->along;
+        if (span <= 0.0 || high <= low)
+        {
+            continue;
+        }
+        const Station p0 = Blend(a, b, (low - a->along) / span);
+        const Station p1 = Blend(a, b, (high - a->along) / span);
+        Quad(mesh, Offset(&p0, at, ASPHALT_LIFT), Offset(&p1, at, ASPHALT_LIFT),
+             Offset(&p1, at, FOOTWAY_LIFT), Offset(&p0, at, FOOTWAY_LIFT), COLOR_KERB);
+    }
+}
+
+/* The surfaces of a road's strips over [from, to] of a centre line: the car
+ * lanes' asphalt with concrete laid over in slabs, bike lanes, and footways
+ * raised on a kerb. */
+static void Surfaces(FoxMesh *base, FoxMesh *detail, const Station *stations, uint32_t count,
+                     const FoxRoadLayout *layout, FoxDriveSide side, double from, double to)
+{
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t stripCount = FoxRoadLayoutStrips(layout, side, strips);
+    if (FoxRoadLayoutCarLanes(layout) != 0u)
+    {
+        const double half = CarHalf(layout) + SHOULDER;
+        Strip(base, stations, count, -half, half, ASPHALT_LIFT, from, to, 0.0, 0.0, COLOR_ASPHALT);
+    }
+    for (uint32_t index = 0u; index < stripCount; ++index)
+    {
+        const FoxRoadStrip *strip = &strips[index];
+        double left = 0.0;
+        double right = 0.0;
+        StripEdges(layout, strip, &left, &right);
+        switch (strip->kind)
+        {
+        case FOX_LANE_CONCRETE:
+            Strip(base, stations, count, left, right, CONCRETE_LIFT, from, to, 0.0, 0.0,
+                  COLOR_CONCRETE);
+            if (detail != NULL)
+            {
+                Strip(detail, stations, count, left, right, CONCRETE_LIFT + 0.01, from, to, JOINT,
+                      SLAB - JOINT, COLOR_JOINT);
+            }
+            break;
+        case FOX_LANE_BIKE:
+            Strip(base, stations, count, left, right, ASPHALT_LIFT, from, to, 0.0, 0.0, COLOR_BIKE);
+            break;
+        case FOX_LANE_FOOT:
+            Strip(base, stations, count, left, right, FOOTWAY_LIFT, from, to, 0.0, 0.0,
+                  COLOR_FOOTWAY);
+            /* The kerb faces the side nearer the road. */
+            KerbFace(base, stations, count, strip->left < 0 ? right : left, from, to);
+            break;
+        default:
+            break;
+        }
+    }
+}
+
+/* The lane markings of a layout over [from, to] of a centre line: edge lines
+ * along the car lanes there, and over [linesFrom, linesTo] the line between
+ * the two ways, single and dashed between two single lanes, double
+ * elsewhere, and lane lines dashed in [dashFrom, dashTo]. */
+static void Markings(FoxMesh *mesh, const Station *stations, uint32_t count,
+                     const FoxRoadLayout *layout, FoxDriveSide side, double from, double to,
+                     double linesFrom, double linesTo, double dashFrom, double dashTo)
+{
+    if (FoxRoadLayoutCarLanes(layout) == 0u)
+    {
+        return;
+    }
+    const double half = CarHalf(layout);
+    for (int edgeSide = -1; edgeSide <= 1; edgeSide += 2)
+    {
+        const double edge = (double)edgeSide * (half - EDGE_HALF);
         Strip(mesh, stations, count, edge - EDGE_HALF, edge + EDGE_HALF, MARKING_LIFT, from, to,
               0.0, 0.0, COLOR_LINE);
     }
-    if (info->backwardLanes != 0u)
+    if (layout->shared)
     {
-        if (info->forwardLanes == 1u)
+        return;
+    }
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t stripCount = FoxRoadLayoutStrips(layout, side, strips);
+    const bool street = layout->lanes[0] == 1u && layout->lanes[1] == 1u;
+    for (uint32_t index = 0u; index + 1u < stripCount; ++index)
+    {
+        const FoxRoadStrip *a = &strips[index];
+        const FoxRoadStrip *b = &strips[index + 1u];
+        if (a->kind > FOX_LANE_CONCRETE || b->kind > FOX_LANE_CONCRETE)
         {
-            /* A street: one dashed line to overtake across. */
-            LaneLine(mesh, stations, count, 0.0, linesFrom, linesTo, dashFrom, dashTo, true, DASH,
+            continue;
+        }
+        const double at = Metres(a->right);
+        /* Lanes of one way are parted by a dashed line, and so are the two
+         * ways of a street, to overtake across. */
+        if (a->way == b->way || street)
+        {
+            LaneLine(mesh, stations, count, at, linesFrom, linesTo, dashFrom, dashTo, true, DASH,
                      DASH_GAP);
         }
         else
         {
             /* Bigger roads keep their directions apart with a double line. */
-            LaneLine(mesh, stations, count, -DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
+            LaneLine(mesh, stations, count, at - DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
                      false, DASH, DASH_GAP);
-            LaneLine(mesh, stations, count, DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
+            LaneLine(mesh, stations, count, at + DOUBLE_LINE_SPACING, linesFrom, linesTo, 0.0, 0.0,
                      false, DASH, DASH_GAP);
         }
-        /* Both directions carry as many lanes, so the lines are symmetric. */
-        for (uint32_t index = 1u; index < info->forwardLanes; ++index)
-        {
-            for (int side = -1; side <= 1; side += 2)
-            {
-                LaneLine(mesh, stations, count, (double)side * lane * (double)index, linesFrom,
-                         linesTo, dashFrom, dashTo, true, DASH, DASH_GAP);
-            }
-        }
+    }
+}
+
+/* The bars of a zebra across the car lanes, centred `at` along the road. */
+static void Zebra(FoxMesh *mesh, const Station *stations, uint32_t count,
+                  const FoxRoadLayout *layout, double at)
+{
+    const double half = CarHalf(layout);
+    const double room = 2.0 * half - 2.0 * EDGE_HALF;
+    const uint32_t bars = (uint32_t)floor((room + ZEBRA_GAP) / (ZEBRA_BAR + ZEBRA_GAP));
+    if (bars == 0u)
+    {
         return;
     }
-    for (uint32_t index = 1u; index < info->forwardLanes; ++index)
+    const double used = (double)bars * ZEBRA_BAR + (double)(bars - 1u) * ZEBRA_GAP;
+    double x = -used / 2.0;
+    for (uint32_t bar = 0u; bar < bars; ++bar)
     {
-        LaneLine(mesh, stations, count, lane * ((double)info->forwardLanes / 2.0 - (double)index),
-                 linesFrom, linesTo, dashFrom, dashTo, true, DASH, DASH_GAP);
+        Strip(mesh, stations, count, x, x + ZEBRA_BAR, MARKING_LIFT, at - ZEBRA_DEPTH / 2.0,
+              at + ZEBRA_DEPTH / 2.0, 0.0, 0.0, COLOR_LINE);
+        x += ZEBRA_BAR + ZEBRA_GAP;
     }
 }
 
@@ -766,10 +918,11 @@ static Post CurbPost(const LaneFrame *frame, FoxDriveSide side, double back)
 
 /* ---- Roads -------------------------------------------------------------------------- */
 
+/* Roads with car lanes at a node: an intersection for cars has three. */
 static uint32_t RoadsAt(const FoxNetwork *network, uint32_t node)
 {
     FoxNodeView view;
-    return FoxNetworkNode(network, node, &view) ? view.roadCount : 0u;
+    return FoxNetworkNode(network, node, &view) ? view.carRoadCount : 0u;
 }
 
 /* What is painted across the lanes arriving at a road's end. */
@@ -783,7 +936,7 @@ typedef enum EndMarking
 static EndMarking EndMark(const FoxNetwork *network, const FoxRoadView *road, uint32_t end)
 {
     FoxNodeView node;
-    if (!FoxNetworkNode(network, road->nodes[end], &node) || node.roadCount < 3u)
+    if (!FoxNetworkNode(network, road->nodes[end], &node) || node.carRoadCount < 3u)
     {
         return MARK_NONE;
     }
@@ -807,25 +960,39 @@ static double LinesBack(EndMarking mark)
 static bool ArrivingSpan(const FoxRoadView *road, uint32_t end, bool over, double *outLeft,
                          double *outRight)
 {
-    const FoxRoadTypeInfo *info = FoxRoadTypeGet(road->type);
-    /* Lanes of direction 0 arrive at nodes[1], to the right of the centre
-     * where traffic keeps right. */
+    /* Lanes of direction 0 arrive at nodes[1]. */
     const uint32_t direction = end == 1u ? 0u : 1u;
     if (road->laneCount[direction] == 0u)
     {
         return false;
     }
-    const double outer = FoxRoadMeshHalfWidth(road->type) - (over ? 0.0 : 2.0 * EDGE_HALF);
-    *outLeft = -outer;
-    *outRight = outer;
-    if (info->backwardLanes != 0u)
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t count = FoxRoadLayoutStrips(&road->layout, road->driveSide, strips);
+    const uint8_t way = direction == 0u ? FOX_WAY_FORWARD : FOX_WAY_BACKWARD;
+    double left = 0.0;
+    double right = 0.0;
+    bool any = false;
+    for (uint32_t index = 0u; index < count; ++index)
     {
-        /* The far side of the centre line, single or double. */
-        const double centre = (info->forwardLanes == 1u ? 0.0 : DOUBLE_LINE_SPACING) + LINE_HALF;
-        const bool onRight = (direction == 0u) == (road->driveSide == FOX_DRIVE_RIGHT);
-        *outLeft = onRight ? (over ? -centre : centre) : -outer;
-        *outRight = onRight ? outer : (over ? centre : -centre);
+        if (strips[index].kind <= FOX_LANE_CONCRETE &&
+            (strips[index].way == way || strips[index].way == FOX_WAY_BOTH))
+        {
+            left = any ? fmin(left, Metres(strips[index].left)) : Metres(strips[index].left);
+            right = any ? fmax(right, Metres(strips[index].right)) : Metres(strips[index].right);
+            any = true;
+        }
     }
+    if (!any)
+    {
+        return false;
+    }
+    /* Between the inner sides of the lines along them, or over them. */
+    const double half = CarHalf(&road->layout);
+    const double edge = over ? 0.0 : 2.0 * EDGE_HALF;
+    const bool street = road->layout.lanes[0] == 1u && road->layout.lanes[1] == 1u;
+    const double centre = (street ? 0.0 : DOUBLE_LINE_SPACING) + LINE_HALF;
+    *outLeft = left <= -half + 1e-6 ? -half + edge : left + (over ? -centre : centre);
+    *outRight = right >= half - 1e-6 ? half - edge : right - (over ? -centre : centre);
     return true;
 }
 
@@ -907,7 +1074,7 @@ static void RoadEnd(const FoxNetwork *network, uint32_t roadIndex, const FoxRoad
                     uint32_t end, FoxVec origin, FoxMesh *detail, FoxSignalHeads *heads)
 {
     FoxNodeView node;
-    if (!FoxNetworkNode(network, road->nodes[end], &node) || node.roadCount < 3u)
+    if (!FoxNetworkNode(network, road->nodes[end], &node) || node.carRoadCount < 3u)
     {
         return;
     }
@@ -971,13 +1138,20 @@ void FoxRoadMeshRoad(const FoxNetwork *network, uint32_t roadIndex, FoxVec origi
         return;
     }
     const uint32_t count = BuildStations(road.centre, road.centreCount, origin, from, to, stations);
-    const double paved = FoxRoadMeshHalfWidth(road.type) + SHOULDER;
-    Strip(base, stations, count, -paved, paved, ASPHALT_LIFT, from, to, 0.0, 0.0, COLOR_ASPHALT);
+    Surfaces(base, detail, stations, count, &road.layout, road.driveSide, from, to);
     const double dashFrom = from + (RoadsAt(network, road.nodes[0]) >= 3u ? SOLID_NEAR : 0.0);
     const double dashTo = to - (RoadsAt(network, road.nodes[1]) >= 3u ? SOLID_NEAR : 0.0);
     const EndMarking marks[2] = {EndMark(network, &road, 0u), EndMark(network, &road, 1u)};
-    Markings(detail, stations, count, road.type, from, to, from + LinesBack(marks[0]),
-             to - LinesBack(marks[1]), dashFrom, dashTo);
+    Markings(detail, stations, count, &road.layout, road.driveSide, from, to,
+             from + LinesBack(marks[0]), to - LinesBack(marks[1]), dashFrom, dashTo);
+    for (uint32_t crossing = 0u; crossing < road.crossingCount; ++crossing)
+    {
+        const double at = Metres(road.crossings[crossing]);
+        if (at > from + ZEBRA_DEPTH / 2.0 && at < to - ZEBRA_DEPTH / 2.0)
+        {
+            Zebra(detail, stations, count, &road.layout, at);
+        }
+    }
     for (uint32_t end = 0u; end < 2u; ++end)
     {
         if (marks[end] == MARK_STOP)
@@ -1030,7 +1204,13 @@ typedef struct RoadEndShape
     V3 right;
     double paved;
     double angle;
-    FoxRoadType type;
+    FoxRoadLayout layout;
+    /* What runs beyond the paved edge on the left and the right seen going
+     * out of the node, metres, and whether it has a footway. */
+    double edge[2];
+    bool foot[2];
+    /* Which end of its road meets the node. */
+    uint32_t end;
     FoxDriveSide side;
     /* The sign in force for the traffic arriving at this end. */
     FoxSign sign;
@@ -1052,8 +1232,16 @@ static bool EndShape(const FoxNetwork *network, uint32_t roadIndex, uint32_t nod
     const V3 tangent = Unit(Cross(out->station.up, out->station.right));
     out->outward = end == 0u ? tangent : Scale(tangent, -1.0);
     out->right = end == 0u ? out->station.right : Scale(out->station.right, -1.0);
-    out->paved = FoxRoadMeshHalfWidth(road.type) + SHOULDER;
-    out->type = road.type;
+    out->paved = PavedHalf(&road.layout);
+    out->layout = road.layout;
+    /* Going out from nodes[0] its left is the road's side 0. */
+    const uint32_t left = end == 0u ? 0u : 1u;
+    const bool cars = FoxRoadLayoutCarLanes(&road.layout) != 0u;
+    out->edge[0] = cars ? EdgeWidth(&road.layout, left) : 0.0;
+    out->edge[1] = cars ? EdgeWidth(&road.layout, 1u - left) : 0.0;
+    out->foot[0] = cars && road.layout.foot[left];
+    out->foot[1] = cars && road.layout.foot[1u - left];
+    out->end = end;
     out->side = road.driveSide;
     out->sign = road.sign[end];
     return true;
@@ -1225,23 +1413,25 @@ static void Curb(Outline *outline, const RoadEndShape *a, const RoadEndShape *b,
     }
 }
 
-/* Paves an outline as a fan from the node and paints a line along its curbs,
- * just inside them as along the roads' edges. */
-static void PaveOutline(const Outline *outline, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
+/* Paves an outline as a fan from the node, in `color` at `lift`, and paints
+ * a line along its curbs, just inside them as along the roads' edges, where
+ * cars drive. */
+static void PaveOutline(const Outline *outline, V3 centre, V3 up, uint32_t color, double lift,
+                        FoxMesh *base, FoxMesh *detail)
 {
     const uint32_t count = outline->count;
     if (count < 3u)
     {
         return;
     }
-    const V3 middle = Lift(centre, up, ASPHALT_LIFT);
+    const V3 middle = Lift(centre, up, lift);
     for (uint32_t index = 0u; index < count; ++index)
     {
         const uint32_t next = (index + 1u) % count;
-        Triangle(base, middle, Lift(outline->points[index], outline->lift[index], ASPHALT_LIFT),
-                 Lift(outline->points[next], outline->lift[next], ASPHALT_LIFT), COLOR_ASPHALT);
+        Triangle(base, middle, Lift(outline->points[index], outline->lift[index], lift),
+                 Lift(outline->points[next], outline->lift[next], lift), color);
     }
-    if (detail == NULL)
+    if (detail == NULL || color != COLOR_ASPHALT)
     {
         return;
     }
@@ -1289,8 +1479,141 @@ static void PaveOutline(const Outline *outline, V3 centre, V3 up, FoxMesh *base,
     }
 }
 
+/* A road's layout seen along the way from it into a node and on: as it is
+ * where its end at the node is nodes[1], turned round where it is nodes[0]. */
+static FoxRoadLayout Inward(const RoadEndShape *end)
+{
+    FoxRoadLayout layout = end->layout;
+    if (end->end == 1u)
+    {
+        return layout;
+    }
+    FoxRoadLayout turned = layout;
+    turned.lanes[0] = layout.lanes[1];
+    turned.lanes[1] = layout.lanes[0];
+    for (uint32_t side = 0u; side < 2u; ++side)
+    {
+        for (uint32_t lane = 0u; lane < FOX_ROAD_MAX_LANES; ++lane)
+        {
+            turned.surface[side][lane] = layout.surface[1u - side][lane];
+        }
+        const uint8_t way = layout.bike[1u - side];
+        turned.bike[side] = way == FOX_WAY_FORWARD    ? (uint8_t)FOX_WAY_BACKWARD
+                            : way == FOX_WAY_BACKWARD ? (uint8_t)FOX_WAY_FORWARD
+                                                      : way;
+        turned.foot[side] = layout.foot[1u - side];
+    }
+    return turned;
+}
+
+/* The same layout seen going out of the node along a road. */
+static FoxRoadLayout Outward(const RoadEndShape *end)
+{
+    RoadEndShape other = *end;
+    other.end = 1u - end->end;
+    return Inward(&other);
+}
+
+static bool SameLayout(const FoxRoadLayout *a, const FoxRoadLayout *b)
+{
+    bool same = a->lanes[0] == b->lanes[0] && a->lanes[1] == b->lanes[1] && a->shared == b->shared;
+    for (uint32_t side = 0u; side < 2u; ++side)
+    {
+        same = same && a->bike[side] == b->bike[side] && a->foot[side] == b->foot[side];
+    }
+    return same;
+}
+
+#define CORNER_POINTS 10u
+
+/* The line round a corner from road a's left edge to road b's right edge,
+ * `outA` and `outB` metres beyond their paved edges: from corner to corner,
+ * evenly sampled into CORNER_POINTS. */
+static void CornerLine(const RoadEndShape *a, const RoadEndShape *b, double gap, V3 up, V3 ex,
+                       V3 ey, double reach, double outA, double outB, V3 *out)
+{
+    RoadEndShape wideA = *a;
+    RoadEndShape wideB = *b;
+    wideA.paved += outA;
+    wideB.paved += outB;
+    V3 raw[FILLET_SEGMENTS + SWEEP_SEGMENTS + 2u];
+    uint32_t count = 0u;
+    raw[count++] = LeftCorner(&wideA);
+    if (gap < SWEEP_GAP)
+    {
+        count += Fillet(LeftCorner(&wideA), a->outward, RightCorner(&wideB), b->outward, ex, ey,
+                        reach, raw + count);
+    }
+    else
+    {
+        Station stations[SWEEP_SEGMENTS + 1u];
+        CentreCurve(a, b, up, stations);
+        for (uint32_t step = 1u; step < SWEEP_SEGMENTS; ++step)
+        {
+            const double t = (double)step / SWEEP_SEGMENTS;
+            raw[count++] =
+                Offset(&stations[step], wideA.paved + (wideB.paved - wideA.paved) * t, 0.0);
+        }
+    }
+    raw[count++] = RightCorner(&wideB);
+    double lengths[FILLET_SEGMENTS + SWEEP_SEGMENTS + 2u];
+    lengths[0] = 0.0;
+    for (uint32_t index = 1u; index < count; ++index)
+    {
+        lengths[index] = lengths[index - 1u] + Length(Sub(raw[index], raw[index - 1u]));
+    }
+    uint32_t segment = 0u;
+    for (uint32_t point = 0u; point < CORNER_POINTS; ++point)
+    {
+        const double at = lengths[count - 1u] * (double)point / (double)(CORNER_POINTS - 1u);
+        while (segment + 2u < count && lengths[segment + 1u] < at)
+        {
+            ++segment;
+        }
+        const double span = lengths[segment + 1u] - lengths[segment];
+        const double t = span > 0.0 ? (at - lengths[segment]) / span : 0.0;
+        out[point] = Add(raw[segment], Scale(Sub(raw[segment + 1u], raw[segment]), t));
+    }
+}
+
+/* A quad seen from either side. */
+static void TwoSided(FoxMesh *mesh, V3 a, V3 b, V3 c, V3 d, uint32_t color)
+{
+    Quad(mesh, a, b, c, d, color);
+    Quad(mesh, d, c, b, a, color);
+}
+
+/* The footway round a corner, from the kerb along `inner` to `outer`, with
+ * the kerb's face. */
+static void CornerFootway(const V3 *inner, const V3 *outer, V3 up, FoxMesh *base)
+{
+    for (uint32_t index = 0u; index + 1u < CORNER_POINTS; ++index)
+    {
+        TwoSided(base, Lift(inner[index], up, FOOTWAY_LIFT), Lift(outer[index], up, FOOTWAY_LIFT),
+                 Lift(outer[index + 1u], up, FOOTWAY_LIFT),
+                 Lift(inner[index + 1u], up, FOOTWAY_LIFT), COLOR_FOOTWAY);
+        TwoSided(base, Lift(inner[index], up, ASPHALT_LIFT),
+                 Lift(inner[index + 1u], up, ASPHALT_LIFT),
+                 Lift(inner[index + 1u], up, FOOTWAY_LIFT), Lift(inner[index], up, FOOTWAY_LIFT),
+                 COLOR_KERB);
+    }
+}
+
+/* Whether every road at a node is only a path: then it is paved as one. */
+static bool PathsOnly(const RoadEndShape *ends, uint32_t count)
+{
+    for (uint32_t index = 0u; index < count; ++index)
+    {
+        if (FoxRoadLayoutCarLanes(&ends[index].layout) != 0u)
+        {
+            return false;
+        }
+    }
+    return true;
+}
+
 /* An intersection, or a bend that a piece of road cannot carry: the mouths
- * of its roads joined by curbs. */
+ * of its roads joined by curbs, and the footways round its corners. */
 static void Junction(const RoadEndShape *ends, const uint32_t *order, uint32_t count, V3 centre,
                      V3 up, FoxMesh *base, FoxMesh *detail)
 {
@@ -1311,27 +1634,42 @@ static void Junction(const RoadEndShape *ends, const uint32_t *order, uint32_t c
         gap += gap <= 0.0 ? 2.0 * PI : 0.0;
         Mouth(&outline, a);
         Curb(&outline, a, b, gap, up, ex, ey, reach);
+        if (a->foot[0] && b->foot[1])
+        {
+            V3 inner[CORNER_POINTS];
+            V3 outer[CORNER_POINTS];
+            CornerLine(a, b, gap, up, ex, ey, reach, 0.0, 0.0, inner);
+            CornerLine(a, b, gap, up, ex, ey, reach, a->edge[0], b->edge[1], outer);
+            CornerFootway(inner, outer, up, base);
+        }
     }
-    PaveOutline(&outline, centre, up, base, detail);
+    const bool paths = PathsOnly(ends, count);
+    PaveOutline(&outline, centre, up, paths ? COLOR_FOOTWAY : COLOR_ASPHALT,
+                paths ? FOOTWAY_LIFT : ASPHALT_LIFT, base, detail);
 }
 
 /* Whether a piece of road can carry the lanes from one road to the other:
  * where it turns too tightly for its width, its inner edge would fold. */
 static bool RibbonFits(const RoadEndShape *a, const RoadEndShape *b, V3 up)
 {
-    if (a->type != b->type)
+    const FoxRoadLayout from = Inward(a);
+    const FoxRoadLayout to = Outward(b);
+    if (!SameLayout(&from, &to))
     {
         return false;
     }
     Station stations[SWEEP_SEGMENTS + 1u];
     CentreCurve(a, b, up, stations);
+    int64_t extent[2];
+    FoxRoadLayoutExtent(&from, extent);
+    const double reach = Metres(FoxMax(extent[0], extent[1])) + SHOULDER;
     for (uint32_t step = 0u; step < SWEEP_SEGMENTS; ++step)
     {
         const V3 along = Sub(stations[step + 1u].point, stations[step].point);
         for (int side = -1; side <= 1; side += 2)
         {
-            const V3 edge = Sub(Offset(&stations[step + 1u], (double)side * a->paved, 0.0),
-                                Offset(&stations[step], (double)side * a->paved, 0.0));
+            const V3 edge = Sub(Offset(&stations[step + 1u], (double)side * reach, 0.0),
+                                Offset(&stations[step], (double)side * reach, 0.0));
             if (Dot(edge, along) <= 0.0)
             {
                 return false;
@@ -1342,46 +1680,84 @@ static bool RibbonFits(const RoadEndShape *a, const RoadEndShape *b, V3 up)
 }
 
 /* A bend: a piece of road from one road's end to the other's that carries
- * the asphalt and the markings. */
+ * its strips and markings. */
 static void Bend(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *base,
                  FoxMesh *detail)
 {
     Station stations[SWEEP_SEGMENTS + 1u];
     CentreCurve(a, b, up, stations);
     const double length = stations[SWEEP_SEGMENTS].along;
-    Strip(base, stations, SWEEP_SEGMENTS + 1u, -a->paved, a->paved, ASPHALT_LIFT, 0.0, length, 0.0,
-          0.0, COLOR_ASPHALT);
+    const FoxRoadLayout layout = Inward(a);
+    Surfaces(base, detail, stations, SWEEP_SEGMENTS + 1u, &layout, a->side, 0.0, length);
     if (detail != NULL && length > 0.0)
     {
-        Markings(detail, stations, SWEEP_SEGMENTS + 1u, a->type, 0.0, length, 0.0, length, 0.0,
-                 length);
+        Markings(detail, stations, SWEEP_SEGMENTS + 1u, &layout, a->side, 0.0, length, 0.0, length,
+                 0.0, length);
+    }
+}
+
+/* Where the two ways of a layout part, metres right of its centre line;
+ * false where it carries only one way. */
+static bool WaysPart(const FoxRoadLayout *layout, FoxDriveSide side, double *outAt, bool *outStreet)
+{
+    if (layout->lanes[0] == 0u || layout->lanes[1] == 0u || layout->shared)
+    {
+        return false;
+    }
+    FoxRoadStrip strips[FOX_ROAD_MAX_STRIPS];
+    const uint32_t count = FoxRoadLayoutStrips(layout, side, strips);
+    for (uint32_t index = 0u; index + 1u < count; ++index)
+    {
+        if (strips[index].kind <= FOX_LANE_CONCRETE &&
+            strips[index + 1u].kind <= FOX_LANE_CONCRETE &&
+            strips[index].way != strips[index + 1u].way)
+        {
+            *outAt = Metres(strips[index].right);
+            *outStreet = layout->lanes[0] == 1u && layout->lanes[1] == 1u;
+            return true;
+        }
+    }
+    return false;
+}
+
+/* The line between the two ways along a way through a node: dashed between
+ * streets, double elsewhere, in short dashes for a guide line. */
+static void WayLine(FoxMesh *detail, const Station *stations, uint32_t points, double length,
+                    double at, bool street, bool guide)
+{
+    const double dash = guide ? GUIDE_DASH : DASH;
+    const double gap = guide ? GUIDE_GAP : DASH_GAP;
+    if (street || guide)
+    {
+        LaneLine(detail, stations, points, at, 0.0, length, 0.0, length, true, dash, gap);
+        return;
+    }
+    for (int side = -1; side <= 1; side += 2)
+    {
+        LaneLine(detail, stations, points, at + (double)side * DOUBLE_LINE_SPACING, 0.0, length,
+                 0.0, 0.0, false, dash, gap);
     }
 }
 
 /* Through a bend paved as an outline only the line between the directions
- * carries on: dashed between streets, double elsewhere. */
+ * carries on. */
 static void BendCentreLine(const RoadEndShape *a, const RoadEndShape *b, V3 up, FoxMesh *detail)
 {
-    const FoxRoadTypeInfo *first = FoxRoadTypeGet(a->type);
-    const FoxRoadTypeInfo *second = FoxRoadTypeGet(b->type);
-    if (first->backwardLanes == 0u || second->backwardLanes == 0u)
+    const FoxRoadLayout from = Inward(a);
+    const FoxRoadLayout to = Outward(b);
+    double at = 0.0;
+    double other = 0.0;
+    bool street = false;
+    bool otherStreet = false;
+    if (!WaysPart(&from, a->side, &at, &street) || !WaysPart(&to, b->side, &other, &otherStreet) ||
+        fabs(at - other) > 0.01)
     {
         return;
     }
     Station stations[SWEEP_SEGMENTS + 1u];
     CentreCurve(a, b, up, stations);
-    const double length = stations[SWEEP_SEGMENTS].along;
-    if (first->forwardLanes == 1u && second->forwardLanes == 1u)
-    {
-        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, 0.0, 0.0, length, 0.0, length, true, DASH,
-                 DASH_GAP);
-        return;
-    }
-    for (int side = -1; side <= 1; side += 2)
-    {
-        LaneLine(detail, stations, SWEEP_SEGMENTS + 1u, (double)side * DOUBLE_LINE_SPACING, 0.0,
-                 length, 0.0, 0.0, false, DASH, DASH_GAP);
-    }
+    WayLine(detail, stations, SWEEP_SEGMENTS + 1u, stations[SWEEP_SEGMENTS].along, at,
+            street && otherStreet, false);
 }
 
 /* Whether, going round the node from the end `first` of an order to the
@@ -1393,8 +1769,9 @@ static bool Between(uint32_t first, uint32_t second, uint32_t other, uint32_t co
 }
 
 /* Where a main road runs straight through an intersection without lights,
- * its lines carry on across it as guide lines of short dashes, and so does
- * its edge across the mouths of the roads that give way to it. */
+ * the line between its ways carries on across it as a guide line of short
+ * dashes, and so does its edge across the mouths of the roads that give way
+ * to it. */
 static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t count, V3 up,
                        FoxMesh *detail)
 {
@@ -1406,7 +1783,10 @@ static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t
             const RoadEndShape *b = &ends[order[second]];
             const bool gives = a->sign == FOX_SIGN_YIELD || a->sign == FOX_SIGN_STOP ||
                                b->sign == FOX_SIGN_YIELD || b->sign == FOX_SIGN_STOP;
-            if (a->type != b->type || Dot(a->outward, b->outward) > -0.94 || gives)
+            const FoxRoadLayout from = Inward(a);
+            const FoxRoadLayout to = Outward(b);
+            if (!SameLayout(&from, &to) || Dot(a->outward, b->outward) > -0.94 || gives ||
+                FoxRoadLayoutCarLanes(&from) == 0u)
             {
                 continue;
             }
@@ -1425,28 +1805,11 @@ static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t
             CentreCurve(a, b, up, stations);
             const uint32_t points = SWEEP_SEGMENTS + 1u;
             const double length = stations[SWEEP_SEGMENTS].along;
-            const FoxRoadTypeInfo *info = FoxRoadTypeGet(a->type);
-            const double lane = LaneWidth();
-            if (info->backwardLanes != 0u)
+            double at = 0.0;
+            bool street = false;
+            if (WaysPart(&from, a->side, &at, &street))
             {
-                /* The centre line and the lines either side of it. */
-                LaneLine(detail, stations, points, 0.0, 0.0, length, 0.0, length, true, GUIDE_DASH,
-                         GUIDE_GAP);
-                for (uint32_t index = 1u; index < info->forwardLanes; ++index)
-                {
-                    for (int side = -1; side <= 1; side += 2)
-                    {
-                        LaneLine(detail, stations, points, (double)side * lane * (double)index, 0.0,
-                                 length, 0.0, length, true, GUIDE_DASH, GUIDE_GAP);
-                    }
-                }
-            }
-            for (uint32_t index = 1u; info->backwardLanes == 0u && index < info->forwardLanes;
-                 ++index)
-            {
-                LaneLine(detail, stations, points,
-                         lane * ((double)info->forwardLanes / 2.0 - (double)index), 0.0, length,
-                         0.0, length, true, GUIDE_DASH, GUIDE_GAP);
+                WayLine(detail, stations, points, length, at, street, true);
             }
             /* The roads met going round from a to b join on the right of the
              * way from a to b, the others on its left. */
@@ -1458,7 +1821,7 @@ static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t
                     joined[Between(first, second, other, count) ? 1u : 0u] = true;
                 }
             }
-            const double half = FoxRoadMeshHalfWidth(a->type);
+            const double half = CarHalf(&from);
             for (uint32_t side = 0u; side < 2u; ++side)
             {
                 const double edge = (side == 1u ? 1.0 : -1.0) * (half - EDGE_HALF);
@@ -1474,7 +1837,7 @@ static void GuideLines(const RoadEndShape *ends, const uint32_t *order, uint32_t
 }
 
 /* A dead end runs on to its node and rounds off there in a half circle, the
- * edge line following the curb round. */
+ * edge line following the curb round, and its footways round it too. */
 static void Cap(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMesh *detail)
 {
     Outline outline = {.count = 0u};
@@ -1487,7 +1850,29 @@ static void Cap(const RoadEndShape *end, V3 centre, V3 up, FoxMesh *base, FoxMes
             Along(centre, end->right, -cos(a) * end->paved, end->outward, -sin(a) * end->paved), up,
             true);
     }
-    PaveOutline(&outline, centre, up, base, detail);
+    const bool path = FoxRoadLayoutCarLanes(&end->layout) == 0u;
+    PaveOutline(&outline, centre, up, path ? COLOR_FOOTWAY : COLOR_ASPHALT,
+                path ? FOOTWAY_LIFT : ASPHALT_LIFT, base, detail);
+    if (!end->foot[0] || !end->foot[1])
+    {
+        return;
+    }
+    const double outer = end->paved + fmin(end->edge[0], end->edge[1]);
+    for (uint32_t step = 0u; step < CAP_SEGMENTS; ++step)
+    {
+        const double a = PI * (double)step / CAP_SEGMENTS;
+        const double b = PI * (double)(step + 1u) / CAP_SEGMENTS;
+        const V3 innerA =
+            Along(centre, end->right, -cos(a) * end->paved, end->outward, -sin(a) * end->paved);
+        const V3 innerB =
+            Along(centre, end->right, -cos(b) * end->paved, end->outward, -sin(b) * end->paved);
+        const V3 outerA = Along(centre, end->right, -cos(a) * outer, end->outward, -sin(a) * outer);
+        const V3 outerB = Along(centre, end->right, -cos(b) * outer, end->outward, -sin(b) * outer);
+        TwoSided(base, Lift(innerA, up, FOOTWAY_LIFT), Lift(outerA, up, FOOTWAY_LIFT),
+                 Lift(outerB, up, FOOTWAY_LIFT), Lift(innerB, up, FOOTWAY_LIFT), COLOR_FOOTWAY);
+        TwoSided(base, Lift(innerA, up, ASPHALT_LIFT), Lift(innerB, up, ASPHALT_LIFT),
+                 Lift(innerB, up, FOOTWAY_LIFT), Lift(innerA, up, FOOTWAY_LIFT), COLOR_KERB);
+    }
 }
 
 void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origin, FoxMesh *base,
@@ -1543,7 +1928,7 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
         {
             BendCentreLine(&ends[0], &ends[1], up, detail);
         }
-        if (count >= 3u && !node.signals && detail != NULL)
+        if (node.carRoadCount >= 3u && !node.signals && detail != NULL)
         {
             GuideLines(ends, order, count, up, detail);
         }
@@ -1596,10 +1981,10 @@ void FoxRoadMeshRing(FoxVec centre, double radius, double width, uint32_t color,
     }
 }
 
-void FoxRoadMeshPreview(const FoxVec *centre, uint32_t count, FoxRoadType type, uint32_t color,
-                        FoxVec origin, FoxMesh *mesh)
+void FoxRoadMeshPreview(const FoxVec *centre, uint32_t count, const FoxRoadLayout *layout,
+                        uint32_t color, FoxVec origin, FoxMesh *mesh)
 {
-    if (centre == NULL || count < 2u || FoxRoadTypeGet(type) == NULL)
+    if (centre == NULL || count < 2u || layout == NULL || !FoxRoadLayoutValid(layout))
     {
         return;
     }
@@ -1615,9 +2000,14 @@ void FoxRoadMeshPreview(const FoxVec *centre, uint32_t count, FoxRoadType type, 
         length += Length(Sub(Local(centre[index], origin), Local(centre[index - 1u], origin)));
     }
     const uint32_t written = BuildStations(centre, count, origin, 0.0, length, stations);
-    const double paved = FoxRoadMeshHalfWidth(type) + SHOULDER;
-    const double lift = MARKING_LIFT + 0.05;
-    Strip(mesh, stations, written, -paved, paved, lift, 0.0, length, 0.0, 0.0, color);
+    int64_t extent[2];
+    FoxRoadLayoutExtent(layout, extent);
+    const double shoulder = FoxRoadLayoutCarLanes(layout) != 0u ? SHOULDER : 0.0;
+    const double leftReach = Metres(extent[0]) + shoulder;
+    const double rightReach = Metres(extent[1]) + shoulder;
+    const double paved = fmax(leftReach, rightReach);
+    const double lift = OVERLAY_LIFT - 0.02;
+    Strip(mesh, stations, written, -leftReach, rightReach, lift, 0.0, length, 0.0, 0.0, color);
     for (uint32_t end = 0u; end < 2u; ++end)
     {
         const Station *station = &stations[end == 0u ? 0u : written - 1u];

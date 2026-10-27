@@ -7,18 +7,29 @@
 
 #define COLORS 8u
 #define TRUCK_COLORS 4u
-#define MODELS (COLORS + TRUCK_COLORS)
+#define SHIRTS 8u
+#define MODELS (COLORS + TRUCK_COLORS + SHIRTS)
 /* Boxes of six faces of two triangles: a car has a body, a cabin and four
  * wheels, a truck a cab, a box and six wheels. */
 #define BOX_VERTICES 36u
 #define MAX_VERTICES (9u * BOX_VERTICES)
 #define LIFT 0.15f
-/* Cars further than this from the eye are too small to matter. */
+/* Cars further than this from the eye are too small to matter, and people
+ * further than this. */
 #define DRAW_DISTANCE 2500.0f
+#define PEOPLE_DISTANCE 700.0f
+/* Walkers on a footway stand on its kerb-high top, on a crossing on the
+ * asphalt. */
+#define FOOTWAY_LIFT 0.29f
 
 static const uint32_t paints[COLORS] = {
     UINT32_C(0xFF2B3BD1), UINT32_C(0xFFD8D8D8), UINT32_C(0xFF2A2A2A), UINT32_C(0xFFC2702B),
     UINT32_C(0xFF3FA7E0), UINT32_C(0xFF4E9A3A), UINT32_C(0xFF7E7E86), UINT32_C(0xFF2E58A8),
+};
+
+static const uint32_t shirts[SHIRTS] = {
+    UINT32_C(0xFF3050C0), UINT32_C(0xFFC08030), UINT32_C(0xFF40A050), UINT32_C(0xFFE0E0E0),
+    UINT32_C(0xFF8040A0), UINT32_C(0xFF30A0D0), UINT32_C(0xFF505050), UINT32_C(0xFFA0A0F0),
 };
 
 typedef struct Batch
@@ -124,6 +135,21 @@ static uint32_t TruckModel(LaiueGraphicsVertexV2 *out, uint32_t paint)
     return count;
 }
 
+/* About 1.7 m tall: legs, a body in its shirt and a head. */
+static uint32_t PersonModel(LaiueGraphicsVertexV2 *out, uint32_t shirt)
+{
+    const float legsLow[3] = {-0.12f, -0.17f, 0.0f};
+    const float legsHigh[3] = {0.12f, 0.17f, 0.85f};
+    const float bodyLow[3] = {-0.14f, -0.23f, 0.85f};
+    const float bodyHigh[3] = {0.14f, 0.23f, 1.45f};
+    const float headLow[3] = {-0.11f, -0.1f, 1.48f};
+    const float headHigh[3] = {0.11f, 0.1f, 1.72f};
+    uint32_t count = Box(out, legsLow, legsHigh, UINT32_C(0xFF3A3028));
+    count += Box(out + count, bodyLow, bodyHigh, shirt);
+    count += Box(out + count, headLow, headHigh, UINT32_C(0xFF8CB4E0));
+    return count;
+}
+
 FoxCarsView *FoxCarsViewCreate(LaiueGraphicsDeviceV2 *device)
 {
     if (device == NULL || device->createBuffer == NULL || device->uploadBuffer == NULL ||
@@ -145,7 +171,9 @@ FoxCarsView *FoxCarsViewCreate(LaiueGraphicsDeviceV2 *device)
     {
         LaiueGraphicsVertexV2 vertices[MAX_VERTICES];
         const uint32_t count = model < COLORS ? CarModel(vertices, paints[model])
-                                              : TruckModel(vertices, paints[model - COLORS]);
+                               : model < COLORS + TRUCK_COLORS
+                                   ? TruckModel(vertices, paints[model - COLORS])
+                                   : PersonModel(vertices, shirts[model - COLORS - TRUCK_COLORS]);
         view->vertexCounts[model] = count;
         const uint64_t bytes = (uint64_t)count * sizeof(vertices[0]);
         const LaiueGraphicsBufferDescV1 description = {
@@ -194,7 +222,8 @@ void FoxCarsViewDestroy(FoxCarsView *view)
 /* The rotation taking car space (x forward, y left, z up) to the world. */
 static void Orientation(const double forward[3], const double up[3], float out[4])
 {
-    double left[3] = {up[1] * forward[2] - up[2] * forward[1], up[2] * forward[0] - up[0] * forward[2],
+    double left[3] = {up[1] * forward[2] - up[2] * forward[1],
+                      up[2] * forward[0] - up[0] * forward[2],
                       up[0] * forward[1] - up[1] * forward[0]};
     const double leftLength = sqrt(left[0] * left[0] + left[1] * left[1] + left[2] * left[2]);
     if (leftLength < 1e-9)
@@ -276,6 +305,110 @@ static bool Append(Batch *batch, const LaiueGraphicsInstanceV2 *instance)
     return true;
 }
 
+/* Places one instance at a position, turned to face `forward`, lifted
+ * `lift` metres; false beyond `reach` of the eye. */
+static bool Place(const FoxCameraView *camera, FoxVec position, FoxVec forward, float lift,
+                  float reach, LaiueGraphicsInstanceV2 *outInstance)
+{
+    *outInstance = (LaiueGraphicsInstanceV2){.scale = 1.0f};
+    FoxCameraRelative(camera, position, outInstance->originRelative);
+    const float dx = outInstance->originRelative[0] - camera->eye[0];
+    const float dy = outInstance->originRelative[1] - camera->eye[1];
+    const float dz = outInstance->originRelative[2] - camera->eye[2];
+    if (dx * dx + dy * dy + dz * dz > reach * reach)
+    {
+        return false;
+    }
+    double up[3] = {(double)position.x, (double)position.y, (double)position.z};
+    const double length = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
+    if (length > 0.0)
+    {
+        up[0] /= length;
+        up[1] /= length;
+        up[2] /= length;
+    }
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        outInstance->originRelative[axis] += (float)up[axis] * lift;
+    }
+    const double ahead[3] = {(double)forward.x, (double)forward.y, (double)forward.z};
+    Orientation(ahead, up, outInstance->rotation);
+    return true;
+}
+
+/* Draws an instance of a model, batched or alone; 1 when it was taken. */
+static uint32_t Put(FoxCarsView *view, uint32_t model, const LaiueGraphicsInstanceV2 *instance)
+{
+    if (view->instancing)
+    {
+        return Append(&view->batches[model], instance) ? 1u : 0u;
+    }
+    LaiueGraphicsDrawItemV2 draw = {
+        .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
+        .vertexBuffer = view->meshes[model],
+        .indexCount = view->vertexCounts[model],
+        .originRelative = {instance->originRelative[0], instance->originRelative[1],
+                           instance->originRelative[2]},
+        .scale = 1.0f,
+    };
+    return view->device->submit(view->device, &draw, 1u) != 0u ? 1u : 0u;
+}
+
+/* Submits the batches of models [first, last). */
+static void Flush(FoxCarsView *view, uint32_t first, uint32_t last)
+{
+    for (uint32_t model = first; view->instancing && model < last; ++model)
+    {
+        Batch *batch = &view->batches[model];
+        if (batch->count == 0u)
+        {
+            continue;
+        }
+        const LaiueGraphicsDrawItemV2 draw = {
+            .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
+            .vertexBuffer = view->meshes[model],
+            .indexCount = view->vertexCounts[model],
+            .scale = 1.0f,
+        };
+        (void)view->device->submitInstances(view->device, &draw, batch->instances, batch->count);
+        batch->count = 0u;
+    }
+}
+
+static int64_t Mix(float blend)
+{
+    return (int64_t)lrintf((blend < 0.0f ? 0.0f : (blend > 1.0f ? 1.0f : blend)) * (float)FOX_UNIT);
+}
+
+uint32_t FoxCarsViewDrawWalkers(FoxCarsView *view, const FoxWalkers *walkers,
+                                const FoxNetwork *network, const FoxCameraView *camera, float blend)
+{
+    if (view == NULL || walkers == NULL || network == NULL || camera == NULL)
+    {
+        return 0u;
+    }
+    const int64_t mix = Mix(blend);
+    uint32_t drawn = 0u;
+    for (uint32_t slot = 0u; slot < FoxWalkersCapacity(walkers); ++slot)
+    {
+        FoxWalkerView walker;
+        FoxVec position;
+        FoxVec facing;
+        LaiueGraphicsInstanceV2 instance;
+        if (!FoxWalkersWalker(walkers, slot, &walker) ||
+            !FoxWalkersPose(walkers, network, slot, mix, &position, &facing) ||
+            !Place(camera, position, facing,
+                   walker.state == FOX_WALKER_CROSSING ? LIFT : FOOTWAY_LIFT, PEOPLE_DISTANCE,
+                   &instance))
+        {
+            continue;
+        }
+        drawn += Put(view, COLORS + TRUCK_COLORS + walker.color % SHIRTS, &instance);
+    }
+    Flush(view, COLORS + TRUCK_COLORS, MODELS);
+    return drawn;
+}
+
 uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const FoxNetwork *network,
                          const FoxCameraView *camera, float blend)
 {
@@ -283,12 +416,7 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
     {
         return 0u;
     }
-    for (uint32_t model = 0u; model < MODELS; ++model)
-    {
-        view->batches[model].count = 0u;
-    }
-    const int64_t mix = (int64_t)lrintf((blend < 0.0f ? 0.0f : (blend > 1.0f ? 1.0f : blend)) *
-                                        (float)FOX_UNIT);
+    const int64_t mix = Mix(blend);
     uint32_t drawn = 0u;
     const uint32_t capacity = FoxTrafficCapacity(traffic);
     for (uint32_t slot = 0u; slot < capacity; ++slot)
@@ -296,70 +424,17 @@ uint32_t FoxCarsViewDraw(FoxCarsView *view, const FoxTraffic *traffic, const Fox
         FoxVehicleView car;
         FoxVec position;
         FoxVec forward;
+        LaiueGraphicsInstanceV2 instance;
         if (!FoxTrafficVehicle(traffic, slot, &car) ||
-            !FoxTrafficVehiclePose(traffic, network, slot, mix, &position, &forward))
+            !FoxTrafficVehiclePose(traffic, network, slot, mix, &position, &forward) ||
+            !Place(camera, position, forward, LIFT, DRAW_DISTANCE, &instance))
         {
             continue;
         }
-        LaiueGraphicsInstanceV2 instance = {.scale = 1.0f};
-        FoxCameraRelative(camera, position, instance.originRelative);
-        const float dx = instance.originRelative[0] - camera->eye[0];
-        const float dy = instance.originRelative[1] - camera->eye[1];
-        const float dz = instance.originRelative[2] - camera->eye[2];
-        if (dx * dx + dy * dy + dz * dz > DRAW_DISTANCE * DRAW_DISTANCE)
-        {
-            continue;
-        }
-        double up[3] = {(double)position.x, (double)position.y, (double)position.z};
-        const double length = sqrt(up[0] * up[0] + up[1] * up[1] + up[2] * up[2]);
-        if (length > 0.0)
-        {
-            up[0] /= length;
-            up[1] /= length;
-            up[2] /= length;
-        }
-        for (uint32_t axis = 0u; axis < 3u; ++axis)
-        {
-            instance.originRelative[axis] += (float)up[axis] * LIFT;
-        }
-        const double ahead[3] = {(double)forward.x, (double)forward.y, (double)forward.z};
-        Orientation(ahead, up, instance.rotation);
-        const uint32_t model = car.kind == FOX_VEHICLE_TRUCK ? COLORS + car.color % TRUCK_COLORS
-                                                             : car.color % COLORS;
-        Batch *batch = &view->batches[model];
-        if (view->instancing)
-        {
-            drawn += Append(batch, &instance) ? 1u : 0u;
-            continue;
-        }
-        LaiueGraphicsDrawItemV2 draw = {
-            .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
-            .vertexBuffer = view->meshes[model],
-            .indexCount = view->vertexCounts[model],
-            .originRelative = {instance.originRelative[0], instance.originRelative[1],
-                               instance.originRelative[2]},
-            .scale = 1.0f,
-        };
-        drawn += view->device->submit(view->device, &draw, 1u) != 0u ? 1u : 0u;
+        const uint32_t model =
+            car.kind == FOX_VEHICLE_TRUCK ? COLORS + car.color % TRUCK_COLORS : car.color % COLORS;
+        drawn += Put(view, model, &instance);
     }
-    if (view->instancing)
-    {
-        for (uint32_t model = 0u; model < MODELS; ++model)
-        {
-            const Batch *batch = &view->batches[model];
-            if (batch->count == 0u)
-            {
-                continue;
-            }
-            const LaiueGraphicsDrawItemV2 draw = {
-                .structSize = LAIUE_GRAPHICS_DRAW_ITEM_V2_LEGACY_SIZE,
-                .vertexBuffer = view->meshes[model],
-                .indexCount = view->vertexCounts[model],
-                .scale = 1.0f,
-            };
-            (void)view->device->submitInstances(view->device, &draw, batch->instances,
-                                                batch->count);
-        }
-    }
+    Flush(view, 0u, COLORS + TRUCK_COLORS);
     return drawn;
 }

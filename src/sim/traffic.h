@@ -19,10 +19,10 @@
  * and no intersection locks itself. Red and yellow lights stop the traffic
  * that can still stop; a stop sign makes it stand at the line first.
  * Beyond a lane too short to stop on, the next intersection is claimed at the
- * same time. A car standing for a minute is taken off the road, as city
- * builders do, so an overloaded network cannot stay knotted. Cars take the
- * fastest route the router knows; measured speeds feed back into the routing
- * costs, so jams push traffic onto other roads.
+ * same time. Cars stop short of a pedestrian crossing somebody walks on.
+ * No car ever leaves the road but to park where the city wants fewer. Cars
+ * take the fastest route the router knows; measured speeds feed back into
+ * the routing costs, so jams push traffic onto other roads.
  *
  * All of it is integer arithmetic at a fixed tick rate: the same seed,
  * network and commands give the same traffic on every machine. */
@@ -104,6 +104,10 @@ void FoxTrafficStep(FoxTraffic *traffic, FoxNetwork *network);
  * or takes them off the road where there is none. Call after every change
  * and before FoxNetworkReleaseRetired. */
 void FoxTrafficRemap(FoxTraffic *traffic, FoxNetwork *network);
+
+/* Whether somebody may step onto the pedestrian crossing `walk`: no car on
+ * it, and every car coming could still stop short of it comfortably. */
+bool FoxTrafficCrossingClear(const FoxTraffic *traffic, const FoxNetwork *network, uint32_t walk);
 
 /* Cars live in slots; iterate up to the capacity. */
 uint32_t FoxTrafficCapacity(const FoxTraffic *traffic);
