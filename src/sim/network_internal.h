@@ -148,50 +148,63 @@ typedef enum SignalStage
 
 typedef struct FoxRoad
 {
-    bool alive;
-    /* Removed while cars were still on it or on their way onto it: gone for
-     * everyone else, it carries them on as it was until they are off it. */
-    bool closing;
-    uint32_t generation;
-    uint32_t nodes[2];
-    /* As built, and as driven: the same but where a road running one way
-     * ends in a dead end, which lanes.c fits with a way back out. */
-    FoxRoadLayout layout;
-    FoxRoadLayout driven;
-    uint8_t driveSide;
     FoxVec *centre;
     int64_t *centreLengths;
-    uint32_t centreCount;
     int64_t length;
-    int64_t trim[2];
-    uint32_t lanes[2][FOX_ROAD_MAX_LANES];
-    uint8_t laneCount[2];
     uint64_t revision;
+    int64_t boundRadius;
+    int64_t trim[2];
+    /* Traffic statistics per direction, for routing costs. */
+    int64_t speedSum[2];
+    FoxVec middle;
+    /* Pedestrian crossings in order along the centre line. */
+    int64_t crossings[FOX_ROAD_MAX_CROSSINGS];
+    /* Every crossing to be seen, the mayor's and those of paths, in order. */
+    int64_t zebras[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t generation;
+    uint32_t centreCount;
     /* The limit in force, the one it was built with (zero for its layout's)
      * and the mayor's (zero for none). */
     int32_t speedLimit;
     int32_t builtSpeed;
     int32_t speedSetting;
-    /* Pedestrian crossings in order along the centre line. */
-    int64_t crossings[FOX_ROAD_MAX_CROSSINGS];
-    uint8_t crossingCount;
+    uint32_t nodes[2];
+    uint32_t speedSamples[2];
+    int32_t averageSpeed[2];
+    uint32_t routedCost[2];
+    uint32_t lanes[2][FOX_ROAD_MAX_LANES];
     /* The walks along its footways, [side][piece] from nodes[0] on, split at
-     * the crossings, and the walk over each crossing, FOX_NETWORK_NONE
-     * without footways on both sides. */
-    uint32_t walks[2][FOX_ROAD_MAX_CROSSINGS + 1u];
-    uint8_t walkCount[2];
+     * its crossings and taps, and the walk over each crossing,
+     * FOX_NETWORK_NONE where nobody can walk it. */
     uint32_t crossingWalks[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t walks[2][FOX_ROAD_MAX_CROSSINGS + 1u];
+    /* The nodes where paths meet it from the side, in no order: a path
+     * crossing it leaves a crossing there. Per tap, from lanes.c: the walk
+     * over it (FOX_NETWORK_NONE without), which footway pieces meet there
+     * (pieces [tapPiece] and [tapPiece + 1]) and which sides paths leave
+     * from, bit 0 the left seen from nodes[0]. */
+    uint32_t taps[FOX_ROAD_MAX_CROSSINGS];
+    uint32_t tapWalks[FOX_ROAD_MAX_CROSSINGS];
+    bool alive;
+    /* Removed while cars were still on it or on their way onto it: gone for
+     * everyone else, it carries them on as it was until they are off it. */
+    bool closing;
+    uint8_t driveSide;
+    uint8_t crossingCount;
+    uint8_t tapCount;
+    uint8_t zebraCount;
+    uint8_t laneCount[2];
+    uint8_t walkCount[2];
     /* Per end, for the traffic arriving there: the mayor's sign and the one
      * in force. */
     uint8_t signSetting[2];
     uint8_t sign[2];
-    FoxVec middle;
-    int64_t boundRadius;
-    /* Traffic statistics per direction, for routing costs. */
-    int64_t speedSum[2];
-    uint32_t speedSamples[2];
-    int32_t averageSpeed[2];
-    uint32_t routedCost[2];
+    uint8_t tapPiece[FOX_ROAD_MAX_CROSSINGS];
+    uint8_t tapSides[FOX_ROAD_MAX_CROSSINGS];
+    /* As built, and as driven: the same but where a road running one way
+     * ends in a dead end, which lanes.c fits with a way back out. */
+    FoxRoadLayout layout;
+    FoxRoadLayout driven;
 } FoxRoad;
 
 typedef struct FoxNode
@@ -205,9 +218,15 @@ typedef struct FoxNode
     uint32_t roads[FOX_NODE_MAX_ROADS];
     uint32_t *connections;
     uint32_t connectionCount;
-    /* The walks round its corners, from one footway to the next. */
+    /* The walks round its corners, from one footway to the next; at a tap,
+     * from each path onto the road it meets. */
     uint32_t *corners;
     uint32_t cornerCount;
+    /* Where only paths meet on a road's centre line rather than at its end:
+     * the road, FOX_NETWORK_NONE elsewhere, and how far along it. Its paths
+     * stop at the road's edge and walk on along its footways or over it. */
+    uint32_t tap;
+    int64_t tapAlong;
     int64_t radius;
     uint64_t revision;
     /* Traffic lights: the phase each road slot belongs to, the phase showing
@@ -295,6 +314,9 @@ int64_t FoxRoadLaneOffset(const FoxRoadLayout *layout, FoxDriveSide side, uint32
 /* The widest a road reaches either side of its centre line, shoulder
  * included. */
 int64_t FoxRoadReach(const FoxRoad *road);
+/* A point `offset` units right of a road's centre line `along` it (seen from
+ * nodes[0]), and the unit vector to the right there. */
+FoxVec FoxRoadPointAt(const FoxRoad *road, int64_t along, int64_t offset, FoxVec *outRight);
 
 /* ---- lanes.c ------------------------------------------------------------ */
 

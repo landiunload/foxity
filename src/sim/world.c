@@ -360,11 +360,27 @@ bool FoxWorldBuildDemoTown(FoxWorld *world)
         };
         ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
     }
+    /* A footway from street to avenue across the blocks, over the street
+     * between, and a bike lane beside it. */
+    static const int16_t paths[][4] = {
+        {-160, -30, 0, -30},
+        {-160, -60, -80, -60},
+    };
+    for (size_t index = 0u; index < sizeof(paths) / sizeof(paths[0]); ++index)
+    {
+        const FoxRoadPlan plan = {
+            .start = PoleOffset(world, paths[index][0], paths[index][1]),
+            .end = PoleOffset(world, paths[index][2], paths[index][3]),
+            .layout = FoxRoadLayoutSingle(index == 0u ? FOX_LANE_FOOT : FOX_LANE_BIKE),
+        };
+        ok = FoxWorldBuildRoad(world, &plan) == FOX_ROAD_OK && ok;
+    }
     /* A pedestrian crossing halfway along every third road long enough. */
     for (uint32_t index = 0u; index < FoxNetworkRoadCapacity(world->network); index += 3u)
     {
         FoxRoadView road;
         if (FoxNetworkRoad(world->network, index, &road) &&
+            FoxRoadLayoutCarLanes(&road.layout) != 0u &&
             road.length - road.trim[0] - road.trim[1] > FOX_METRES(40))
         {
             ok =

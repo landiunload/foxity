@@ -264,7 +264,8 @@ typedef struct FoxRoadView
      * FOX_SIGN_AUTO) and the one the mayor chose. */
     FoxSign sign[2];
     FoxSign signSetting[2];
-    /* Pedestrian crossings, how far along the centre line each lies. */
+    /* Pedestrian crossings, how far along the centre line each lies: the
+     * mayor's and those where a path crosses the road. */
     int64_t crossings[FOX_ROAD_MAX_CROSSINGS];
     uint32_t crossingCount;
     /* The network revision of the road's last change. */
@@ -281,6 +282,9 @@ typedef struct FoxNodeView
     /* The radius of the intersection's paved area. */
     int64_t radius;
     bool signals;
+    /* Paths alone meeting on a road's centre line: they stop at the road's
+     * edge and the node itself is not paved. */
+    bool tap;
     uint64_t revision;
 } FoxNodeView;
 

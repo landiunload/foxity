@@ -1879,7 +1879,9 @@ void FoxRoadMeshNode(const FoxNetwork *network, uint32_t nodeIndex, FoxVec origi
                      FoxMesh *detail)
 {
     FoxNodeView node;
-    if (!FoxNetworkNode(network, nodeIndex, &node) || node.roadCount == 0u)
+    /* Paths meeting a road from the side end at its edge, with nothing
+     * paved between them. */
+    if (!FoxNetworkNode(network, nodeIndex, &node) || node.roadCount == 0u || node.tap)
     {
         return;
     }

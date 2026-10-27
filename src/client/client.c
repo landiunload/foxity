@@ -426,13 +426,20 @@ static void OnFrame(void *opaque)
     {
         (void)device->requestFrameReadback(device);
     }
+#if defined(FOX_REVIEW)
+    FoxReviewUpdate(session->review, elapsed);
+#endif
     if (width > 0 && height > 0)
     {
         if (device->beginFrame(device, (uint32_t)width, (uint32_t)height) != 0u)
         {
             FoxSceneDraw(session->scene);
 #if defined(FOX_REVIEW)
-            FoxReviewDraw(session->review, FoxSceneView(session->scene), elapsed);
+            if (!session->shooting)
+            {
+                /* The shot shows the city, not the notes. */
+                FoxReviewDraw(session->review, FoxSceneView(session->scene));
+            }
 #endif
             if (device->endFrame(device) != 0u)
             {
@@ -453,12 +460,17 @@ static void OnFrame(void *opaque)
                         const FoxCameraView *view = FoxSceneView(session->scene);
                         char context[256];
                         (void)snprintf(
-                            context, sizeof(context),
-                            "frame %u, camera near %.1f %.1f %.1f m, %ux%u",
+                            context, sizeof(context), "frame %u, eye at %.1f %.1f %.1f m, %ux%u",
                             session->presentedFrames,
-                            view != NULL ? (double)view->renderOrigin.x / FOX_UNITS_PER_METRE : 0.0,
-                            view != NULL ? (double)view->renderOrigin.y / FOX_UNITS_PER_METRE : 0.0,
-                            view != NULL ? (double)view->renderOrigin.z / FOX_UNITS_PER_METRE : 0.0,
+                            view != NULL ? (double)view->renderOrigin.x / FOX_UNITS_PER_METRE +
+                                               (double)view->eye[0]
+                                         : 0.0,
+                            view != NULL ? (double)view->renderOrigin.y / FOX_UNITS_PER_METRE +
+                                               (double)view->eye[1]
+                                         : 0.0,
+                            view != NULL ? (double)view->renderOrigin.z / FOX_UNITS_PER_METRE +
+                                               (double)view->eye[2]
+                                         : 0.0,
                             (unsigned)width, (unsigned)height);
                         FoxReviewOpenNote(session->review, context);
                     }

@@ -110,6 +110,8 @@ void FoxReviewDestroy(FoxReview *review)
 {
     if (review != NULL)
     {
+        /* Closing the game keeps what was typed. */
+        FoxReviewFinish(review, true);
         FoxHudDestroy(review->hud);
         free(review);
     }
@@ -242,20 +244,15 @@ static void Wrap(const char *text, char *out, size_t capacity)
     out[used] = '\0';
 }
 
-void FoxReviewDraw(FoxReview *review, const FoxCameraView *camera, double seconds)
+void FoxReviewUpdate(FoxReview *review, double seconds)
 {
-    if (review == NULL || review->hud == NULL || camera == NULL)
+    if (review == NULL || review->hud == NULL)
     {
         return;
     }
     if (!review->typing && review->savedFor > 0.0)
     {
         review->savedFor -= seconds;
-        review->changed = review->changed || review->savedFor <= 0.0;
-    }
-    if (!review->typing && review->savedFor <= 0.0)
-    {
-        return;
     }
     if (review->changed)
     {
@@ -277,5 +274,12 @@ void FoxReviewDraw(FoxReview *review, const FoxCameraView *camera, double second
         }
         FoxHudSetContent(review->hud, review->panel, NULL, 0u);
     }
-    FoxHudDraw(review->hud, camera);
+}
+
+void FoxReviewDraw(const FoxReview *review, const FoxCameraView *camera)
+{
+    if (review != NULL && (review->typing || review->savedFor > 0.0))
+    {
+        FoxHudDraw(review->hud, camera);
+    }
 }

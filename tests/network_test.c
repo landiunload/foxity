@@ -391,6 +391,191 @@ static void TestWayBack(const FoxPlanet *planet)
     FoxNetworkDestroy(network);
 }
 
+static FoxRoadPlan PathPlan(FoxVec start, FoxVec end, FoxLaneKind kind)
+{
+    return (FoxRoadPlan){.start = start, .end = end, .layout = FoxRoadLayoutSingle(kind)};
+}
+
+/* The node nearest a point, and its view. */
+static uint32_t NodeAt(const FoxNetwork *network, FoxVec point, FoxNodeView *outView,
+                       const char *what)
+{
+    /* Poles stand off the ground the further out they are. */
+    const uint32_t node = FoxNetworkNearestNode(network, point, FOX_METRES(10));
+    EXPECT(node != FOX_NETWORK_NONE && FoxNetworkNode(network, node, outView), what);
+    return node;
+}
+
+/* The walk of a path road, whichever side it is on. */
+static uint32_t PathWalk(const FoxNetwork *network, uint32_t road)
+{
+    const FoxRoad *record = &network->roads[road];
+    return record->walkCount[0] != 0u ? record->walks[0][0] : record->walks[1][0];
+}
+
+/* Whether people can walk from one walk to another along the joins. */
+static bool Walkable(const FoxNetwork *network, uint32_t from, uint32_t to)
+{
+    static uint32_t queue[1u << 14u];
+    static bool seen[1u << 14u];
+    const uint32_t capacity = network->pathCapacity;
+    EXPECT(capacity <= (1u << 14u), "few paths");
+    for (uint32_t index = 0u; index < capacity; ++index)
+    {
+        seen[index] = false;
+    }
+    uint32_t head = 0u;
+    uint32_t tail = 0u;
+    queue[tail++] = from;
+    seen[from] = true;
+    while (head < tail)
+    {
+        const uint32_t walk = queue[head++];
+        if (walk == to)
+        {
+            return true;
+        }
+        const FoxPath *path = &network->paths[walk];
+        for (uint32_t end = 0u; end < 2u; ++end)
+        {
+            for (uint32_t join = 0u; join < path->joinCount[end]; ++join)
+            {
+                const uint32_t next = path->joins[end][join] / 2u;
+                if (!seen[next] && !network->paths[next].retired)
+                {
+                    seen[next] = true;
+                    queue[tail++] = next;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/* The road of a node other than `except`. */
+static uint32_t RoadOf(const FoxNetwork *network, uint32_t node, uint32_t except)
+{
+    FoxNodeView view;
+    EXPECT(FoxNetworkNode(network, node, &view), "the node");
+    for (uint32_t slot = 0u; slot < view.roadCount; ++slot)
+    {
+        if (view.roads[slot] != except)
+        {
+            return view.roads[slot];
+        }
+    }
+    return FOX_NETWORK_NONE;
+}
+
+/* Footways and bike lanes alone meet roads for cars from the side: across
+ * one they leave a crossing, ending at one they join its footway, and never
+ * lie along it or end in an intersection. */
+static void TestPaths(const FoxPlanet *planet)
+{
+    FoxNetwork *network = NewNetwork(FOX_DRIVE_RIGHT);
+    const FoxRoadPlan street = Plan(Pole(-60, 0), Pole(60, 0), FOX_ROAD_STREET);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &street) == FOX_ROAD_OK, "a street");
+    const uint32_t road = FirstRoad(network);
+
+    FoxRoadPlan plan = PathPlan(Pole(0, -30), Pole(0, 30), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a footway across");
+    FoxRoadView view;
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.crossingCount == 1u &&
+               FoxAbs(view.crossings[0] - FOX_METRES(60)) < FOX_METRES(1),
+           "the street goes on uncut, with a crossing where the footway meets it");
+    FoxNodeView tap;
+    const uint32_t tapNode = NodeAt(network, Pole(0, 0), &tap, "a node where the footway crosses");
+    EXPECT(tap.tap && tap.roadCount == 2u && tap.carRoadCount == 0u,
+           "the two halves of the footway meet on the street's centre line");
+    const FoxRoad *record = &network->roads[road];
+    EXPECT(record->tapCount == 1u && record->tapWalks[0] != FOX_NETWORK_NONE,
+           "people walk over it");
+    for (uint32_t slot = 0u; slot < tap.roadCount; ++slot)
+    {
+        FoxRoadView half;
+        EXPECT(FoxNetworkRoad(network, tap.roads[slot], &half), "a half");
+        const uint32_t end = half.nodes[0] == tapNode ? 0u : 1u;
+        EXPECT(half.trim[end] >= FOX_LANE_WIDTH + FOX_FOOT_WIDTH,
+               "each half stops at the street's edge");
+    }
+    const FoxPath *lane = FoxNetworkPathRecord(network, view.lanes[0][0]);
+    EXPECT(lane->crossingCount == 1u && lane->crossingWalk[0] == record->tapWalks[0],
+           "cars know where people cross");
+    const uint32_t south = PathWalk(network, tap.roads[0]);
+    const uint32_t north = PathWalk(network, tap.roads[1]);
+    EXPECT(Walkable(network, south, north), "from one half over the street to the other");
+    EXPECT(Walkable(network, south, record->walks[0][0]) &&
+               Walkable(network, south, record->walks[1][1]),
+           "and onto the street's footways either way");
+
+    plan = PathPlan(Pole(30, -30), Pole(30, -2), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a footway up to it");
+    EXPECT(FoxNetworkRoad(network, road, &view) && view.crossingCount == 1u,
+           "ending there it leaves no crossing");
+    FoxNodeView end;
+    const uint32_t endNode = NodeAt(network, Pole(30, 0), &end, "a node where the footway ends");
+    EXPECT(end.tap && end.roadCount == 1u, "it ends on the street");
+    EXPECT(Walkable(network, PathWalk(network, end.roads[0]), north),
+           "and walks on along the footway and over the crossing");
+
+    plan = PathPlan(Pole(-45, 9), Pole(45, -9), FOX_LANE_BIKE);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OVERLAP,
+           "a bike lane cannot cross at a glancing angle, over the carriageway");
+    plan = PathPlan(Pole(-40, 4), Pole(40, 4), FOX_LANE_BIKE);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) != FOX_ROAD_OK, "nor run along it");
+    plan = PathPlan(Pole(60, -20), Pole(60, -1), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OVERLAP,
+           "a footway does not end in the street's dead end");
+    plan = PathPlan(Pole(-30, 3), Pole(-30, 30), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK,
+           "a footway from the north footway");
+
+    /* A road for cars over a footway: the footway meets it, the road goes on. */
+    plan = PathPlan(Pole(120, -30), Pole(120, 30), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkBuildRoad(network, planet, &plan) == FOX_ROAD_OK, "a footway alone");
+    const uint32_t roads = FoxNetworkRoadCount(network);
+    FoxRoadPlan lone = {
+        .start = Pole(90, 0), .end = Pole(150, 0), .layout = FoxRoadLayoutSingle(FOX_LANE_ASPHALT)};
+    EXPECT(FoxNetworkBuildRoad(network, planet, &lone) == FOX_ROAD_OK, "a lane over it");
+    EXPECT(FoxNetworkRoadCount(network) == roads + 2u, "the lane is one road, the footway two");
+    FoxNodeView over;
+    (void)NodeAt(network, Pole(120, 0), &over, "a node where the lane runs over the footway");
+    EXPECT(over.tap && over.roadCount == 2u, "the footway meets the lane from both sides");
+    const uint32_t laneRoad =
+        network->nodes[FoxNetworkNearestNode(network, Pole(120, 0), FOX_METRES(10))].tap;
+    EXPECT(FoxNetworkRoad(network, laneRoad, &view) && view.crossingCount == 1u,
+           "with a crossing, edge to edge without footways");
+    EXPECT(Walkable(network, PathWalk(network, over.roads[0]), PathWalk(network, over.roads[1])),
+           "people walk over the lane");
+    plan = PathPlan(Pole(110, -20), Pole(110, -1), FOX_LANE_FOOT);
+    EXPECT(FoxNetworkCheckRoad(network, planet, &plan) == FOX_ROAD_OVERLAP,
+           "a footway cannot end at a lane with no edge to walk on");
+    lone = (FoxRoadPlan){.start = Pole(150, 30),
+                         .end = Pole(120, 15),
+                         .layout = FoxRoadLayoutSingle(FOX_LANE_ASPHALT)};
+    EXPECT(FoxNetworkCheckRoad(network, planet, &lone) == FOX_ROAD_OVERLAP,
+           "nor a lane end on a footway");
+
+    /* Wider, the street keeps its paths at its new edge. */
+    EXPECT(FoxNetworkWidenRoad(network, road, 0u, FOX_LANE_BIKE, false) == FOX_ROAD_OK,
+           "a bike lane along the street");
+    FoxRoadView half;
+    const uint32_t south0 = RoadOf(network, tapNode, FOX_NETWORK_NONE);
+    EXPECT(FoxNetworkRoad(network, south0, &half), "a half of the footway");
+    const uint32_t at = half.nodes[0] == tapNode ? 0u : 1u;
+    EXPECT(half.trim[at] >= FOX_LANE_WIDTH + FOX_FOOT_WIDTH, "still at the edge");
+
+    /* Gone, the street leaves its paths as they were. */
+    EXPECT(FoxNetworkRemoveRoad(network, road), "the street goes");
+    FoxNodeView left;
+    EXPECT(FoxNetworkNode(network, endNode, &left) && !left.tap && left.roadCount == 1u,
+           "the footway that ended on it ends on its own");
+    EXPECT(FoxNetworkNode(network, tapNode, &left) && !left.tap && left.roadCount == 2u,
+           "the one across it runs on");
+    FoxNetworkReleaseRetired(network);
+    FoxNetworkDestroy(network);
+}
+
 int main(void)
 {
     FoxPlanet *planet = FoxPlanetCreate(RADIUS);
@@ -404,6 +589,7 @@ int main(void)
     TestThroughBend(planet);
     TestStrips(planet);
     TestWayBack(planet);
+    TestPaths(planet);
     FoxPlanetDestroy(planet);
     return 0;
 }

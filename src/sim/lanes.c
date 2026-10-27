@@ -300,6 +300,46 @@ static void PlaneCoordinates(FoxVec direction, FoxVec reference, FoxVec up, int6
                              int64_t *outY);
 static bool AngleLess(int64_t ax, int64_t ay, int64_t bx, int64_t by);
 
+/* Which side of the road a tap lies on a path leaves to: 1 to the right
+ * seen from the road's nodes[0], 0 to the left. */
+static uint32_t TapSide(const FoxNetwork *network, const FoxNode *node, const FoxRoad *path,
+                        uint32_t nodeIndex)
+{
+    FoxVec right;
+    (void)FoxRoadPointAt(&network->roads[node->tap], node->tapAlong, 0, &right);
+    return FoxVecDot(LeavingDirection(path, FoxRoadEndAt(path, nodeIndex)), right) > 0 ? 1u : 0u;
+}
+
+/* The paths at a tap stop at the edge of the road they meet, whatever the
+ * angle: where their own edge nearest the road reaches it. */
+static void MeasureTap(FoxNetwork *network, uint32_t index)
+{
+    FoxNode *node = &network->nodes[index];
+    const FoxRoad *on = &network->roads[node->tap];
+    int64_t extent[2];
+    FoxRoadLayoutExtent(&on->driven, extent);
+    const FoxVec behind = FoxRoadPointAt(on, node->tapAlong - FOX_METRES(1), 0, NULL);
+    const FoxVec ahead = FoxRoadPointAt(on, node->tapAlong + FOX_METRES(1), 0, NULL);
+    const FoxVec tangent = FoxVecDirection(FoxVecSub(ahead, behind));
+    int64_t widest = 0;
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        FoxRoad *road = &network->roads[node->roads[slot]];
+        const uint32_t end = FoxRoadEndAt(road, index);
+        const FoxVec leaving = LeavingDirection(road, end);
+        const int64_t sine = FoxMax((int64_t)FOX_UNIT / 2,
+                                    FoxAbs(FoxVecDot(FoxVecCross(leaving, tangent), node->up) /
+                                           ((int64_t)FOX_UNIT * FOX_UNIT)));
+        const int64_t cosine = FoxAbs(FoxVecDot(leaving, tangent)) / FOX_UNIT;
+        const int64_t half = HalfWidth(road);
+        const uint32_t side = TapSide(network, node, road, index);
+        const int64_t trim = (extent[side] * FOX_UNIT + half * cosine) / sine;
+        road->trim[end] = FoxMin(trim, road->length * 2 / 5);
+        widest = FoxMax(widest, half);
+    }
+    node->radius = widest + FOX_METRES(1);
+}
+
 void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
 {
     FoxNode *node = &network->nodes[index];
@@ -309,6 +349,11 @@ void FoxLanesMeasureNode(FoxNetwork *network, uint32_t index)
     {
         FoxRoad *road = &network->roads[node->roads[slot]];
         road->driven = Driven(network, road);
+    }
+    if (node->tap != FOX_NETWORK_NONE)
+    {
+        MeasureTap(network, index);
+        return;
     }
     FoxVec leaving[FOX_NODE_MAX_ROADS];
     int64_t paved[FOX_NODE_MAX_ROADS];
@@ -552,7 +597,27 @@ void FoxLanesRetireWalks(FoxNetwork *network, FoxRoad *road)
             (void)FoxNetworkRetirePath(network, road->crossingWalks[crossing]);
         }
         road->crossingWalks[crossing] = FOX_NETWORK_NONE;
+        if (road->tapWalks[crossing] != FOX_NETWORK_NONE)
+        {
+            (void)FoxNetworkRetirePath(network, road->tapWalks[crossing]);
+        }
+        road->tapWalks[crossing] = FOX_NETWORK_NONE;
     }
+}
+
+/* The walk at one end of a road along a side; a path walks on whichever
+ * side it has. FOX_NETWORK_NONE without one. */
+static uint32_t EndWalk(const FoxRoad *road, uint32_t side, uint32_t end)
+{
+    if (road->walkCount[side] == 0u && FoxRoadLayoutCarLanes(&road->layout) == 0u)
+    {
+        side = 1u - side;
+    }
+    if (road->walkCount[side] == 0u)
+    {
+        return FOX_NETWORK_NONE;
+    }
+    return road->walks[side][end == 0u ? 0u : road->walkCount[side] - 1u];
 }
 
 /* The middle of a road's footway on one side, units right of its centre
@@ -571,37 +636,97 @@ static bool FootwayOffset(const FoxRoad *road, uint32_t side, int64_t *outOffset
     return true;
 }
 
-/* The footways along a road, cut where crossings lead over it, and the walks
- * over those crossings; and on every lane where it is crossed. */
+/* A place along a road where its footways are cut: a crossing of the
+ * mayor's, or a tap, which may be a crossing too. */
+typedef struct Station
+{
+    int64_t along;
+    uint32_t index;
+    bool tap;
+    bool crossing;
+} Station;
+
+/* Which sides of the road at a tap paths people walk on leave to. */
+static uint8_t TapWalkSides(const FoxNetwork *network, uint32_t nodeIndex)
+{
+    const FoxNode *node = &network->nodes[nodeIndex];
+    uint8_t sides = 0u;
+    for (uint32_t slot = 0u; slot < node->roadCount; ++slot)
+    {
+        const FoxRoad *path = &network->roads[node->roads[slot]];
+        if (path->layout.foot[0] || path->layout.foot[1])
+        {
+            sides |= (uint8_t)(1u << TapSide(network, node, path, nodeIndex));
+        }
+    }
+    return sides;
+}
+
+/* The stations between a road's trims, in order along it. */
+static uint32_t Stations(FoxNetwork *network, FoxRoad *road, int64_t first, int64_t last,
+                         Station *out)
+{
+    uint32_t count = 0u;
+    const uint32_t total = (uint32_t)road->crossingCount + road->tapCount;
+    for (uint32_t index = 0u; index < total; ++index)
+    {
+        const bool tap = index >= road->crossingCount;
+        const uint32_t slot = tap ? index - road->crossingCount : index;
+        int64_t along = road->crossings[slot];
+        bool crossing = true;
+        if (tap)
+        {
+            const uint32_t node = road->taps[slot];
+            along = network->nodes[node].tapAlong;
+            uint8_t sides = 0u;
+            for (uint32_t path = 0u; path < network->nodes[node].roadCount; ++path)
+            {
+                sides |= (uint8_t)(1u << TapSide(network, &network->nodes[node],
+                                                 &network->roads[network->nodes[node].roads[path]],
+                                                 node));
+            }
+            road->tapSides[slot] = sides;
+            road->tapPiece[slot] = UINT8_MAX;
+            crossing = sides == 3u;
+        }
+        if (along <= first + FOX_METRES(1) || along >= last - FOX_METRES(1) ||
+            count >= FOX_ROAD_MAX_CROSSINGS)
+        {
+            continue;
+        }
+        uint32_t at = count++;
+        while (at > 0u && out[at - 1u].along > along)
+        {
+            out[at] = out[at - 1u];
+            --at;
+        }
+        out[at] = (Station){.along = along, .index = slot, .tap = tap, .crossing = crossing};
+    }
+    return count;
+}
+
+/* The footways along a road, cut at its crossings and taps, and the walks
+ * over the crossings; and on every lane where it is crossed. A crossing is
+ * walked where both sides have a footway, or at a tap a footpath leading
+ * on; without a footway it starts at the road's edge. */
 static bool BuildWalks(FoxNetwork *network, uint32_t roadIndex)
 {
     FoxRoad *road = &network->roads[roadIndex];
     FoxLanesRetireWalks(network, road);
     const int64_t first = road->trim[0];
     const int64_t last = FoxMax(first + FOX_METRES(1), road->length - road->trim[1]);
-    /* The crossings between the trims, in order. */
-    int64_t cuts[FOX_ROAD_MAX_CROSSINGS];
-    uint32_t cutIndex[FOX_ROAD_MAX_CROSSINGS];
-    uint32_t cutCount = 0u;
-    for (uint32_t crossing = 0u; crossing < road->crossingCount; ++crossing)
-    {
-        if (road->crossings[crossing] > first + FOX_METRES(1) &&
-            road->crossings[crossing] < last - FOX_METRES(1))
-        {
-            cutIndex[cutCount] = crossing;
-            cuts[cutCount++] = road->crossings[crossing];
-        }
-    }
+    Station stations[FOX_ROAD_MAX_CROSSINGS];
+    const uint32_t stationCount = Stations(network, road, first, last, stations);
     bool ok = true;
     int64_t offsets[2] = {0, 0};
     bool footways[2] = {false, false};
     for (uint32_t side = 0u; side < 2u; ++side)
     {
         footways[side] = FootwayOffset(road, side, &offsets[side]);
-        for (uint32_t piece = 0u; footways[side] && piece <= cutCount; ++piece)
+        for (uint32_t piece = 0u; footways[side] && piece <= stationCount; ++piece)
         {
-            const int64_t from = piece == 0u ? first : cuts[piece - 1u];
-            const int64_t to = piece == cutCount ? last : cuts[piece];
+            const int64_t from = piece == 0u ? first : stations[piece - 1u].along;
+            const int64_t to = piece == stationCount ? last : stations[piece].along;
             const uint32_t walk =
                 BuildAlong(network, roadIndex, PATH_WALK, offsets[side], from, to);
             road = &network->roads[roadIndex];
@@ -617,12 +742,28 @@ static bool BuildWalks(FoxNetwork *network, uint32_t roadIndex)
             }
             road->walks[side][road->walkCount[side]++] = walk;
         }
+        footways[side] = footways[side] && road->walkCount[side] == stationCount + 1u;
     }
-    for (uint32_t cut = 0u;
-         ok && footways[0] && footways[1] && road->walkCount[0] == cutCount + 1u &&
-         road->walkCount[1] == cutCount + 1u && cut < cutCount;
-         ++cut)
+    int64_t extent[2];
+    FoxRoadLayoutExtent(&road->layout, extent);
+    road->zebraCount = 0u;
+    for (uint32_t station = 0u; ok && station < stationCount; ++station)
     {
+        const Station *at = &stations[station];
+        if (at->tap)
+        {
+            road->tapPiece[at->index] = (uint8_t)station;
+        }
+        if (!at->crossing)
+        {
+            continue;
+        }
+        road->zebras[road->zebraCount++] = at->along;
+        const uint8_t paths = at->tap ? TapWalkSides(network, road->taps[at->index]) : 0u;
+        if (!(footways[0] || (paths & 1u) != 0u) || !(footways[1] || (paths & 2u) != 0u))
+        {
+            continue;
+        }
         const uint32_t index = FoxNetworkAllocatePath(network);
         road = &network->roads[roadIndex];
         if (index == FOX_NETWORK_NONE)
@@ -639,24 +780,41 @@ static bool BuildWalks(FoxNetwork *network, uint32_t roadIndex)
             break;
         }
         /* Straight over, from the left footway to the right one. */
-        walk->points[0] = network->paths[road->walks[0][cut]]
-                              .points[network->paths[road->walks[0][cut]].count - 1u];
-        walk->points[1] = network->paths[road->walks[1][cut]]
-                              .points[network->paths[road->walks[1][cut]].count - 1u];
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            if (footways[side])
+            {
+                const FoxPath *before = &network->paths[road->walks[side][station]];
+                walk->points[side] = before->points[before->count - 1u];
+            }
+            else
+            {
+                walk->points[side] =
+                    FoxRoadPointAt(road, at->along, side == 0u ? -extent[0] : extent[1], NULL);
+            }
+        }
         walk->count = 2u;
         walk->length = FoxPolylineMeasure(walk->points, walk->lengths, 2u);
         walk->walkKind = WALK_CROSSING;
         walk->road = roadIndex;
         walk->roadGeneration = road->generation;
-        walk->roadAlong = cuts[cut];
+        walk->roadAlong = at->along;
         for (uint32_t side = 0u; side < 2u; ++side)
         {
-            const uint32_t before = road->walks[side][cut];
-            const uint32_t after = road->walks[side][cut + 1u];
-            Join(network, index, side, before, 1u);
-            Join(network, index, side, after, 0u);
+            if (footways[side])
+            {
+                Join(network, index, side, road->walks[side][station], 1u);
+                Join(network, index, side, road->walks[side][station + 1u], 0u);
+            }
         }
-        road->crossingWalks[cutIndex[cut]] = index;
+        if (at->tap)
+        {
+            road->tapWalks[at->index] = index;
+        }
+        else
+        {
+            road->crossingWalks[at->index] = index;
+        }
     }
     /* Every lane knows where it is crossed, and whether anyone walks there. */
     road = &network->roads[roadIndex];
@@ -666,14 +824,139 @@ static bool BuildWalks(FoxNetwork *network, uint32_t roadIndex)
         {
             FoxPath *path = &network->paths[road->lanes[direction][lane]];
             path->crossingCount = 0u;
-            for (uint32_t cut = 0u; cut < cutCount; ++cut)
+            for (uint32_t step = 0u; step < stationCount; ++step)
             {
-                const uint32_t at = direction == 0u ? cut : cutCount - 1u - cut;
-                path->crossingAt[path->crossingCount] = FoxCentreToLane(path, cuts[at]);
-                path->crossingWalk[path->crossingCount++] = road->crossingWalks[cutIndex[at]];
+                const Station *at = &stations[direction == 0u ? step : stationCount - 1u - step];
+                if (at->crossing)
+                {
+                    path->crossingAt[path->crossingCount] = FoxCentreToLane(path, at->along);
+                    path->crossingWalk[path->crossingCount++] =
+                        at->tap ? road->tapWalks[at->index] : road->crossingWalks[at->index];
+                }
             }
         }
     }
+    return ok;
+}
+
+/* A short walk from one point to another; FOX_NETWORK_NONE without memory. */
+static uint32_t Link(FoxNetwork *network, FoxVec from, FoxVec to, uint32_t nodeIndex)
+{
+    const uint32_t index = FoxNetworkAllocatePath(network);
+    if (index == FOX_NETWORK_NONE)
+    {
+        return FOX_NETWORK_NONE;
+    }
+    FoxPath *walk = &network->paths[index];
+    ResetPath(walk, PATH_WALK);
+    if (!AllocatePathArrays(walk, 2u, false))
+    {
+        FreeNewPath(network, index);
+        return FOX_NETWORK_NONE;
+    }
+    walk->points[0] = from;
+    walk->points[1] = to;
+    walk->count = 2u;
+    walk->length = FoxPolylineMeasure(walk->points, walk->lengths, 2u);
+    walk->walkKind = WALK_CORNER;
+    walk->node = nodeIndex;
+    return index;
+}
+
+/* At a tap: the footways of the road meet each other and the crossing there
+ * anew, and each path's walk leads onto them on its side, or onto the
+ * crossing where that side has no footway. */
+static bool BuildTap(FoxNetwork *network, uint32_t nodeIndex)
+{
+    const FoxNode *node = &network->nodes[nodeIndex];
+    const uint32_t roadIndex = node->tap;
+    const FoxRoad *road = &network->roads[roadIndex];
+    uint32_t slot = 0u;
+    while (slot < road->tapCount && road->taps[slot] != nodeIndex)
+    {
+        ++slot;
+    }
+    if (slot == road->tapCount || road->tapPiece[slot] == UINT8_MAX)
+    {
+        return true;
+    }
+    const uint32_t piece = road->tapPiece[slot];
+    const uint32_t crossing = road->tapWalks[slot];
+    bool footways[2];
+    for (uint32_t side = 0u; side < 2u; ++side)
+    {
+        footways[side] = road->walkCount[side] > piece + 1u;
+        if (footways[side])
+        {
+            const uint32_t before = road->walks[side][piece];
+            const uint32_t after = road->walks[side][piece + 1u];
+            network->paths[before].joinCount[1] = 0u;
+            network->paths[after].joinCount[0] = 0u;
+            Join(network, before, 1u, after, 0u);
+        }
+    }
+    if (crossing != FOX_NETWORK_NONE)
+    {
+        network->paths[crossing].joinCount[0] = 0u;
+        network->paths[crossing].joinCount[1] = 0u;
+        for (uint32_t side = 0u; side < 2u; ++side)
+        {
+            if (footways[side])
+            {
+                Join(network, crossing, side, road->walks[side][piece], 1u);
+                Join(network, crossing, side, road->walks[side][piece + 1u], 0u);
+            }
+        }
+    }
+    if (node->roadCount == 0u)
+    {
+        return true;
+    }
+    uint32_t *links = malloc((size_t)node->roadCount * sizeof(*links));
+    if (links == NULL)
+    {
+        return false;
+    }
+    uint32_t built = 0u;
+    bool ok = true;
+    for (uint32_t index = 0u; index < node->roadCount; ++index)
+    {
+        const FoxRoad *path = &network->roads[node->roads[index]];
+        const uint32_t end = FoxRoadEndAt(path, nodeIndex);
+        const uint32_t walk = EndWalk(path, 0u, end);
+        const uint32_t side = TapSide(network, node, path, nodeIndex);
+        if (walk == FOX_NETWORK_NONE || (!footways[side] && crossing == FOX_NETWORK_NONE))
+        {
+            continue;
+        }
+        const FoxPath *own = &network->paths[walk];
+        const FoxPath *onto =
+            footways[side] ? &network->paths[road->walks[side][piece]] : &network->paths[crossing];
+        const FoxVec to = footways[side] ? onto->points[onto->count - 1u] : onto->points[side];
+        const uint32_t link =
+            Link(network, own->points[end == 0u ? 0u : own->count - 1u], to, nodeIndex);
+        if (link == FOX_NETWORK_NONE)
+        {
+            ok = false;
+            break;
+        }
+        road = &network->roads[roadIndex];
+        node = &network->nodes[nodeIndex];
+        Join(network, link, 0u, walk, end);
+        if (footways[side])
+        {
+            Join(network, link, 1u, road->walks[side][piece], 1u);
+            Join(network, link, 1u, road->walks[side][piece + 1u], 0u);
+        }
+        if (crossing != FOX_NETWORK_NONE)
+        {
+            Join(network, link, 1u, crossing, side);
+        }
+        links[built++] = link;
+    }
+    FoxNode *record = &network->nodes[nodeIndex];
+    record->corners = links;
+    record->cornerCount = built;
     return ok;
 }
 
@@ -697,6 +980,10 @@ static bool BuildCorners(FoxNetwork *network, uint32_t nodeIndex)
                 network->paths[road->walks[side][piece]].joinCount[end] = 0u;
             }
         }
+    }
+    if (node->tap != FOX_NETWORK_NONE)
+    {
+        return BuildTap(network, nodeIndex);
     }
     if (count < 2u)
     {
@@ -738,14 +1025,19 @@ static bool BuildCorners(FoxNetwork *network, uint32_t nodeIndex)
         const uint32_t endB = FoxRoadEndAt(roadB, nodeIndex);
         /* Leaving from nodes[0] the left is side 0; leaving from nodes[1] it
          * is side 1. */
-        const uint32_t sideA = endA == 0u ? 0u : 1u;
-        const uint32_t sideB = endB == 0u ? 1u : 0u;
-        if (roadA->walkCount[sideA] == 0u || roadB->walkCount[sideB] == 0u)
+        const uint32_t walkA = EndWalk(roadA, endA == 0u ? 0u : 1u, endA);
+        const uint32_t walkB = EndWalk(roadB, endB == 0u ? 1u : 0u, endB);
+        /* Two paths round a bend meet once, not on both sides. */
+        bool known = walkA == FOX_NETWORK_NONE || walkB == FOX_NETWORK_NONE;
+        for (uint32_t corner = 0u; corner < built && !known; ++corner)
+        {
+            const FoxPath *other = &network->paths[corners[corner]];
+            known = other->joins[0][0] / 2u == walkB && other->joins[1][0] / 2u == walkA;
+        }
+        if (known)
         {
             continue;
         }
-        const uint32_t walkA = roadA->walks[sideA][endA == 0u ? 0u : roadA->walkCount[sideA] - 1u];
-        const uint32_t walkB = roadB->walks[sideB][endB == 0u ? 0u : roadB->walkCount[sideB] - 1u];
         const uint32_t index = FoxNetworkAllocatePath(network);
         if (index == FOX_NETWORK_NONE)
         {

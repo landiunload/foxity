@@ -31,8 +31,10 @@ void FoxReviewType(FoxReview *review, const uint32_t *codepoints, uint32_t count
 void FoxReviewErase(FoxReview *review);
 void FoxReviewFinish(FoxReview *review, bool withComment);
 
-/* The panel with the line being typed, or a moment's word that it was
- * saved; `seconds` since the last frame. */
-void FoxReviewDraw(FoxReview *review, const FoxCameraView *camera, double seconds);
+/* Builds the panel with the line being typed, or a moment's word that it
+ * was saved, outside a frame; `seconds` since the last update. */
+void FoxReviewUpdate(FoxReview *review, double seconds);
+/* Draws that panel within a frame. */
+void FoxReviewDraw(const FoxReview *review, const FoxCameraView *camera);
 
 #endif
