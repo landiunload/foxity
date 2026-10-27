@@ -455,14 +455,15 @@ static void Run(const char *label, FoxDriveSide side, uint32_t cars, bool routed
     }
     const FoxTrafficStats stats = FoxTrafficGetStats(FoxWorldTraffic(world));
     printf("%s: %llu entries, %llu on red, %llu past stop signs, %llu collisions, %llu forced "
-           "brakes, %llu of %llu arrivals with right of way stood idle; %llu arrived, %llu stuck, "
+           "brakes, %llu of %llu arrivals with right of way stood idle; %llu arrived, %u standing "
+           "long, "
            "mean %.1f m/s; %llu lane changes, %llu overtakes; bodies overlapping %llu ticks, with "
            "a truck %llu\n",
            label, (unsigned long long)tally.entries, (unsigned long long)tally.redEntries,
            (unsigned long long)tally.stopsSkipped, (unsigned long long)tally.collisions,
            (unsigned long long)tally.forcedBrakes, (unsigned long long)tally.idleStops,
            (unsigned long long)tally.priorityArrivals, (unsigned long long)stats.arrived,
-           (unsigned long long)stats.stuck, (double)stats.meanSpeed / FOX_UNITS_PER_METRE,
+           stats.waitingLong, (double)stats.meanSpeed / FOX_UNITS_PER_METRE,
            (unsigned long long)stats.laneChanges, (unsigned long long)stats.overtakes,
            (unsigned long long)tally.bodies, (unsigned long long)tally.truckBodies);
     EXPECT(tally.redEntries == 0u, "nobody drives into a red light");

@@ -942,8 +942,7 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
     Append(text, &used, "Появилось %llu, доехало %llu (%.0f в мин.)\n",
            (unsigned long long)cars.spawned, (unsigned long long)cars.arrived,
            minutes > 0.0 ? (double)cars.arrived / minutes : 0.0);
-    Append(text, &used, "Снято застрявших %llu (%.1f в мин.)\n", (unsigned long long)cars.stuck,
-           minutes > 0.0 ? (double)cars.stuck / minutes : 0.0);
+    Append(text, &used, "Стоят полминуты и дольше %u\n", cars.waitingLong);
     Append(text, &used, "-- КЛАВИШИ\n");
     Append(text, &used, "1-9 инструменты, ESC убрать, T тип дороги\n");
     Append(text, &used, "V скорость времени\n");

@@ -31,6 +31,8 @@
 #define FOX_CAR_LENGTH (FOX_METRES(9) / 2)
 #define FOX_TRUCK_LENGTH FOX_METRES(12)
 #define FOX_TRAFFIC_MAX_VEHICLES 1000000u
+/* The boldest manner FoxTrafficDesc can ask for, percent over the limit. */
+#define FOX_TRAFFIC_MAX_MANNER 30u
 
 typedef enum FoxVehicleKind
 {
@@ -46,6 +48,10 @@ typedef struct FoxTrafficDesc
     uint64_t seed;
     /* How many cars the city tries to keep on its roads. */
     uint32_t targetVehicles;
+    /* Each driver's own manner: how far over the limit, in percent, the
+     * boldest drives where the road is free; each one aims somewhere from
+     * the limit up to that. Zero: every car keeps exactly to the limit. */
+    uint32_t mannerPercent;
 } FoxTrafficDesc;
 
 typedef struct FoxVehicleView
@@ -71,9 +77,9 @@ typedef struct FoxTrafficStats
     uint32_t standing;
     uint64_t spawned;
     uint64_t arrived;
+    /* Cars that left the roads: parked where the city wants fewer, or
+     * with no room anywhere near after the network changed under them. */
     uint64_t removed;
-    /* Of the removed: cars taken off after standing a minute. */
-    uint64_t stuck;
     /* Mean speed of all cars and the fastest one, units per second. */
     int32_t meanSpeed;
     int32_t maxSpeed;

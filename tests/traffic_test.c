@@ -53,11 +53,11 @@ static void ExpectNoOverlap(const FoxWorld *world)
 static void Report(const char *label, const FoxWorld *world)
 {
     const FoxTrafficStats stats = FoxTrafficGetStats(FoxWorldTraffic(world));
-    printf("%s: %u cars, %u standing, %llu spawned, %llu arrived, %llu removed (%llu stuck), "
-           "mean %.1f m/s\n",
-           label, stats.vehicles, stats.standing, (unsigned long long)stats.spawned,
-           (unsigned long long)stats.arrived, (unsigned long long)stats.removed,
-           (unsigned long long)stats.stuck, (double)stats.meanSpeed / FOX_UNITS_PER_METRE);
+    printf("%s: %u cars, %u standing (%u half a minute), %llu spawned, %llu arrived, %llu "
+           "removed, mean %.1f m/s\n",
+           label, stats.vehicles, stats.standing, stats.waitingLong,
+           (unsigned long long)stats.spawned, (unsigned long long)stats.arrived,
+           (unsigned long long)stats.removed, (double)stats.meanSpeed / FOX_UNITS_PER_METRE);
 }
 
 static void ExpectFlowing(const FoxWorld *world, const char *label)

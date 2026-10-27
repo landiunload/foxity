@@ -170,13 +170,12 @@ void FoxCityPrintStatistics(const FoxCity *city, const FoxTickTimer *timer, FILE
     }
     fprintf(stream, " km/h\n");
     fprintf(stream,
-            "spawned %" PRIu64 ", arrived %" PRIu64 ", removed %" PRIu64 " (%" PRIu64
-            " stuck a minute)\n",
-            cars.spawned, cars.arrived, cars.removed, cars.stuck);
+            "spawned %" PRIu64 ", arrived %" PRIu64 ", removed %" PRIu64
+            ", %u standing half a minute or more\n",
+            cars.spawned, cars.arrived, cars.removed, cars.waitingLong);
     if (cityMinutes > 0.0)
     {
-        fprintf(stream, "per city minute: %.1f arrived, %.2f taken off stuck\n",
-                (double)cars.arrived / cityMinutes, (double)cars.stuck / cityMinutes);
+        fprintf(stream, "per city minute: %.1f arrived\n", (double)cars.arrived / cityMinutes);
     }
 
     if (timer != NULL && timer->ticks != 0u)
@@ -204,9 +203,9 @@ void FoxCityReport(const FoxCity *city, const char *event)
     const FoxTrafficStats stats = FoxTrafficGetStats(FoxWorldTraffic(city->world));
     FoxLog(FOX_LOG_INFO,
            "%s at tick %" PRIu64 ": %u roads, %u nodes, %u cars (%u standing, mean %.1f m/s), "
-           "%" PRIu64 " arrived, %" PRIu64 " taken off stuck, state %016" PRIx64,
+           "%" PRIu64 " arrived, %u standing half a minute, state %016" PRIx64,
            event, FoxWorldTick(city->world), FoxNetworkRoadCount(network),
            FoxNetworkNodeCount(network), stats.vehicles, stats.standing,
-           (double)stats.meanSpeed / FOX_UNITS_PER_METRE, stats.arrived, stats.stuck,
+           (double)stats.meanSpeed / FOX_UNITS_PER_METRE, stats.arrived, stats.waitingLong,
            FoxWorldHash(city->world));
 }
