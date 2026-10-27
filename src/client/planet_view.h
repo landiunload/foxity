@@ -15,7 +15,8 @@
  * the far side span a kilometre. Only cubes the surface may pass through are
  * meshed, from the density field, nearest first and within a time budget per
  * frame, so building never makes a frame late; until a cube is ready its
- * coarser ancestor stands in for it. */
+ * cached children or its coarser ancestor stand in for it, and nothing finer
+ * is drawn inside a cube that stands in, so two resolutions never overlap. */
 
 typedef struct FoxPlanetView FoxPlanetView;
 
@@ -27,8 +28,9 @@ typedef struct FoxPlanetViewStats
     uint32_t builtThisFrame;
 } FoxPlanetViewStats;
 
-FoxPlanetView *FoxPlanetViewCreate(LaiueGraphicsDeviceV2 *device, const LaiueMesherServiceV1 *mesher,
-                                   uint32_t mesherServiceSize, const LaiueSceneMathServiceV1 *math);
+FoxPlanetView *FoxPlanetViewCreate(LaiueGraphicsDeviceV2 *device,
+                                   const LaiueMesherServiceV1 *mesher, uint32_t mesherServiceSize,
+                                   const LaiueSceneMathServiceV1 *math);
 /* Releases every GPU resource; call between frames. */
 void FoxPlanetViewDestroy(FoxPlanetView *view);
 

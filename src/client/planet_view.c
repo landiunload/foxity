@@ -51,7 +51,7 @@ typedef struct Cube
     uint32_t elementCount;
     FoxVec origin;
     uint64_t lastUsedFrame;
-    uint64_t drawnFrame;
+    uint64_t chosenFrame;
 } Cube;
 
 typedef struct Leaf
@@ -71,7 +71,9 @@ struct FoxPlanetView
     int32_t hash[HASH_CAPACITY];
     Leaf leaves[MAX_VISIBLE];
     uint32_t leafCount;
-    uint32_t drawList[MAX_VISIBLE];
+    uint32_t chosen[CACHE_CAPACITY];
+    uint32_t chosenCount;
+    uint32_t drawList[CACHE_CAPACITY];
     uint32_t drawCount;
     FoxPlanetViewStats stats;
     FoxPlanetSample *samples;
@@ -88,8 +90,9 @@ static bool DeviceHas(const LaiueGraphicsDeviceV2 *device, size_t offset, size_t
     return device != NULL && (size_t)device->structSize >= offset + size;
 }
 
-FoxPlanetView *FoxPlanetViewCreate(LaiueGraphicsDeviceV2 *device, const LaiueMesherServiceV1 *mesher,
-                                   uint32_t mesherServiceSize, const LaiueSceneMathServiceV1 *math)
+FoxPlanetView *FoxPlanetViewCreate(LaiueGraphicsDeviceV2 *device,
+                                   const LaiueMesherServiceV1 *mesher, uint32_t mesherServiceSize,
+                                   const LaiueSceneMathServiceV1 *math)
 {
     if (device == NULL || mesher == NULL || math == NULL ||
         mesherServiceSize < LAIUE_MESHER_SERVICE_V1_SURFACE_SIZE ||
@@ -363,8 +366,8 @@ static uint32_t ShadeVertex(const LaiueSurfaceVertexV1 *vertex, const double wor
     uint32_t material = vertex->material < FOX_MATERIAL_COUNT ? vertex->material : 0u;
     /* Coarse cubes take the material of a corner metres below the surface;
      * the skin of the planet is grass whatever corner was picked. */
-    const double depth = radiusMetres - sqrt(world[0] * world[0] + world[1] * world[1] +
-                                             world[2] * world[2]);
+    const double depth =
+        radiusMetres - sqrt(world[0] * world[0] + world[1] * world[1] + world[2] * world[2]);
     if ((material == FOX_MATERIAL_DIRT || material == FOX_MATERIAL_STONE) && depth < 2.0)
     {
         material = FOX_MATERIAL_GRASS;
@@ -397,8 +400,8 @@ static uint32_t ShadeVertex(const LaiueSurfaceVertexV1 *vertex, const double wor
     }
     const double north[3] = {up[1] * east[2] - up[2] * east[1], up[2] * east[0] - up[0] * east[2],
                              up[0] * east[1] - up[1] * east[0]};
-    const float upward = (float)(vertex->normal[0] * up[0] + vertex->normal[1] * up[1] +
-                                 vertex->normal[2] * up[2]);
+    const float upward =
+        (float)(vertex->normal[0] * up[0] + vertex->normal[1] * up[1] + vertex->normal[2] * up[2]);
     if (material == FOX_MATERIAL_GRASS && upward < 0.75f)
     {
         const float rock = upward < 0.55f ? 1.0f : (0.75f - upward) / 0.2f;
@@ -520,8 +523,8 @@ static bool BuildCube(FoxPlanetView *view, const FoxPlanet *planet, Cube *cube)
         const double world[3] = {origin[0] + local[0], origin[1] + local[1], origin[2] + local[2]};
         view->vertices[index] = (LaiueGraphicsVertexV2){
             .position = {local[0], local[1], local[2]},
-            .colorRGBA = ShadeVertex(source, world,
-                                     (double)FoxPlanetRadius(planet) / FOX_UNITS_PER_METRE),
+            .colorRGBA =
+                ShadeVertex(source, world, (double)FoxPlanetRadius(planet) / FOX_UNITS_PER_METRE),
         };
     }
     cube->elementCount = request.indexCount;
@@ -529,7 +532,8 @@ static bool BuildCube(FoxPlanetView *view, const FoxPlanet *planet, Cube *cube)
     {
         cube->indexed = true;
         return Upload(view, LAIUE_GRAPHICS_BUFFER_USAGE_VERTEX, view->vertices,
-                      (uint64_t)request.vertexCount * sizeof(*view->vertices), &cube->vertexBuffer) &&
+                      (uint64_t)request.vertexCount * sizeof(*view->vertices),
+                      &cube->vertexBuffer) &&
                Upload(view, LAIUE_GRAPHICS_BUFFER_USAGE_INDEX, view->surfaceIndices,
                       (uint64_t)request.indexCount * sizeof(uint32_t), &cube->indexBuffer);
     }
@@ -614,20 +618,6 @@ static Cube *AcquireCube(FoxPlanetView *view)
     return oldest;
 }
 
-static void MarkForDrawing(FoxPlanetView *view, Cube *cube)
-{
-    cube->lastUsedFrame = view->frame;
-    if (cube->drawnFrame == view->frame)
-    {
-        return;
-    }
-    cube->drawnFrame = view->frame;
-    if (!cube->empty && view->drawCount < MAX_VISIBLE)
-    {
-        view->drawList[view->drawCount++] = (uint32_t)(cube - view->cubes);
-    }
-}
-
 static int64_t Half(int64_t value)
 {
     return value >= 0 ? value / 2 : -((-value + 1) / 2);
@@ -650,6 +640,70 @@ static Cube *CachedAncestor(FoxPlanetView *view, CubeKey key)
         }
     }
     return NULL;
+}
+
+/* A cube's eight children where every one the surface may pass through is
+ * cached: zooming out, they show a leaf until the leaf's own cube is ready. */
+static uint32_t CachedChildren(FoxPlanetView *view, const FoxPlanet *planet, CubeKey key,
+                               Cube *outChildren[8])
+{
+    if (key.level == 0)
+    {
+        return 0u;
+    }
+    uint32_t count = 0u;
+    for (int64_t child = 0; child < 8; ++child)
+    {
+        const CubeKey childKey = {
+            .level = key.level - 1,
+            .x = key.x * 2 + (child & 1),
+            .y = key.y * 2 + ((child >> 1) & 1),
+            .z = key.z * 2 + (child >> 2),
+        };
+        FoxVec min;
+        FoxVec max;
+        CubeBox(childKey, &min, &max);
+        if (!FoxPlanetBoxMayHaveSurface(planet, min, max))
+        {
+            continue;
+        }
+        Cube *cube = FindCube(view, childKey);
+        if (cube == NULL)
+        {
+            return 0u;
+        }
+        outChildren[count++] = cube;
+    }
+    return count;
+}
+
+/* What shows a leaf this frame: its own cube, else its cached children, else
+ * its nearest cached ancestor; the count, none while nothing is cached. */
+static uint32_t Stand(FoxPlanetView *view, const FoxPlanet *planet, CubeKey key, Cube *outCubes[8])
+{
+    Cube *own = FindCube(view, key);
+    if (own != NULL)
+    {
+        outCubes[0] = own;
+        return 1u;
+    }
+    const uint32_t children = CachedChildren(view, planet, key, outCubes);
+    if (children != 0u)
+    {
+        return children;
+    }
+    outCubes[0] = CachedAncestor(view, key);
+    return outCubes[0] != NULL ? 1u : 0u;
+}
+
+static void Choose(FoxPlanetView *view, Cube *cube)
+{
+    cube->lastUsedFrame = view->frame;
+    if (cube->chosenFrame != view->frame)
+    {
+        cube->chosenFrame = view->frame;
+        view->chosen[view->chosenCount++] = (uint32_t)(cube - view->cubes);
+    }
 }
 
 static Cube *Build(FoxPlanetView *view, const FoxPlanet *planet, CubeKey key)
@@ -686,9 +740,21 @@ void FoxPlanetViewUpdate(FoxPlanetView *view, const FoxPlanet *planet, const Fox
     const double started = LaiueApplicationMonotonicSeconds();
     ++view->frame;
     view->drawCount = 0u;
+    view->chosenCount = 0u;
     view->stats = (FoxPlanetViewStats){0};
     RebuildHash(view);
     SelectLeaves(view, planet, camera);
+    /* What shows the view now is kept from eviction before anything is
+     * built, so building one cube never throws out another still on screen. */
+    for (uint32_t index = 0u; index < view->leafCount; ++index)
+    {
+        Cube *standing[8];
+        const uint32_t count = Stand(view, planet, view->leaves[index].key, standing);
+        for (uint32_t slot = 0u; slot < count; ++slot)
+        {
+            standing[slot]->lastUsedFrame = view->frame;
+        }
+    }
 
     /* Within the budget, but always one build, so the view keeps coming even
      * on a slow machine. */
@@ -722,19 +788,37 @@ void FoxPlanetViewUpdate(FoxPlanetView *view, const FoxPlanet *planet, const Fox
     for (uint32_t index = 0u; index < view->leafCount; ++index)
     {
         const CubeKey key = view->leaves[index].key;
-        Cube *cube = FindCube(view, key);
-        if (cube == NULL && WITHIN_BUDGET())
+        if (FindCube(view, key) == NULL && WITHIN_BUDGET())
         {
-            cube = Build(view, planet, key);
+            (void)Build(view, planet, key);
             ++built;
         }
-        cube = cube != NULL ? cube : CachedAncestor(view, key);
-        if (cube != NULL)
+        Cube *standing[8];
+        const uint32_t count = Stand(view, planet, key, standing);
+        for (uint32_t slot = 0u; slot < count; ++slot)
         {
-            MarkForDrawing(view, cube);
+            Choose(view, standing[slot]);
         }
     }
 #undef WITHIN_BUDGET
+    /* A cube standing in for a missing leaf covers its whole box: anything
+     * finer chosen inside it would lie in the same place at another
+     * resolution and flicker through it, so only the coarsest is drawn. */
+    for (uint32_t index = 0u; index < view->chosenCount; ++index)
+    {
+        Cube *cube = &view->cubes[view->chosen[index]];
+        bool covered = false;
+        for (CubeKey parent = cube->key; !covered && parent.level < MAX_LEVEL;)
+        {
+            parent = ParentKey(parent);
+            const Cube *ancestor = FindCube(view, parent);
+            covered = ancestor != NULL && ancestor->chosenFrame == view->frame;
+        }
+        if (!covered && !cube->empty)
+        {
+            view->drawList[view->drawCount++] = view->chosen[index];
+        }
+    }
     view->stats.visibleCubes = view->leafCount;
     view->stats.builtThisFrame = built;
     for (uint32_t index = 0u; index < CACHE_CAPACITY; ++index)
