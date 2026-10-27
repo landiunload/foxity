@@ -113,6 +113,33 @@ static void TestDeterminism(void)
     FoxWorldDestroy(second);
 }
 
+/* Digging or filling right on a road leaves the ground it rests on and the
+ * air over it; beside the road the ground changes. */
+static void TestGroundUnderRoads(void)
+{
+    FoxWorld *world = Town(FOX_DRIVE_RIGHT, NULL, 0u);
+    const FoxPlanet *planet = FoxWorldPlanet(world);
+    const int64_t radius = FoxPlanetRadius(planet);
+    /* A road of the town runs along y = 0; the middle of a block lies 40 m
+     * off it. */
+    const FoxVec onRoad = {FOX_METRES(40), 0, radius};
+    const FoxVec offRoad = {FOX_METRES(40), FOX_METRES(40), radius};
+    FoxVec before;
+    EXPECT(FoxPlanetGround(planet, onRoad, &before), "ground under the road");
+    FoxPlanetBox changed;
+    (void)FoxWorldDig(world, onRoad, FOX_METRES(6), &changed);
+    (void)FoxWorldFill(world, (FoxVec){onRoad.x, onRoad.y, radius + FOX_METRES(3)}, FOX_METRES(5),
+                       &changed);
+    FoxVec after;
+    EXPECT(FoxPlanetGround(planet, onRoad, &after), "ground still under the road");
+    EXPECT(FoxVecDistance(before, after) < FOX_METRES(1) / 10, "the road keeps its ground");
+    EXPECT(FoxWorldDig(world, offRoad, FOX_METRES(6), &changed) > 0u, "a block can be dug");
+    FoxVec dug;
+    EXPECT(FoxPlanetGround(planet, offRoad, &dug) && FoxVecLength(dug) < radius - FOX_METRES(3),
+           "the block is dug down");
+    FoxWorldDestroy(world);
+}
+
 static void TestEditsUnderTraffic(void)
 {
     TestRouterInit(&routerA);
@@ -345,5 +372,6 @@ int main(void)
     TestRouted();
     TestDeterminism();
     TestEditsUnderTraffic();
+    TestGroundUnderRoads();
     return 0;
 }

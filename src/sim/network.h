@@ -291,6 +291,30 @@ uint32_t FoxNetworkLaneTurns(const FoxNetwork *network, uint32_t lane);
  * its cars off them first. */
 void FoxNetworkReleaseRetired(FoxNetwork *network);
 
+/* The roads and intersections whose ground an edit near them must leave:
+ * gathered once per edit so each sample asks only these. */
+#define FOX_GROUND_GUARD_MAX 128u
+
+typedef struct FoxGroundGuard
+{
+    const FoxNetwork *network;
+    uint32_t roads[FOX_GROUND_GUARD_MAX];
+    uint32_t roadCount;
+    uint32_t nodes[FOX_GROUND_GUARD_MAX];
+    uint32_t nodeCount;
+} FoxGroundGuard;
+
+/* Gathers what an edit of `radius` around `center` could reach. */
+void FoxNetworkGuardGround(const FoxNetwork *network, FoxVec center, int64_t radius,
+                           FoxGroundGuard *outGuard);
+/* Whether a road or an intersection keeps the ground at a point: across,
+ * within its paved width and a margin; up and down, from a few metres under
+ * it to as high as an edit reaches, so it can be neither dug away nor
+ * buried. */
+bool FoxGroundGuardKeeps(const FoxGroundGuard *guard, FoxVec point);
+/* Whether a box may hold any ground the guard keeps. */
+bool FoxGroundGuardTouches(const FoxGroundGuard *guard, FoxVec min, FoxVec max);
+
 /* Everything the network holds, counted. */
 typedef struct FoxNetworkStats
 {

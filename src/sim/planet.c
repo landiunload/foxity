@@ -79,7 +79,8 @@ static int64_t FloorShift(int64_t value, unsigned shift)
 
 static uint32_t SlotIndex(int64_t x, int64_t y, int64_t z, unsigned shift)
 {
-    return (uint32_t)(((uint64_t)x >> shift) & 7u) | (uint32_t)((((uint64_t)y >> shift) & 7u) << 3u) |
+    return (uint32_t)(((uint64_t)x >> shift) & 7u) |
+           (uint32_t)((((uint64_t)y >> shift) & 7u) << 3u) |
            (uint32_t)((((uint64_t)z >> shift) & 7u) << 6u);
 }
 
@@ -211,7 +212,8 @@ static FoxPlanetSample BaseSample(const FoxPlanet *planet, int64_t cellX, int64_
     const int64_t distance = CellDistance(cellX, cellY, cellZ);
     if (distance < 0)
     {
-        return (FoxPlanetSample){.density = -FOX_PLANET_DENSITY_LIMIT, .material = FOX_MATERIAL_AIR};
+        return (FoxPlanetSample){.density = -FOX_PLANET_DENSITY_LIMIT,
+                                 .material = FOX_MATERIAL_AIR};
     }
     const int64_t depth = planet->radius - distance;
     /* The exact distance to the surface: coarse samples far apart still place
@@ -226,7 +228,8 @@ static FoxPlanetSample BaseSample(const FoxPlanet *planet, int64_t cellX, int64_
 
 static uint32_t TopSlot(const FoxPlanet *planet, int64_t x, int64_t y, int64_t z)
 {
-    uint64_t hash = FoxHashCombine(FoxHashCombine(FoxHash64((uint64_t)x), (uint64_t)y), (uint64_t)z);
+    uint64_t hash =
+        FoxHashCombine(FoxHashCombine(FoxHash64((uint64_t)x), (uint64_t)y), (uint64_t)z);
     return (uint32_t)hash & (planet->topCapacity - 1u);
 }
 
@@ -320,8 +323,8 @@ static void RemoveTop(FoxPlanet *planet, Top *top)
     uint32_t next = (hole + 1u) & mask;
     while (planet->tops[next].node != NULL)
     {
-        const uint32_t home = TopSlot(planet, planet->tops[next].x, planet->tops[next].y,
-                                      planet->tops[next].z);
+        const uint32_t home =
+            TopSlot(planet, planet->tops[next].x, planet->tops[next].y, planet->tops[next].z);
         /* Move the entry into the hole when its home does not lie in
          * (hole, next]. */
         const bool between =
@@ -606,6 +609,7 @@ typedef struct Edit
     EditKind kind;
     FoxVec center;
     int64_t radius;
+    const FoxPlanetKeep *keep;
 } Edit;
 
 static FoxPlanetSample EditedValue(const Edit *edit, FoxPlanetSample old, FoxVec point)
@@ -628,9 +632,9 @@ static FoxPlanetSample EditedValue(const Edit *edit, FoxPlanetSample old, FoxVec
     }
     /* New ground shows grass on its skin and dirt below it. */
     const uint8_t material =
-        old.density > 0 ? old.material
-                        : (inside <= FOX_METRES(1) ? (uint8_t)FOX_MATERIAL_GRASS
-                                                   : (uint8_t)FOX_MATERIAL_DIRT);
+        old.density > 0
+            ? old.material
+            : (inside <= FOX_METRES(1) ? (uint8_t)FOX_MATERIAL_GRASS : (uint8_t)FOX_MATERIAL_DIRT);
     return (FoxPlanetSample){ClampDensity(inside), material};
 }
 
@@ -705,6 +709,14 @@ static void EditBlock(FoxPlanet *planet, const Edit *edit, const int64_t first[3
     BlockDistances(edit->center, first, LEAF_CELLS, &nearest, &farthest);
     const int64_t last[3] = {first[0] + LEAF_CELLS - 1, first[1] + LEAF_CELLS - 1,
                              first[2] + LEAF_CELLS - 1};
+    const FoxPlanetKeep *keep = edit->keep;
+    const bool guarded =
+        keep != NULL &&
+        keep->touches(keep->context,
+                      (FoxVec){first[0] * FOX_PLANET_CELL_UNITS, first[1] * FOX_PLANET_CELL_UNITS,
+                               first[2] * FOX_PLANET_CELL_UNITS},
+                      (FoxVec){last[0] * FOX_PLANET_CELL_UNITS, last[1] * FOX_PLANET_CELL_UNITS,
+                               last[2] * FOX_PLANET_CELL_UNITS});
     /* Beyond the sphere's reach nothing changes. */
     if ((edit->kind == EDIT_DIG && nearest - edit->radius >= FOX_PLANET_DENSITY_LIMIT) ||
         (edit->kind == EDIT_FILL && edit->radius - nearest <= -FOX_PLANET_DENSITY_LIMIT))
@@ -712,22 +724,21 @@ static void EditBlock(FoxPlanet *planet, const Edit *edit, const int64_t first[3
         return;
     }
     /* Deep inside the sphere the whole block takes one value, unless the
-     * untouched ball already has it everywhere there. */
-    const bool deep = edit->kind == EDIT_DIG ? farthest - edit->radius <= -FOX_PLANET_DENSITY_LIMIT
-                                             : edit->radius - farthest >= FOX_PLANET_DENSITY_LIMIT;
+     * untouched ball already has it everywhere there or some of it is kept. */
+    const bool deep =
+        !guarded && (edit->kind == EDIT_DIG ? farthest - edit->radius <= -FOX_PLANET_DENSITY_LIMIT
+                                            : edit->radius - farthest >= FOX_PLANET_DENSITY_LIMIT);
     if (deep)
     {
         const FoxPlanetSample value =
-            edit->kind == EDIT_DIG
-                ? (FoxPlanetSample){-FOX_PLANET_DENSITY_LIMIT, FOX_MATERIAL_AIR}
-                : (FoxPlanetSample){FOX_PLANET_DENSITY_LIMIT, FOX_MATERIAL_DIRT};
+            edit->kind == EDIT_DIG ? (FoxPlanetSample){-FOX_PLANET_DENSITY_LIMIT, FOX_MATERIAL_AIR}
+                                   : (FoxPlanetSample){FOX_PLANET_DENSITY_LIMIT, FOX_MATERIAL_DIRT};
         int64_t centreNear = 0;
         int64_t centreFar = 0;
         BlockDistances((FoxVec){0, 0, 0}, first, LEAF_CELLS, &centreNear, &centreFar);
-        const bool baseHasIt =
-            edit->kind == EDIT_DIG
-                ? planet->radius - centreNear <= -FOX_PLANET_DENSITY_LIMIT
-                : planet->radius - centreFar >= FOX_PLANET_DENSITY_LIMIT;
+        const bool baseHasIt = edit->kind == EDIT_DIG
+                                   ? planet->radius - centreNear <= -FOX_PLANET_DENSITY_LIMIT
+                                   : planet->radius - centreFar >= FOX_PLANET_DENSITY_LIMIT;
         const bool edited = BlockHasEdits(planet, first);
         if (baseHasIt && !edited)
         {
@@ -763,7 +774,8 @@ static void EditBlock(FoxPlanet *planet, const Edit *edit, const int64_t first[3
         const FoxPlanetSample old = FoxPlanetSampleCell(planet, x, y, z);
         const FoxVec point = {x * FOX_PLANET_CELL_UNITS, y * FOX_PLANET_CELL_UNITS,
                               z * FOX_PLANET_CELL_UNITS};
-        values[cell] = EditedValue(edit, old, point);
+        values[cell] =
+            guarded && keep->keeps(keep->context, point) ? old : EditedValue(edit, old, point);
         if (values[cell].density != old.density || values[cell].material != old.material)
         {
             changedMask[cell / 64u] |= UINT64_C(1) << (cell % 64u);
@@ -819,7 +831,7 @@ static void EditBlock(FoxPlanet *planet, const Edit *edit, const int64_t first[3
 }
 
 static uint32_t ApplyEdit(FoxPlanet *planet, EditKind kind, FoxVec center, int64_t radius,
-                          FoxPlanetBox *outChanged)
+                          const FoxPlanetKeep *keep, FoxPlanetBox *outChanged)
 {
     if (outChanged != NULL)
     {
@@ -838,6 +850,7 @@ static uint32_t ApplyEdit(FoxPlanet *planet, EditKind kind, FoxVec center, int64
         .kind = kind,
         .center = center,
         .radius = FoxClamp(radius, FOX_PLANET_EDIT_MIN_RADIUS, FOX_PLANET_EDIT_MAX_RADIUS),
+        .keep = keep != NULL && keep->touches != NULL && keep->keeps != NULL ? keep : NULL,
     };
     const int64_t reach = edit.radius + FOX_PLANET_DENSITY_LIMIT + FOX_PLANET_CELL_UNITS;
     const int64_t centre[3] = {center.x, center.y, center.z};
@@ -904,14 +917,16 @@ static uint32_t ApplyEdit(FoxPlanet *planet, EditKind kind, FoxVec center, int64
     return result.changed;
 }
 
-uint32_t FoxPlanetDig(FoxPlanet *planet, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
+uint32_t FoxPlanetDig(FoxPlanet *planet, FoxVec center, int64_t radius, const FoxPlanetKeep *keep,
+                      FoxPlanetBox *outChanged)
 {
-    return ApplyEdit(planet, EDIT_DIG, center, radius, outChanged);
+    return ApplyEdit(planet, EDIT_DIG, center, radius, keep, outChanged);
 }
 
-uint32_t FoxPlanetFill(FoxPlanet *planet, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
+uint32_t FoxPlanetFill(FoxPlanet *planet, FoxVec center, int64_t radius, const FoxPlanetKeep *keep,
+                       FoxPlanetBox *outChanged)
 {
-    return ApplyEdit(planet, EDIT_FILL, center, radius, outChanged);
+    return ApplyEdit(planet, EDIT_FILL, center, radius, keep, outChanged);
 }
 
 /* ---- Queries ---------------------------------------------------------------- */
@@ -1277,10 +1292,9 @@ uint64_t FoxPlanetHash(const FoxPlanet *planet)
                 {
                     if ((leaf->edited[cell / 64u] & (UINT64_C(1) << (cell % 64u))) != 0u)
                     {
-                        sum += ValueHash(0u, mx + (int64_t)(cell & 7u),
-                                         my + (int64_t)((cell >> 3u) & 7u),
-                                         mz + (int64_t)(cell >> 6u), leaf->density[cell],
-                                         leaf->material[cell]);
+                        sum += ValueHash(
+                            0u, mx + (int64_t)(cell & 7u), my + (int64_t)((cell >> 3u) & 7u),
+                            mz + (int64_t)(cell >> 6u), leaf->density[cell], leaf->material[cell]);
                     }
                 }
             }

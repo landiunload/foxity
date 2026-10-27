@@ -56,7 +56,8 @@ static void TestDigAndFill(void)
     const uint64_t untouched = FoxPlanetHash(planet);
     const FoxVec pole = {0, 0, RADIUS};
     FoxPlanetBox changed;
-    EXPECT(FoxPlanetDig(planet, pole, FOX_METRES(6), &changed) > 0u, "digging changes ground");
+    EXPECT(FoxPlanetDig(planet, pole, FOX_METRES(6), NULL, &changed) > 0u,
+           "digging changes ground");
     EXPECT(changed.min.z < RADIUS - FOX_METRES(5) && changed.max.z >= RADIUS,
            "the changed box spans the pit");
     FoxVec ground;
@@ -70,15 +71,16 @@ static void TestDigAndFill(void)
            "the pit floor deep in the rock has a surface");
 
     const FoxVec equator = {RADIUS, 0, 0};
-    EXPECT(FoxPlanetFill(planet, equator, FOX_METRES(5), NULL) > 0u, "filling changes ground");
+    EXPECT(FoxPlanetFill(planet, equator, FOX_METRES(5), NULL, NULL) > 0u,
+           "filling changes ground");
     EXPECT(FoxPlanetGround(planet, equator, &ground) &&
                FoxAbs(ground.x - (RADIUS + FOX_METRES(5))) < FOX_METRES(1) / 4,
            "the mound top is five metres up");
     EXPECT(FoxPlanetSampleAt(planet, (FoxVec){RADIUS + FOX_METRES(4), 0, 0}).material ==
                FOX_MATERIAL_GRASS,
            "the mound's skin is grass");
-    EXPECT(FoxPlanetDig(planet, (FoxVec){0, 0, RADIUS + FOX_METRES(40)}, FOX_METRES(10), NULL) ==
-               0u,
+    EXPECT(FoxPlanetDig(planet, (FoxVec){0, 0, RADIUS + FOX_METRES(40)}, FOX_METRES(10), NULL,
+                        NULL) == 0u,
            "digging the sky changes nothing");
     FoxPlanetDestroy(planet);
 }
@@ -89,10 +91,10 @@ static void TestOrderIndependence(void)
     FoxPlanet *second = FoxPlanetCreate(RADIUS);
     const FoxVec a = {FOX_METRES(3), 0, RADIUS};
     const FoxVec b = {-FOX_METRES(2), FOX_METRES(1), RADIUS - FOX_METRES(1)};
-    (void)FoxPlanetDig(first, a, FOX_METRES(4), NULL);
-    (void)FoxPlanetDig(first, b, FOX_METRES(3), NULL);
-    (void)FoxPlanetDig(second, b, FOX_METRES(3), NULL);
-    (void)FoxPlanetDig(second, a, FOX_METRES(4), NULL);
+    (void)FoxPlanetDig(first, a, FOX_METRES(4), NULL, NULL);
+    (void)FoxPlanetDig(first, b, FOX_METRES(3), NULL, NULL);
+    (void)FoxPlanetDig(second, b, FOX_METRES(3), NULL, NULL);
+    (void)FoxPlanetDig(second, a, FOX_METRES(4), NULL, NULL);
     EXPECT(FoxPlanetHash(first) == FoxPlanetHash(second),
            "the same ground hashes the same whatever the order");
     FoxPlanetDestroy(first);
@@ -107,7 +109,7 @@ static void TestHollowCollapses(void)
     for (int64_t step = 0; step < 8; ++step)
     {
         const FoxVec center = {step * FOX_METRES(40), 0, FOX_METRES(300)};
-        EXPECT(FoxPlanetDig(planet, center, FOX_PLANET_EDIT_MAX_RADIUS, NULL) > 0u,
+        EXPECT(FoxPlanetDig(planet, center, FOX_PLANET_EDIT_MAX_RADIUS, NULL, NULL) > 0u,
                "the cavern is dug");
     }
     const uint32_t nodes = FoxPlanetEditNodeCount(planet);
@@ -117,9 +119,9 @@ static void TestHollowCollapses(void)
            "inside the cavern is air");
     /* Halfway between two spheres 40 m apart the ceiling is lower than a
      * radius: sqrt(64^2 - 20^2) metres above the axis. */
-    const int64_t ceiling = (int64_t)FoxIntegerSqrt(
-        (uint64_t)(FOX_PLANET_EDIT_MAX_RADIUS * FOX_PLANET_EDIT_MAX_RADIUS -
-                   FOX_METRES(20) * FOX_METRES(20)));
+    const int64_t ceiling =
+        (int64_t)FoxIntegerSqrt((uint64_t)(FOX_PLANET_EDIT_MAX_RADIUS * FOX_PLANET_EDIT_MAX_RADIUS -
+                                           FOX_METRES(20) * FOX_METRES(20)));
     EXPECT(FoxPlanetRaycast(planet, (FoxVec){FOX_METRES(100), 0, FOX_METRES(300)},
                             (FoxVec){0, 0, 1}, FOX_METRES(1000), &hit) &&
                FoxAbs(hit.z - (FOX_METRES(300) + ceiling)) < FOX_METRES(1),
@@ -130,10 +132,15 @@ static void TestHollowCollapses(void)
 static void TestGrid(void)
 {
     FoxPlanet *planet = FoxPlanetCreate(RADIUS);
-    (void)FoxPlanetDig(planet, (FoxVec){0, 0, RADIUS}, FOX_METRES(3), NULL);
+    (void)FoxPlanetDig(planet, (FoxVec){0, 0, RADIUS}, FOX_METRES(3), NULL, NULL);
     const FoxPlanetGrid grid = {
-        .cellX = -4, .cellY = -4, .cellZ = RADIUS / FOX_PLANET_CELL_UNITS - 8,
-        .stride = 1u, .countX = 9u, .countY = 9u, .countZ = 12u,
+        .cellX = -4,
+        .cellY = -4,
+        .cellZ = RADIUS / FOX_PLANET_CELL_UNITS - 8,
+        .stride = 1u,
+        .countX = 9u,
+        .countY = 9u,
+        .countZ = 12u,
     };
     FoxPlanetSample *samples = malloc((size_t)9u * 9u * 12u * sizeof(*samples));
     EXPECT(samples != NULL && FoxPlanetSampleGrid(planet, &grid, samples), "the grid samples");
@@ -144,8 +151,8 @@ static void TestGrid(void)
         {
             for (uint32_t x = 0u; x < grid.countX; ++x)
             {
-                const FoxPlanetSample single = FoxPlanetSampleCell(
-                    planet, grid.cellX + x, grid.cellY + y, grid.cellZ + z);
+                const FoxPlanetSample single =
+                    FoxPlanetSampleCell(planet, grid.cellX + x, grid.cellY + y, grid.cellZ + z);
                 EXPECT(single.density == samples[index].density &&
                            single.material == samples[index].material,
                        "the grid equals single samples");

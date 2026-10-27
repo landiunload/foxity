@@ -491,6 +491,134 @@ uint32_t FoxNetworkNearestRoad(const FoxNetwork *network, FoxVec point, int64_t 
     return best;
 }
 
+/* ---- Ground under the roads ------------------------------------------------- */
+
+/* Kept across, beyond the paved edge, and how far under and over the road:
+ * over it as high as any edit reaches, so nothing can bury it. */
+#define GUARD_MARGIN (FOX_METRES(3) / 2)
+#define GUARD_BELOW FOX_METRES(4)
+#define GUARD_ABOVE (2 * FOX_PLANET_EDIT_MAX_RADIUS)
+/* No kept point lies further than this from the paved centre line or edge. */
+#define GUARD_REACH (GUARD_MARGIN + GUARD_ABOVE + GUARD_BELOW)
+
+/* Whether `offset` from a point on the ground lies within `across` of it
+ * sideways and within the guarded band up and down. */
+static bool WithinBand(FoxVec offset, FoxVec ground, int64_t across)
+{
+    const FoxVec up = FoxVecDirection(ground);
+    const int64_t height = FoxVecDot(offset, up) / FOX_UNIT;
+    if (height < -GUARD_BELOW || height > GUARD_ABOVE)
+    {
+        return false;
+    }
+    const int64_t sideways = FoxVecDot(offset, offset) - height * height;
+    return sideways <= across * across;
+}
+
+void FoxNetworkGuardGround(const FoxNetwork *network, FoxVec center, int64_t radius,
+                           FoxGroundGuard *outGuard)
+{
+    if (outGuard == NULL)
+    {
+        return;
+    }
+    *outGuard = (FoxGroundGuard){.network = network};
+    for (uint32_t index = 0u; network != NULL && index < network->roadCapacity; ++index)
+    {
+        const FoxRoad *road = &network->roads[index];
+        if (road->alive && outGuard->roadCount < FOX_GROUND_GUARD_MAX &&
+            FoxVecDistance(center, road->middle) <= radius + road->boundRadius +
+                                                        FoxRoadHalfWidth((FoxRoadType)road->type) +
+                                                        FOX_ROAD_SHOULDER + GUARD_REACH)
+        {
+            outGuard->roads[outGuard->roadCount++] = index;
+        }
+    }
+    for (uint32_t index = 0u; network != NULL && index < network->nodeCapacity; ++index)
+    {
+        const FoxNode *node = &network->nodes[index];
+        if (node->alive && outGuard->nodeCount < FOX_GROUND_GUARD_MAX &&
+            FoxVecDistance(center, node->position) <= radius + node->radius + GUARD_REACH)
+        {
+            outGuard->nodes[outGuard->nodeCount++] = index;
+        }
+    }
+}
+
+bool FoxGroundGuardKeeps(const FoxGroundGuard *guard, FoxVec point)
+{
+    if (guard == NULL || guard->network == NULL)
+    {
+        return false;
+    }
+    const FoxNetwork *network = guard->network;
+    for (uint32_t index = 0u; index < guard->nodeCount; ++index)
+    {
+        const FoxNode *node = &network->nodes[guard->nodes[index]];
+        if (WithinBand(FoxVecSub(point, node->position), node->position,
+                       node->radius + GUARD_MARGIN))
+        {
+            return true;
+        }
+    }
+    for (uint32_t index = 0u; index < guard->roadCount; ++index)
+    {
+        const FoxRoad *road = &network->roads[guard->roads[index]];
+        const int64_t across =
+            FoxRoadHalfWidth((FoxRoadType)road->type) + FOX_ROAD_SHOULDER + GUARD_MARGIN;
+        if (FoxVecDistance(point, road->middle) > road->boundRadius + across + GUARD_REACH)
+        {
+            continue;
+        }
+        for (uint32_t segment = 0u; segment + 1u < road->centreCount; ++segment)
+        {
+            const FoxVec a = road->centre[segment];
+            const FoxVec ab = FoxVecSub(road->centre[segment + 1u], a);
+            const int64_t lengthSquared = FoxVecDot(ab, ab);
+            const int64_t t =
+                lengthSquared > 0
+                    ? FoxClamp(FoxVecDot(FoxVecSub(point, a), ab) * 1024 / lengthSquared, 0, 1024)
+                    : 0;
+            const FoxVec closest = FoxVecAdd(a, FoxVecScale(ab, t, 1024));
+            if (WithinBand(FoxVecSub(point, closest), closest, across))
+            {
+                return true;
+            }
+        }
+    }
+    return false;
+}
+
+bool FoxGroundGuardTouches(const FoxGroundGuard *guard, FoxVec min, FoxVec max)
+{
+    if (guard == NULL || guard->network == NULL)
+    {
+        return false;
+    }
+    const FoxNetwork *network = guard->network;
+    const FoxVec middle = {min.x / 2 + max.x / 2, min.y / 2 + max.y / 2, min.z / 2 + max.z / 2};
+    const int64_t half = FoxVecDistance(min, max) / 2 + 1;
+    for (uint32_t index = 0u; index < guard->nodeCount; ++index)
+    {
+        const FoxNode *node = &network->nodes[guard->nodes[index]];
+        if (FoxVecDistance(middle, node->position) <= half + node->radius + GUARD_REACH)
+        {
+            return true;
+        }
+    }
+    for (uint32_t index = 0u; index < guard->roadCount; ++index)
+    {
+        const FoxRoad *road = &network->roads[guard->roads[index]];
+        if (FoxVecDistance(middle, road->middle) <= half + road->boundRadius +
+                                                        FoxRoadHalfWidth((FoxRoadType)road->type) +
+                                                        FOX_ROAD_SHOULDER + GUARD_REACH)
+        {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ---- Planning --------------------------------------------------------------- */
 
 uint32_t FoxNetworkPlanCentre(const FoxPlanet *planet, const FoxRoadPlan *plan, FoxVec *points,

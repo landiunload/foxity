@@ -99,14 +99,40 @@ const FoxTraffic *FoxWorldTraffic(const FoxWorld *world)
     return world == NULL ? NULL : world->traffic;
 }
 
+static bool GuardTouches(const void *context, FoxVec min, FoxVec max)
+{
+    return FoxGroundGuardTouches((const FoxGroundGuard *)context, min, max);
+}
+
+static bool GuardKeeps(const void *context, FoxVec point)
+{
+    return FoxGroundGuardKeeps((const FoxGroundGuard *)context, point);
+}
+
+/* Digs or fills around the roads: the ground they rest on and the air over
+ * them stay as they are. */
+static uint32_t EditGround(FoxWorld *world, bool dig, FoxVec center, int64_t radius,
+                           FoxPlanetBox *outChanged)
+{
+    if (world == NULL)
+    {
+        return 0u;
+    }
+    FoxGroundGuard guard;
+    FoxNetworkGuardGround(world->network, center, radius, &guard);
+    const FoxPlanetKeep keep = {.context = &guard, .touches = GuardTouches, .keeps = GuardKeeps};
+    return dig ? FoxPlanetDig(world->planet, center, radius, &keep, outChanged)
+               : FoxPlanetFill(world->planet, center, radius, &keep, outChanged);
+}
+
 uint32_t FoxWorldDig(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
 {
-    return world == NULL ? 0u : FoxPlanetDig(world->planet, center, radius, outChanged);
+    return EditGround(world, true, center, radius, outChanged);
 }
 
 uint32_t FoxWorldFill(FoxWorld *world, FoxVec center, int64_t radius, FoxPlanetBox *outChanged)
 {
-    return world == NULL ? 0u : FoxPlanetFill(world->planet, center, radius, outChanged);
+    return EditGround(world, false, center, radius, outChanged);
 }
 
 FoxRoadResult FoxWorldBuildRoad(FoxWorld *world, const FoxRoadPlan *plan)

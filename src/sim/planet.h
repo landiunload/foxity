@@ -111,12 +111,25 @@ bool FoxPlanetRaycast(const FoxPlanet *planet, FoxVec origin, FoxVec direction, 
  * has no ground at all. */
 bool FoxPlanetGround(const FoxPlanet *planet, FoxVec point, FoxVec *outGround);
 
-/* Digs a sphere out of the ground, or piles one up. The radius is clamped to
- * the edit range. Returns how many samples changed and the box they span
- * (outChanged may be NULL); zero when nothing changed or memory ran out, and
- * then the ground is as before except that what fitted stays changed. */
-uint32_t FoxPlanetDig(FoxPlanet *planet, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
-uint32_t FoxPlanetFill(FoxPlanet *planet, FoxVec center, int64_t radius, FoxPlanetBox *outChanged);
+/* Ground an edit leaves as it is, such as that under and over roads:
+ * `touches` says whether a box may hold any of it, `keeps` whether a lattice
+ * point does. Both must be pure functions of their arguments. */
+typedef struct FoxPlanetKeep
+{
+    const void *context;
+    bool (*touches)(const void *context, FoxVec min, FoxVec max);
+    bool (*keeps)(const void *context, FoxVec point);
+} FoxPlanetKeep;
+
+/* Digs a sphere out of the ground, or piles one up, leaving what `keep`
+ * keeps (NULL keeps nothing). The radius is clamped to the edit range.
+ * Returns how many samples changed and the box they span (outChanged may be
+ * NULL); zero when nothing changed or memory ran out, and then the ground is
+ * as before except that what fitted stays changed. */
+uint32_t FoxPlanetDig(FoxPlanet *planet, FoxVec center, int64_t radius, const FoxPlanetKeep *keep,
+                      FoxPlanetBox *outChanged);
+uint32_t FoxPlanetFill(FoxPlanet *planet, FoxVec center, int64_t radius, const FoxPlanetKeep *keep,
+                       FoxPlanetBox *outChanged);
 
 /* Whether the surface may pass through a box: false only when the box is
  * certainly all matter or all air. Views skip such boxes. */
