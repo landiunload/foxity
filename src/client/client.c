@@ -20,6 +20,10 @@
 
 #define FOX_CLIENT_WIDTH 1280
 #define FOX_CLIENT_HEIGHT 720
+/* A smoke run fails when no frame reaches the screen for this long. Frames
+ * the device skips are expected meanwhile: Android takes the surface away and
+ * resizes it while the screen turns. */
+#define FOX_SMOKE_PATIENCE_SECONDS 10.0
 
 typedef struct GraphicsProvider
 {
@@ -54,6 +58,8 @@ typedef struct ClientSession
     LaiueGraphicsDeviceV2 *device;
     FoxScene *scene;
     double previousSeconds;
+    /* When a frame last reached the screen, or the session began. */
+    double presentedSeconds;
     uint32_t smokeFrames;
     uint32_t presentedFrames;
     bool frameFailed;
@@ -519,6 +525,7 @@ static void OnFrame(void *opaque)
             if (device->endFrame(device) != 0u)
             {
                 ++session->presentedFrames;
+                session->presentedSeconds = now;
 #if defined(FOX_REVIEW)
                 if (session->shooting)
                 {
@@ -567,10 +574,12 @@ static void OnFrame(void *opaque)
                 session->frameFailed = true;
             }
         }
-        else if (session->smokeFrames != 0u)
-        {
-            session->frameFailed = true;
-        }
+    }
+    if (session->smokeFrames != 0u && !session->frameFailed &&
+        now - session->presentedSeconds > FOX_SMOKE_PATIENCE_SECONDS)
+    {
+        FoxLog(FOX_LOG_ERROR, "no frame reached the screen for %.0f s", FOX_SMOKE_PATIENCE_SECONDS);
+        session->frameFailed = true;
     }
     if (session->input != NULL)
     {
@@ -677,6 +686,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         session.capturePath = options->capturePath;
         session.captureFrame = options->captureFrame;
         session.previousSeconds = LaiueApplicationMonotonicSeconds();
+        session.presentedSeconds = session.previousSeconds;
 #if defined(FOX_REVIEW)
         session.review = FoxReviewCreate(
             session.device, options->reviewDirectory != NULL ? options->reviewDirectory : "review");
