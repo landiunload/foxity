@@ -26,6 +26,10 @@
 /* The width of the tools' lines and rings, metres. */
 #define OVERLAY_LINE_HALF 0.12
 #define OVERLAY_RING_WIDTH 0.35
+/* A patch the device refused is tried again two updates later, then twice as
+ * long each time up to 64: a passing refusal heals by itself, and a lasting
+ * one costs next to nothing. */
+#define RETRY_SHIFT_MAX 5u
 
 /* Red, yellow and green, lit. */
 static const uint32_t lampColors[3] = {UINT32_C(0xFF2828FF), UINT32_C(0xFF14B4FF),
@@ -51,6 +55,9 @@ typedef struct Patch
     uint32_t detailCount;
     FoxSignalHead *heads;
     uint32_t headCount;
+    /* Refusals in a row, and the update before which it is not tried again. */
+    uint32_t retries;
+    uint64_t retryUpdate;
 } Patch;
 
 typedef struct Tracked
@@ -71,6 +78,7 @@ struct FoxRoadsView
 {
     LaiueGraphicsDeviceV2 *device;
     uint64_t seenRevision;
+    uint64_t updates;
     Patch *patches;
     Tracked *roads;
     Tracked *nodes;
@@ -417,9 +425,17 @@ static void RebuildPatch(FoxRoadsView *view, const FoxNetwork *network, Patch *p
         ReleaseBuffer(view, &base);
         ReleaseBuffer(view, &detail);
         free(heads);
-        FoxLog(FOX_LOG_WARNING, "a road patch could not be built");
+        /* The old meshes stay drawn, and the patch waits for another try. */
+        patch->dirty = true;
+        if (patch->retries == 0u)
+        {
+            FoxLog(FOX_LOG_WARNING, "a road patch could not be built; it will be tried again");
+        }
+        patch->retryUpdate = view->updates + (UINT64_C(2) << patch->retries);
+        patch->retries += patch->retries < RETRY_SHIFT_MAX ? 1u : 0u;
         return;
     }
+    patch->retries = 0u;
     if (heads != NULL)
     {
         memcpy(heads, view->heads.items, (size_t)view->heads.count * sizeof(*heads));
@@ -449,6 +465,7 @@ void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double bu
         return;
     }
     const double started = LaiueApplicationMonotonicSeconds();
+    ++view->updates;
     const uint64_t revision = FoxNetworkRevision(network);
     if (!view->seenAny || revision != view->seenRevision)
     {
@@ -464,7 +481,7 @@ void FoxRoadsViewUpdate(FoxRoadsView *view, const FoxNetwork *network, double bu
             break;
         }
         Patch *patch = &view->patches[index];
-        if (patch->used && patch->dirty)
+        if (patch->used && patch->dirty && patch->retryUpdate <= view->updates)
         {
             RebuildPatch(view, network, patch);
             ++built;
