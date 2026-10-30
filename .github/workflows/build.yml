@@ -15,11 +15,11 @@ permissions:
   contents: read
 
 env:
-  # Development integration follows an engine branch while both repositories
-  # evolve; it is the branch with Android programs on modules by name until it
-  # reaches main. Tags and release/* branches build the reviewed immutable SHA
-  # that engine.lock holds instead; engine-revision below picks between them.
-  LAIUE_REF: engine-android-platform
+  # Development integration follows the engine's main branch, or a feature
+  # branch while both repositories evolve together. Tags and release/* branches
+  # build the reviewed immutable SHA that engine.lock holds instead;
+  # engine-revision below picks between them.
+  LAIUE_REF: main
   LLVM_VERSION: '22'
   ANDROID_NDK_VERSION: 30.0.16248370
 

@@ -72,7 +72,15 @@ if(NOT FOX_CLANG_LTO_MODE MATCHES "^(thin|full)$")
     message(FATAL_ERROR
         "FOX_CLANG_LTO_MODE must be thin or full, got: ${FOX_CLANG_LTO_MODE}")
 endif()
-set(FOX_X86_64_LEVEL "avx2" CACHE STRING
+# Android's x86_64 ABI promises SSE4.2 and POPCNT but not AVX2, so an APK
+# built for x86-64-v3 would stop with SIGILL on devices without it. sse2 does
+# not lower the baseline there: the NDK compiler sets it from the ABI.
+if(ANDROID)
+    set(FOX_X86_64_LEVEL_DEFAULT "sse2")
+else()
+    set(FOX_X86_64_LEVEL_DEFAULT "avx2")
+endif()
+set(FOX_X86_64_LEVEL "${FOX_X86_64_LEVEL_DEFAULT}" CACHE STRING
     "Release ISA profile: sse2, MSVC AVX2/GNU x86-64-v3, or avx512")
 set_property(CACHE FOX_X86_64_LEVEL PROPERTY STRINGS sse2 avx2 avx512)
 if(NOT FOX_X86_64_LEVEL MATCHES "^(sse2|avx2|avx512)$")

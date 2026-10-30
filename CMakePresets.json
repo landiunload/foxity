@@ -157,8 +157,7 @@
       "inherits": "android-base",
       "cacheVariables": {
         "ANDROID_ABI": "x86_64",
-        "FOX_EXPECTED_ARCHITECTURE": "x86_64",
-        "FOX_X86_64_LEVEL": "sse2"
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64"
       }
     }
   ],
