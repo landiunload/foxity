@@ -58,10 +58,17 @@ void FoxCameraInit(FoxCamera *camera, FoxVec focus);
 /* Positive steps move closer; each step changes the distance by 15 %. */
 void FoxCameraZoom(FoxCamera *camera, float steps);
 void FoxCameraRotate(FoxCamera *camera, int32_t deltaX, int32_t deltaY);
+/* Turns the view about the focus; positive radians turn the ground clockwise
+ * on the screen, as two fingers twisting it. */
+void FoxCameraTurn(FoxCamera *camera, float radians);
 /* Moves the focus along the ground; a second covers about the visible area at
  * any zoom. */
 void FoxCameraPan(FoxCamera *camera, const FoxPlanet *planet, float forward, float right,
                   double seconds);
+/* Moves the focus so that the ground under a finger follows it by deltaX,
+ * deltaY pixels (rows grow downwards) in a view viewHeight pixels tall. */
+void FoxCameraDrag(FoxCamera *camera, const FoxPlanet *planet, float deltaX, float deltaY,
+                   uint32_t viewHeight);
 bool FoxCameraBuildView(FoxCamera *camera, const LaiueSceneMathServiceV1 *math, float aspectRatio,
                         FoxCameraView *outView);
 

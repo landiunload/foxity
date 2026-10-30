@@ -1355,19 +1355,25 @@ bool FoxUiUpdate(FoxUi *ui, const FoxUiInput *input, const FoxUiStatus *status,
         ui->folded = false;
         ui->shownTool = settings->tool;
     }
-    const float s = fmaxf(1.0f, fminf(2.0f, (float)input->height / 900.0f));
+    /* Sizes are in points. The display's density keeps a button the size of
+     * a finger on a phone, a tall window grows them up to twice, and the dock
+     * always fits across the view. */
+    float points = DOCK_PADDING * 2.0f;
+    for (uint32_t index = 0u; index < DOCK_ITEM_COUNT; ++index)
+    {
+        points += dockItems[index].kind == DOCK_DIVIDER ? GROUP_GAP * 2.0f : DOCK_BUTTON;
+        points += index + 1u < DOCK_ITEM_COUNT && dockItems[index].kind != DOCK_DIVIDER &&
+                          dockItems[index + 1u].kind != DOCK_DIVIDER
+                      ? DOCK_GAP
+                      : 0.0f;
+    }
+    const float density = input->density > 0.0f ? input->density : 1.0f;
+    const float s = fminf(fmaxf(density, fminf(2.0f, (float)input->height / 900.0f)),
+                          (float)input->width / (points + DOCK_MARGIN * 2.0f));
     ui->scale = s;
     const float button = DOCK_BUTTON * s;
     const float gap = DOCK_GAP * s;
-    float width = DOCK_PADDING * s * 2.0f;
-    for (uint32_t index = 0u; index < DOCK_ITEM_COUNT; ++index)
-    {
-        width += dockItems[index].kind == DOCK_DIVIDER ? GROUP_GAP * s * 2.0f : button;
-        width += index + 1u < DOCK_ITEM_COUNT && dockItems[index].kind != DOCK_DIVIDER &&
-                         dockItems[index + 1u].kind != DOCK_DIVIDER
-                     ? gap
-                     : 0.0f;
-    }
+    const float width = points * s;
     const float height = button + DOCK_PADDING * s * 2.0f;
     const float left = ((float)input->width - width) / 2.0f;
     const float top = (float)input->height - DOCK_MARGIN * s - height;

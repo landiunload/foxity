@@ -11,6 +11,7 @@
 #include "client/review.h"
 #endif
 
+#include <math.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdio.h>
@@ -38,9 +39,16 @@ static const GraphicsProvider graphicsProviders[] = {
 typedef struct ClientSession
 {
     const LaiueWindowServiceV1 *windowService;
+    uint32_t windowServiceSize;
     Window *window;
     const LaiueInputServiceV1 *inputService;
+    uint32_t inputServiceSize;
     Input *input;
+    /* The finger that was alone on the screen last frame, and where. */
+    bool touching;
+    int32_t touchId;
+    float touchX;
+    float touchY;
     const LaiueGraphicsDeviceServiceV2 *graphicsService;
     uint32_t graphicsServiceSize;
     LaiueGraphicsDeviceV2 *device;
@@ -69,12 +77,11 @@ static bool FieldPresent(uint32_t publishedSize, uint32_t structSize, size_t off
     ((device)->structSize >= offsetof(LaiueGraphicsDeviceV2, field) + sizeof((device)->field) &&   \
      (device)->field != NULL)
 
-static const LaiueWindowServiceV1 *QueryWindow(const FoxModules *modules)
+static const LaiueWindowServiceV1 *QueryWindow(const FoxModules *modules, uint32_t *outSize)
 {
-    uint32_t size = 0u;
     const LaiueWindowServiceV1 *service = (const LaiueWindowServiceV1 *)FoxModulesQuery(
         modules, LAIUE_WINDOW_SERVICE_NAME, LAIUE_WINDOW_SERVICE_ABI_VERSION_1,
-        LAIUE_WINDOW_SERVICE_V1_LEGACY_SIZE, &size);
+        LAIUE_WINDOW_SERVICE_V1_LEGACY_SIZE, outSize);
     if (service == NULL || service->structSize < LAIUE_WINDOW_SERVICE_V1_LEGACY_SIZE ||
         service->abiVersion != LAIUE_WINDOW_SERVICE_ABI_VERSION_1 || service->create == NULL ||
         service->destroy == NULL || service->getNativeHandle == NULL ||
@@ -86,13 +93,13 @@ static const LaiueWindowServiceV1 *QueryWindow(const FoxModules *modules)
     return service;
 }
 
-static const LaiueInputServiceV1 *QueryInput(const FoxModules *modules)
+/* Any input module will do; the touch tail is checked where it is used. */
+static const LaiueInputServiceV1 *QueryInput(const FoxModules *modules, uint32_t *outSize)
 {
-    uint32_t size = 0u;
     const LaiueInputServiceV1 *service = (const LaiueInputServiceV1 *)FoxModulesQuery(
         modules, LAIUE_INPUT_SERVICE_NAME, LAIUE_INPUT_SERVICE_ABI_VERSION_1,
-        (uint32_t)sizeof(*service), &size);
-    if (service == NULL || service->structSize < sizeof(*service) ||
+        LAIUE_INPUT_SERVICE_V1_LEGACY_SIZE, outSize);
+    if (service == NULL || service->structSize < LAIUE_INPUT_SERVICE_V1_LEGACY_SIZE ||
         service->abiVersion != LAIUE_INPUT_SERVICE_ABI_VERSION_1 || service->create == NULL ||
         service->destroy == NULL || service->handleRawInput == NULL || service->endFrame == NULL ||
         service->resetState == NULL || service->consumeKeyPress == NULL ||
@@ -160,6 +167,28 @@ static void OnRawInput(void *opaque, void *rawInput)
     }
 }
 
+/* Android takes the window's surface away while the game is in the
+ * background and gives a new one back; the device swaps it in place and keeps
+ * the city's meshes. */
+static void OnSurface(void *opaque, bool available)
+{
+    ClientSession *session = (ClientSession *)opaque;
+    LaiueGraphicsDeviceV2 *device = session->device;
+    if (device == NULL || !DEVICE_HAS(device, setNativeWindow))
+    {
+        return;
+    }
+    int32_t width = 0;
+    int32_t height = 0;
+    session->windowService->getClientSize(session->window, &width, &height);
+    void *nativeWindow =
+        available ? session->windowService->getNativeHandle(session->window) : NULL;
+    if (device->setNativeWindow(device, nativeWindow, width, height) == 0u && available)
+    {
+        FoxLog(FOX_LOG_ERROR, "the graphics device could not take the new surface");
+    }
+}
+
 /* Keyboard and mouse to player intent. Without input the city still runs and
  * is shown; it just cannot be steered. */
 /* Whether the device lets vertical sync be switched. */
@@ -169,15 +198,58 @@ static bool HasVerticalSync(const LaiueGraphicsDeviceV2 *device)
            device->setVerticalSync != NULL && device->getVerticalSync != NULL;
 }
 
+/* Two fingers drag, twist and pinch the view; a finger alone is also the
+ * mouse, and its movement is kept for looking around. */
+static void ReadTouch(ClientSession *session, FoxControls *controls)
+{
+    const LaiueInputServiceV1 *input = session->inputService;
+    if (!FieldPresent(session->inputServiceSize, input->structSize,
+                      offsetof(LaiueInputServiceV1, getGesture), sizeof(input->getGesture)) ||
+        input->getTouches == NULL || input->getGesture == NULL)
+    {
+        return;
+    }
+    InputGesture gesture;
+    if (input->getGesture(session->input, &gesture) && gesture.scale > 0.0f)
+    {
+        controls->dragX = gesture.panX;
+        controls->dragY = gesture.panY;
+        controls->turn = gesture.rotation;
+        /* Fingers twice as far apart halve the distance to the ground. */
+        controls->zoomSteps += (float)(log((double)gesture.scale) / -log(FOX_CAMERA_ZOOM_FACTOR));
+    }
+    InputTouch touches[2];
+    const uint32_t count = input->getTouches(session->input, touches, 2u);
+    if (count == 1u && session->touching && touches[0].id == session->touchId)
+    {
+        controls->swipeX = touches[0].x - session->touchX;
+        controls->swipeY = touches[0].y - session->touchY;
+    }
+    session->touching = count == 1u;
+    if (session->touching)
+    {
+        session->touchId = touches[0].id;
+        session->touchX = touches[0].x;
+        session->touchY = touches[0].y;
+    }
+}
+
 static FoxControls ReadControls(ClientSession *session)
 {
-    FoxControls controls = {.tool = -1};
+    FoxControls controls = {.tool = -1, .density = 1.0f};
     LaiueGraphicsDeviceV2 *device = session->device;
     controls.verticalSync = HasVerticalSync(device) ? (int32_t)device->getVerticalSync(device) : -1;
     const LaiueWindowServiceV1 *window = session->windowService;
     if (window->consumeMouseWheelSteps != NULL)
     {
         controls.zoomSteps = window->consumeMouseWheelSteps(session->window);
+    }
+    if (FieldPresent(session->windowServiceSize, window->structSize,
+                     offsetof(LaiueWindowServiceV1, getContentScale),
+                     sizeof(window->getContentScale)) &&
+        window->getContentScale != NULL)
+    {
+        controls.density = window->getContentScale(session->window);
     }
     const LaiueInputServiceV1 *input = session->inputService;
     Input *state = session->input;
@@ -187,6 +259,7 @@ static FoxControls ReadControls(ClientSession *session)
     }
     controls.rotating = input->isMouseButtonDown(state, INPUT_MOUSE_BUTTON_RIGHT);
     input->getMouseDelta(state, &controls.rotateX, &controls.rotateY);
+    ReadTouch(session, &controls);
     controls.moveForward = (input->isKeyDown(state, INPUT_KEY_W) ? 1.0f : 0.0f) -
                            (input->isKeyDown(state, INPUT_KEY_S) ? 1.0f : 0.0f);
     controls.moveRight = (input->isKeyDown(state, INPUT_KEY_D) ? 1.0f : 0.0f) -
@@ -518,7 +591,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
 {
     static ClientSession session;
     memset(&session, 0, sizeof(session));
-    session.windowService = QueryWindow(modules);
+    session.windowService = QueryWindow(modules, &session.windowServiceSize);
     session.graphicsService = QueryGraphics(modules, &session.graphicsServiceSize);
     if (session.windowService == NULL || session.graphicsService == NULL)
     {
@@ -545,7 +618,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         session.windowService->destroy(session.window);
         return false;
     }
-    session.inputService = QueryInput(modules);
+    session.inputService = QueryInput(modules, &session.inputServiceSize);
     session.input =
         session.inputService == NULL ? NULL : session.inputService->create(nativeWindow);
     if (session.input == NULL)
@@ -611,9 +684,22 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
                session.review != NULL ? "review build: P saves the frame with a comment"
                                       : "review notes cannot be saved");
 #endif
-        session.windowService->setRawInputCallback(session.window, OnRawInput, &session);
-        session.windowService->runLoop(session.window, OnFrame, &session);
-        session.windowService->setRawInputCallback(session.window, NULL, NULL);
+        const LaiueWindowServiceV1 *windows = session.windowService;
+        const bool surfaces = FieldPresent(session.windowServiceSize, windows->structSize,
+                                           offsetof(LaiueWindowServiceV1, setSurfaceCallback),
+                                           sizeof(windows->setSurfaceCallback)) &&
+                              windows->setSurfaceCallback != NULL;
+        windows->setRawInputCallback(session.window, OnRawInput, &session);
+        if (surfaces)
+        {
+            windows->setSurfaceCallback(session.window, OnSurface, &session);
+        }
+        windows->runLoop(session.window, OnFrame, &session);
+        if (surfaces)
+        {
+            windows->setSurfaceCallback(session.window, NULL, NULL);
+        }
+        windows->setRawInputCallback(session.window, NULL, NULL);
 #if defined(FOX_REVIEW)
         FoxReviewDestroy(session.review);
 #endif

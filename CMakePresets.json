@@ -117,6 +117,49 @@
         "CMAKE_OSX_ARCHITECTURES": "x86_64",
         "FOX_EXPECTED_ARCHITECTURE": "x86_64"
       }
+    },
+    {
+      "name": "android-base",
+      "hidden": true,
+      "generator": "Ninja",
+      "binaryDir": "${sourceDir}/build/${presetName}",
+      "toolchainFile": "$env{ANDROID_NDK_HOME}/build/cmake/android.toolchain.cmake",
+      "condition": {
+        "type": "notEquals",
+        "lhs": "$env{ANDROID_NDK_HOME}",
+        "rhs": ""
+      },
+      "cacheVariables": {
+        "ANDROID_PLATFORM": "android-28",
+        "BUILD_TESTING": "OFF",
+        "CMAKE_BUILD_TYPE": "Release",
+        "FOX_BUILD_HEADLESS": "OFF",
+        "FOX_WARNINGS_AS_ERRORS": "ON",
+        "FOX_ENABLE_LTO": "ON",
+        "FOX_X86_64_TUNE": "generic",
+        "LAIUE_BUILD_GRAPHICS": "ON",
+        "LAIUE_BUILD_TOOLS": "OFF",
+        "LAIUE_ENABLE_SDK_INSTALL": "OFF"
+      }
+    },
+    {
+      "name": "android-arm64",
+      "displayName": "Android ARM64 APK",
+      "inherits": "android-base",
+      "cacheVariables": {
+        "ANDROID_ABI": "arm64-v8a",
+        "FOX_EXPECTED_ARCHITECTURE": "arm64"
+      }
+    },
+    {
+      "name": "android-x86_64",
+      "displayName": "Android x64 APK for the emulator",
+      "inherits": "android-base",
+      "cacheVariables": {
+        "ANDROID_ABI": "x86_64",
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64",
+        "FOX_X86_64_LEVEL": "sse2"
+      }
     }
   ],
   "buildPresets": [
@@ -239,6 +282,14 @@
       "name": "macos-clang-x86_64-release",
       "inherits": "macos-build-release",
       "configurePreset": "macos-clang-x86_64"
+    },
+    {
+      "name": "android-arm64-release",
+      "configurePreset": "android-arm64"
+    },
+    {
+      "name": "android-x86_64-release",
+      "configurePreset": "android-x86_64"
     }
   ],
   "testPresets": [

@@ -196,6 +196,10 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE previousInstance, PWSTR comman
 
 #else
 
+#if defined(__ANDROID__)
+/* The engine's window module starts the game by this name. */
+__attribute__((visibility("default")))
+#endif
 int main(int argumentCount, char **arguments)
 {
     return Run(argumentCount, arguments);
