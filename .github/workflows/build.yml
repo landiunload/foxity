@@ -485,6 +485,16 @@ jobs:
             sleep 2
           done
           cat "$log"
+      # The whole log, the system's lines included, explains an activity
+      # restarted or a surface lost.
+      - name: Save the emulator's log
+        if: always()
+        timeout-minutes: 1
+        run: |
+          if [ -d build/android-results ]; then
+            timeout 20s "$ANDROID_HOME/platform-tools/adb" -s emulator-5554 logcat -d -v threadtime \
+              > build/android-results/logcat.txt || true
+          fi
       - name: Stop the owned emulator process group
         if: always()
         timeout-minutes: 1
