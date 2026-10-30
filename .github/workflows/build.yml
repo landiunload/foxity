@@ -236,6 +236,57 @@ jobs:
             test -z "$(git -C "$tree" status --porcelain)"
           done
 
+  linux-client:
+    name: Linux x86_64 client (Vulkan, X11)
+    needs: engine-revision
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          ref: ${{ needs.engine-revision.outputs.ref }}
+          path: _engine
+      - name: Install the pinned Clang, Vulkan, X11 and a software Vulkan driver
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            "clang-$LLVM_VERSION" "llvm-$LLVM_VERSION" "lld-$LLVM_VERSION" \
+            libvulkan-dev libx11-dev mesa-vulkan-drivers xvfb xauth
+          sudo update-alternatives --install /usr/bin/clang clang "/usr/bin/clang-$LLVM_VERSION" 200
+          clang --version
+      # The window and the input come from X11, frames from Vulkan; the engine
+      # is built from source with the game, as a player's build would be.
+      - name: Configure the client with the engine from source
+        run: >
+          cmake --preset linux-clang -B build/linux-client
+          "-DFOX_ENGINE_SOURCE_DIR=$GITHUB_WORKSPACE/_engine" -DFOX_ENGINE_FETCH=OFF
+          -DLAIUE_BUILD_GRAPHICS=ON -DLAIUE_RENDER_BACKEND=VULKAN -DFOX_BUILD_CLIENT=ON
+      - name: Build Release
+        run: cmake --build build/linux-client --config Release --parallel
+      # Lavapipe draws on the CPU: the runner has no GPU, but the client
+      # still has to open a window and present real frames.
+      - name: Test Release, the client on lavapipe under Xvfb
+        env:
+          VK_DRIVER_FILES: /usr/share/vulkan/icd.d/lvp_icd.json
+        run: >
+          xvfb-run -a -s '-screen 0 1280x720x24'
+          ctest --test-dir build/linux-client -C Release --no-tests=error --output-on-failure
+      - name: Stage the bundle
+        run: cmake --build build/linux-client --config Release --target foxity_bundle
+      - name: Upload bundle
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: foxity-linux-x86_64
+          path: build/linux-client/bundles/Foxity/Release
+          if-no-files-found: error
+      - name: Verify the builds did not modify sources
+        run: |
+          for tree in . _engine; do
+            git -C "$tree" diff --check
+            test -z "$(git -C "$tree" status --porcelain)"
+          done
+
   macos:
     name: macOS arm64 headless
     needs: engine-revision
@@ -477,7 +528,7 @@ jobs:
   ci:
     name: All checks
     if: always()
-    needs: [engine-revision, windows, linux, macos, android]
+    needs: [engine-revision, windows, linux, linux-client, macos, android]
     runs-on: ubuntu-slim
     steps:
       - name: Require every job to pass
