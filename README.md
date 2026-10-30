@@ -154,9 +154,16 @@ The APK, `build/android-arm64/android/foxity_apk.apk`, carries the engine
 modules as separate libraries loaded by name, as on the desktop;
 `android-x86_64` builds one for the emulator. CI plays it there.
 
-Linux and macOS build the headless game and its tests. The design, rules and
-checks are in [docs/architecture.md](docs/architecture.md) and
-[CONTRIBUTING.md](CONTRIBUTING.md).
+On Linux the client needs the engine's graphics, Vulkan and X11 headers:
+
+```bash
+cmake --preset linux-clang -DLAIUE_BUILD_GRAPHICS=ON -DFOX_BUILD_CLIENT=ON
+cmake --build --preset linux-clang-release --target foxity_bundle
+```
+
+Without them Linux, like macOS, builds the headless game and its tests. The
+design, rules and checks are in [docs/architecture.md](docs/architecture.md)
+and [CONTRIBUTING.md](CONTRIBUTING.md).
 
 ## License
 
