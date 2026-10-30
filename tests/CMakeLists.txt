@@ -42,6 +42,9 @@ if(FOX_BUILD_HEADLESS)
         PASS_REGULAR_EXPRESSION "0 dead ends.*-- performance")
 endif()
 if(FOX_BUILD_CLIENT)
+    # Road meshes the device refuses are built again later, ever more rarely.
+    fox_add_unit_test(roads_view fox_client)
+
     # Presents three frames through the engine modules copied next to the
     # client; fails when no window and graphics provider can present.
     add_test(NAME foxity.client_smoke COMMAND foxity --smoke)

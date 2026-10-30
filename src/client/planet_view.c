@@ -32,6 +32,10 @@
 #define COVER_LEVELS 2
 /* At most this many cubes, an edit's, are rebuilt in one frame together. */
 #define EDIT_CUBES 16u
+/* A cube the device refused is tried again two frames later, then twice as
+ * long each time up to 64: a passing refusal heals by itself, and a lasting
+ * one costs next to nothing. */
+#define RETRY_SHIFT_MAX 5u
 
 typedef struct CubeKey
 {
@@ -54,6 +58,10 @@ typedef struct Cube
     FoxVec origin;
     uint64_t lastUsedFrame;
     uint64_t chosenFrame;
+    /* Failed rebuilds in a row, and the frame before which it is not tried
+     * again. */
+    uint32_t retries;
+    uint64_t retryFrame;
 } Cube;
 
 typedef struct Leaf
@@ -68,6 +76,8 @@ struct FoxPlanetView
     uint32_t (*buildSurfaceMesh)(LaiueSurfaceMeshRequestV1 *request);
     const LaiueSceneMathServiceV1 *math;
     bool nativeIndices;
+    /* New cubes keep failing to build; it is said once until one succeeds. */
+    bool buildFailing;
     uint64_t frame;
     Cube cubes[CACHE_CAPACITY];
     int32_t hash[HASH_CAPACITY];
@@ -567,8 +577,14 @@ void FoxPlanetViewInvalidate(FoxPlanetView *view, const FoxPlanetBox *box)
     }
 }
 
+/* Whether a stale cube may be rebuilt this frame. */
+static bool Due(const FoxPlanetView *view, const Cube *cube)
+{
+    return cube != NULL && cube->stale && cube->retryFrame <= view->frame;
+}
+
 /* Rebuilds a stale cube in place; the old mesh stays until the new one is
- * ready, and for good if the build fails. */
+ * ready, and while a failed rebuild waits to be tried again. */
 static bool Refresh(FoxPlanetView *view, const FoxPlanet *planet, Cube *cube)
 {
     Cube fresh = *cube;
@@ -578,11 +594,18 @@ static bool Refresh(FoxPlanetView *view, const FoxPlanet *planet, Cube *cube)
     fresh.empty = false;
     fresh.indexed = false;
     fresh.stale = false;
-    cube->stale = false;
+    fresh.retries = 0u;
+    fresh.retryFrame = 0u;
     if (!BuildCube(view, planet, &fresh))
     {
-        FoxLog(FOX_LOG_WARNING, "planet cube level %d could not be rebuilt", (int)cube->key.level);
+        if (cube->retries == 0u)
+        {
+            FoxLog(FOX_LOG_WARNING, "planet cube level %d could not be rebuilt; it will be tried again",
+                   (int)cube->key.level);
+        }
         ReleaseCube(view, &fresh);
+        cube->retryFrame = view->frame + (UINT64_C(2) << cube->retries);
+        cube->retries += cube->retries < RETRY_SHIFT_MAX ? 1u : 0u;
         return false;
     }
     if (cube->vertexBuffer != 0u)
@@ -722,11 +745,21 @@ static Cube *Build(FoxPlanetView *view, const FoxPlanet *planet, CubeKey key)
     cube->key = key;
     cube->used = true;
     cube->lastUsedFrame = view->frame;
+    /* A cube that failed is simply asked for again while it is needed; its
+     * ancestor stands in meanwhile. */
     if (!BuildCube(view, planet, cube))
     {
-        FoxLog(FOX_LOG_WARNING, "planet cube level %d could not be built", (int)key.level);
+        if (!view->buildFailing)
+        {
+            FoxLog(FOX_LOG_WARNING, "planet cube level %d could not be built", (int)key.level);
+        }
+        view->buildFailing = true;
         ReleaseCube(view, cube);
         cube = NULL;
+    }
+    else
+    {
+        view->buildFailing = false;
     }
     RebuildHash(view);
     return cube;
@@ -771,14 +804,13 @@ void FoxPlanetViewUpdate(FoxPlanetView *view, const FoxPlanet *planet, const Fox
     uint32_t stale = 0u;
     for (uint32_t index = 0u; index < view->leafCount; ++index)
     {
-        const Cube *cube = FindCube(view, view->leaves[index].key);
-        stale += cube != NULL && cube->stale ? 1u : 0u;
+        stale += Due(view, FindCube(view, view->leaves[index].key)) ? 1u : 0u;
     }
     for (uint32_t index = 0u; index < view->leafCount && (stale <= EDIT_CUBES || WITHIN_BUDGET());
          ++index)
     {
         Cube *cube = FindCube(view, view->leaves[index].key);
-        if (cube != NULL && cube->stale)
+        if (Due(view, cube))
         {
             built += Refresh(view, planet, cube) ? 1u : 0u;
         }
