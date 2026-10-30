@@ -103,27 +103,54 @@ void FoxCameraRotate(FoxCamera *camera, int32_t deltaX, int32_t deltaY)
                          MAX_PITCH);
 }
 
-void FoxCameraPan(FoxCamera *camera, const FoxPlanet *planet, float forward, float right,
-                  double seconds)
+void FoxCameraTurn(FoxCamera *camera, float radians)
+{
+    camera->yaw = fmod(camera->yaw + (double)radians, 6.283185307179586);
+}
+
+/* Moves the focus along the ground by metres ahead and to the right. */
+static void Move(FoxCamera *camera, const FoxPlanet *planet, double forward, double right)
 {
     double up[3];
     double ahead[3];
     double side[3];
     Frame(camera, up, ahead, side);
-    /* Far out the planet itself is the limit of a sensible step. */
-    const double metres = fmin(camera->distance, 600.0) * seconds;
     const FoxVec moved = {
-        camera->focus.x + (int64_t)llround((ahead[0] * forward + side[0] * right) * metres *
-                                           FOX_UNITS_PER_METRE),
-        camera->focus.y + (int64_t)llround((ahead[1] * forward + side[1] * right) * metres *
-                                           FOX_UNITS_PER_METRE),
-        camera->focus.z + (int64_t)llround((ahead[2] * forward + side[2] * right) * metres *
-                                           FOX_UNITS_PER_METRE),
+        camera->focus.x +
+            (int64_t)llround((ahead[0] * forward + side[0] * right) * FOX_UNITS_PER_METRE),
+        camera->focus.y +
+            (int64_t)llround((ahead[1] * forward + side[1] * right) * FOX_UNITS_PER_METRE),
+        camera->focus.z +
+            (int64_t)llround((ahead[2] * forward + side[2] * right) * FOX_UNITS_PER_METRE),
     };
     FoxVec ground;
     camera->focus = FoxPlanetGround(planet, moved, &ground) ? ground : moved;
     UpAt(camera->focus, up);
     Reorthogonalize(camera, up);
+}
+
+void FoxCameraPan(FoxCamera *camera, const FoxPlanet *planet, float forward, float right,
+                  double seconds)
+{
+    /* Far out the planet itself is the limit of a sensible step. */
+    const double metres = fmin(camera->distance, 600.0) * seconds;
+    Move(camera, planet, (double)forward * metres, (double)right * metres);
+}
+
+void FoxCameraDrag(FoxCamera *camera, const FoxPlanet *planet, float deltaX, float deltaY,
+                   uint32_t viewHeight)
+{
+    if (viewHeight == 0u)
+    {
+        return;
+    }
+    /* Metres per pixel at the focus. Ahead the ground is foreshortened by the
+     * pitch, which a low view would exaggerate past the finger. */
+    const double perPixel =
+        2.0 * camera->distance * tan(FOX_CAMERA_FIELD_OF_VIEW / 2.0) / (double)viewHeight;
+    /* Dragging down brings the ground ahead closer: the focus moves ahead. */
+    Move(camera, planet, (double)deltaY * perPixel / fmax(sin(camera->pitch), 0.25),
+         -(double)deltaX * perPixel);
 }
 
 void FoxCameraRelative(const FoxCameraView *view, FoxVec point, float outMetres[3])

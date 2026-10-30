@@ -82,10 +82,23 @@ if(FOX_BUILD_CLIENT)
     target_link_libraries(fox_client PUBLIC fox_app)
     fox_configure_c_target(fox_client)
 
-    add_executable(foxity WIN32
-        client/client.c
-        client/client.h
-        client/client_main.c)
+    # Android starts programs from libraries: the engine's window module is
+    # the activity and calls this library's main.
+    if(ANDROID)
+        add_library(foxity SHARED
+            client/client.c
+            client/client.h
+            client/client_main.c)
+        # Only main is looked up; everything else, the static libraries
+        # included, stays inside.
+        set_target_properties(foxity PROPERTIES C_VISIBILITY_PRESET hidden)
+        target_link_options(foxity PRIVATE "LINKER:--exclude-libs,ALL")
+    else()
+        add_executable(foxity WIN32
+            client/client.c
+            client/client.h
+            client/client_main.c)
+    endif()
     target_link_libraries(foxity PRIVATE fox_client)
     if(WIN32)
         target_link_libraries(foxity PRIVATE shell32)
@@ -94,7 +107,23 @@ if(FOX_BUILD_CLIENT)
     set_target_properties(foxity PROPERTIES
         OUTPUT_NAME "Foxity"
         VS_DEBUGGER_WORKING_DIRECTORY "$<TARGET_FILE_DIR:foxity>")
-    fox_deploy_engine_modules(foxity ${FOX_CLIENT_ENGINE_MODULES})
+    if(ANDROID)
+        # The APK carries the engine modules as separate libraries, loaded by
+        # name as on the desktop. Packaging comes with an engine built from
+        # sources; a prepared SDK leaves it to the application.
+        if(COMMAND laiue_add_android_apk)
+            laiue_add_android_apk(foxity_apk
+                MAIN_TARGET foxity
+                PACKAGE dev.landiunload.foxity
+                LABEL Foxity
+                ORIENTATION sensorLandscape
+                MODULES ${FOX_CLIENT_ENGINE_MODULES})
+        else()
+            message(STATUS "Foxity APK: this laiue build cannot package APKs")
+        endif()
+    else()
+        fox_deploy_engine_modules(foxity ${FOX_CLIENT_ENGINE_MODULES})
+    endif()
 
     # For testers only, never shipped: P saves the frame with a comment.
     if(FOX_REVIEW_BUILD)

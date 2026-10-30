@@ -46,7 +46,7 @@ typedef struct FoxSceneDesc
     uint32_t mesherServiceSize;
 } FoxSceneDesc;
 
-/* One frame of player intent, independent of keyboards and mice. */
+/* One frame of player intent, independent of keyboards, mice and screens. */
 typedef struct FoxControls
 {
     float zoomSteps;
@@ -56,9 +56,19 @@ typedef struct FoxControls
     float moveForward;
     float moveRight;
     bool moveFast;
-    /* The view in pixels. */
+    /* Touch: two fingers drag the ground by dragX, dragY pixels and turn it
+     * by `turn` radians clockwise (their pinch is in zoomSteps); one finger
+     * moved by swipeX, swipeY pixels drags the ground only while looking
+     * around, since every other tool draws with it. */
+    float dragX;
+    float dragY;
+    float turn;
+    float swipeX;
+    float swipeY;
+    /* The view in pixels, and pixels per interface point. */
     uint32_t viewWidth;
     uint32_t viewHeight;
+    float density;
     /* Where the pointer is, from -1 at the left and bottom of the view to 1
      * at the right and top; `click` is a press this frame, `held` the button
      * being down. */

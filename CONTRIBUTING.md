@@ -34,7 +34,9 @@ git diff --check
 
 Ошибок и предупреждений быть не должно, подавлять их нельзя: причина
 исправляется в коде. CI дополнительно собирает Linux (GCC, Clang и GCC с
-AddressSanitizer, UndefinedBehaviorSanitizer и проверкой утечек) и macOS.
+AddressSanitizer, UndefinedBehaviorSanitizer и проверкой утечек), macOS и
+APK для Android ARM64 и x86_64; x86_64 запускается в эмуляторе и должен
+показать три кадра.
 
 ## Проверочная сборка
 

@@ -140,8 +140,9 @@ if(BUILD_TESTING)
 endif()
 
 # Self-contained folders to hand out: the executable plus the engine modules
-# it loads. Release bundles are stripped outside Windows.
-if(TARGET foxity)
+# it loads. Release bundles are stripped outside Windows; Android hands out
+# the APK instead.
+if(TARGET foxity AND NOT ANDROID)
     set(FOX_BUNDLE_DIRECTORY "${CMAKE_BINARY_DIR}/bundles/Foxity/$<CONFIG>")
     fox_release_bundle_strip_command(FOX_CLIENT_BUNDLE_STRIP_COMMAND
         "${FOX_BUNDLE_DIRECTORY}" foxity)

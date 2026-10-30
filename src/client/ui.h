@@ -103,6 +103,9 @@ typedef struct FoxUiInput
     float y;
     /* The button went down this frame. */
     bool click;
+    /* Pixels per interface point: about 1 on a monitor, 3 on a phone; zero
+     * counts as 1. */
+    float density;
 } FoxUiInput;
 
 /* How many speeds the speed button goes round, and the factor of each. */

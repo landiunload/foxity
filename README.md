@@ -90,6 +90,15 @@ tool again folds it away.
 | F7 | Vertical sync on or off |
 | Esc | Drop the road being placed, then put the tool down, then quit |
 
+On a touch screen the interface grows with the screen's density.
+
+| Touch | Action |
+|---|---|
+| Tap | Click: use the tool, or the dock |
+| One finger, no tool in hand | Move the map |
+| One finger with a tool | The tool held down where the finger goes, as with the left button |
+| Two fingers | Move the map; pinch to zoom, twist to turn |
+
 ## Running
 
 ```bash
@@ -132,6 +141,18 @@ ctest --preset windows-msvc-release --output-on-failure
 Without `../laiue`, configure downloads the engine (`FOX_ENGINE_REVISION`,
 `origin/main` by default, `locked` for the revision in `engine.lock`). A
 prepared engine SDK is chosen with `-Dlaiue_DIR=...`.
+
+Android needs the NDK in `ANDROID_NDK_HOME`, the SDK's build-tools and a
+platform in `ANDROID_HOME`, and a key to sign with:
+
+```bash
+cmake --preset android-arm64 -DLAIUE_ANDROID_KEYSTORE=key.p12
+cmake --build --preset android-arm64-release --target foxity_apk
+```
+
+The APK, `build/android-arm64/android/foxity_apk.apk`, carries the engine
+modules as separate libraries loaded by name, as on the desktop;
+`android-x86_64` builds one for the emulator. CI plays it there.
 
 Linux and macOS build the headless game and its tests. The design, rules and
 checks are in [docs/architecture.md](docs/architecture.md) and

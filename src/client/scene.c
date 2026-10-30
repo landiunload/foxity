@@ -367,10 +367,26 @@ static void ApplyCameraControls(FoxScene *scene, const FoxControls *controls, do
     {
         FoxCameraRotate(&scene->camera, controls->rotateX, controls->rotateY);
     }
+    const FoxPlanet *planet = FoxWorldPlanet(scene->city.world);
     if (controls->moveForward != 0.0f || controls->moveRight != 0.0f)
     {
-        FoxCameraPan(&scene->camera, FoxWorldPlanet(scene->city.world), controls->moveForward,
-                     controls->moveRight, realSeconds * (controls->moveFast ? 3.0 : 1.0));
+        FoxCameraPan(&scene->camera, planet, controls->moveForward, controls->moveRight,
+                     realSeconds * (controls->moveFast ? 3.0 : 1.0));
+    }
+    if (controls->turn != 0.0f)
+    {
+        FoxCameraTurn(&scene->camera, controls->turn);
+    }
+    if (controls->dragX != 0.0f || controls->dragY != 0.0f)
+    {
+        FoxCameraDrag(&scene->camera, planet, controls->dragX, controls->dragY,
+                      controls->viewHeight);
+    }
+    if ((controls->swipeX != 0.0f || controls->swipeY != 0.0f) &&
+        scene->settings.tool == FOX_TOOL_NONE && !scene->pressOnUi)
+    {
+        FoxCameraDrag(&scene->camera, planet, controls->swipeX, controls->swipeY,
+                      controls->viewHeight);
     }
 }
 
@@ -1229,6 +1245,7 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
         .x = (controls->pointerX + 1.0f) / 2.0f * (float)controls->viewWidth,
         .y = (1.0f - controls->pointerY) / 2.0f * (float)controls->viewHeight,
         .click = controls->click,
+        .density = controls->density,
     };
     const FoxUiStatus status = {
         .paused = scene->clock.timeScale == 0.0,

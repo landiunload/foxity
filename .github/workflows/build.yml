@@ -15,12 +15,13 @@ permissions:
   contents: read
 
 env:
-  # Development integration follows an engine branch while both repositories
-  # evolve; it is the branch with laiue.navigation and the sky colour until they
-  # reach main. Tags and release/* branches build the reviewed immutable SHA
-  # that engine.lock holds instead; engine-revision below picks between them.
-  LAIUE_REF: engine-vertical-sync
+  # Development integration follows the engine's main branch, or a feature
+  # branch while both repositories evolve together. Tags and release/* branches
+  # build the reviewed immutable SHA that engine.lock holds instead;
+  # engine-revision below picks between them.
+  LAIUE_REF: main
   LLVM_VERSION: '22'
+  ANDROID_NDK_VERSION: 30.0.16248370
 
 jobs:
   engine-revision:
@@ -275,10 +276,208 @@ jobs:
             test -z "$(git -C "$tree" status --porcelain)"
           done
 
+  android:
+    name: Android APKs, x86_64 played in the emulator
+    needs: engine-revision
+    runs-on: ubuntu-26.04
+    timeout-minutes: 40
+    env:
+      FOX_ANDROID_PLATFORM: android-37.0
+      FOX_BUILD_TOOLS: 37.0.0
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          ref: ${{ needs.engine-revision.outputs.ref }}
+          path: _engine
+      - name: Install emulator runtime dependencies
+        timeout-minutes: 3
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends libpulse0 libx11-dev libx11-xcb-dev
+      - name: Prepare pinned Android tools, the test image and a signing key
+        timeout-minutes: 12
+        run: |
+          mkdir -p build/android-results "$RUNNER_TEMP/fox-sdk-tools" \
+            "$RUNNER_TEMP/fox-emulator" "$RUNNER_TEMP/fox-avd" "$HOME/.android"
+          touch "$HOME/.android/emu-update-last-check.ini"
+          echo "ANDROID_AVD_HOME=$RUNNER_TEMP/fox-avd" >> "$GITHUB_ENV"
+          curl --fail --location --connect-timeout 20 --max-time 180 --retry 3 --retry-all-errors \
+            https://dl.google.com/android/repository/commandlinetools-linux-16111833_latest.zip \
+            --output "$RUNNER_TEMP/fox-sdk-tools.zip"
+          printf '0877a1d048fe4a24efe2eff536ca4223f7adeb58648bb81909d33c446918cfa8  %s\n' \
+            "$RUNNER_TEMP/fox-sdk-tools.zip" | sha256sum --check -
+          unzip -q "$RUNNER_TEMP/fox-sdk-tools.zip" -d "$RUNNER_TEMP/fox-sdk-tools"
+          tools="$RUNNER_TEMP/fox-sdk-tools/cmdline-tools/bin"
+          grep -Fx 'Pkg.Revision=23.0' "$tools/../source.properties"
+          for ((answer=0; answer<32; ++answer)); do printf 'y\n'; done \
+            > "$RUNNER_TEMP/fox-sdk-answers.txt"
+          # dl.google.com occasionally cuts a download short (Premature EOF).
+          for package in "platforms/$FOX_ANDROID_PLATFORM" "build-tools/$FOX_BUILD_TOOLS" \
+            "system-images/$FOX_ANDROID_PLATFORM/google_apis/x86_64" "ndk/$ANDROID_NDK_VERSION"; do
+            for attempt in 1 2 3; do
+              if "$tools/android" --no-metrics --sdk="$ANDROID_HOME" sdk install "$package" \
+                < "$RUNNER_TEMP/fox-sdk-answers.txt"; then
+                break
+              fi
+              if [ "$attempt" = 3 ]; then exit 1; fi
+              echo "::warning::Attempt $attempt to install $package failed"
+              sleep 20
+            done
+          done
+          ndk="$ANDROID_HOME/ndk/$ANDROID_NDK_VERSION"
+          test -f "$ndk/build/cmake/android.toolchain.cmake"
+          echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
+          curl --fail --location --connect-timeout 20 --max-time 180 --retry 3 --retry-all-errors \
+            https://dl.google.com/android/repository/emulator-linux_x64-16428233.zip \
+            --output "$RUNNER_TEMP/fox-emulator.zip"
+          printf 'b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  %s\n' \
+            "$RUNNER_TEMP/fox-emulator.zip" | sha256sum --check -
+          unzip -q "$RUNNER_TEMP/fox-emulator.zip" -d "$RUNNER_TEMP/fox-emulator"
+          grep -Fx 'Pkg.Revision=37.2.12' "$RUNNER_TEMP/fox-emulator/emulator/source.properties"
+          # A throwaway key: CI APKs are for testing, releases are signed elsewhere.
+          keytool -genkeypair -keystore "$RUNNER_TEMP/fox-ci-debug.p12" \
+            -storetype PKCS12 -storepass android -keypass android \
+            -alias androiddebugkey -keyalg RSA -keysize 2048 -validity 3650 \
+            -dname 'CN=Android Debug,O=Android,C=US'
+      - name: Build and sign the APKs with the engine from source
+        timeout-minutes: 20
+        run: |
+          tools="$ANDROID_HOME/build-tools/$FOX_BUILD_TOOLS"
+          options=(
+            "-DFOX_ENGINE_SOURCE_DIR=$GITHUB_WORKSPACE/_engine" -DFOX_ENGINE_FETCH=OFF
+            "-DLAIUE_ANDROID_AAPT2=$tools/aapt2"
+            "-DLAIUE_ANDROID_ZIPALIGN=$tools/zipalign"
+            "-DLAIUE_ANDROID_APKSIGNER=$tools/apksigner"
+            "-DLAIUE_ANDROID_FRAMEWORK_JAR=$ANDROID_HOME/platforms/$FOX_ANDROID_PLATFORM/android.jar"
+            "-DLAIUE_ANDROID_KEYSTORE=$RUNNER_TEMP/fox-ci-debug.p12"
+          )
+          for preset in android-arm64 android-x86_64; do
+            cmake --preset "$preset" "${options[@]}"
+            cmake --build --preset "$preset-release" --target foxity_apk --parallel
+            mkdir -p "build/android-apks/$preset"
+            cp "build/$preset/android/foxity_apk.apk" "build/android-apks/$preset/Foxity.apk"
+          done
+      - name: Boot the emulator with software Vulkan
+        timeout-minutes: 4
+        run: |
+          test -c /dev/kvm
+          sudo chmod a+rw /dev/kvm
+          emulator="$RUNNER_TEMP/fox-emulator/emulator/emulator"
+          timeout 15s "$emulator" -accel-check
+          # The AVD is written by hand to keep the pinned system image.
+          avd="$ANDROID_AVD_HOME/fox-ci.avd"
+          mkdir -p "$avd"
+          printf 'avd.ini.encoding=UTF-8\npath=%s\ntarget=%s\n' \
+            "$avd" "$FOX_ANDROID_PLATFORM" > "$ANDROID_AVD_HOME/fox-ci.ini"
+          cat > "$avd/config.ini" <<CONFIG
+          AvdId=fox-ci
+          avd.ini.displayname=fox-ci
+          avd.ini.encoding=UTF-8
+          abi.type=x86_64
+          hw.cpu.arch=x86_64
+          hw.cpu.ncore=2
+          hw.ramSize=2048
+          vm.heapSize=256
+          disk.dataPartition.size=2G
+          hw.keyboard=yes
+          hw.mainKeys=no
+          hw.lcd.width=1080
+          hw.lcd.height=1920
+          hw.lcd.density=420
+          hw.gpu.enabled=yes
+          hw.gpu.mode=swiftshader
+          hw.camera.back=none
+          hw.camera.front=none
+          fastboot.forceColdBoot=yes
+          image.sysdir.1=$ANDROID_HOME/system-images/$FOX_ANDROID_PLATFORM/google_apis/x86_64/
+          tag.id=google_apis
+          tag.display=Google APIs
+          CONFIG
+          setsid timeout --signal=TERM --kill-after=10s 900s "$emulator" \
+            -avd fox-ci -no-metrics -no-snapshot -no-boot-anim -no-audio -no-window \
+            -gpu swiftshader -accel on -port 5554 -cores 2 -memory 2048 \
+            > build/android-results/emulator.log 2>&1 &
+          printf '%s\n' "$!" > "$RUNNER_TEMP/fox-emulator.pid"
+          adb="$ANDROID_HOME/platform-tools/adb"
+          boot_deadline=$((SECONDS + 180))
+          timeout 90s "$adb" -s emulator-5554 wait-for-device
+          until [ "$(timeout 5s "$adb" -s emulator-5554 shell getprop sys.boot_completed | tr -d '\r')" = 1 ]; do
+            if [ "$SECONDS" -ge "$boot_deadline" ]; then
+              cat build/android-results/emulator.log
+              exit 1
+            fi
+            sleep 2
+          done
+          timeout 10s "$adb" -s emulator-5554 shell input keyevent KEYCODE_WAKEUP
+          timeout 10s "$adb" -s emulator-5554 shell wm dismiss-keyguard
+      - name: Play the x86_64 APK until three frames are on screen
+        timeout-minutes: 5
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          log=build/android-results/foxity.log
+          timeout 60s "$adb" -s emulator-5554 install -r build/android-apks/android-x86_64/Foxity.apk
+          timeout 10s "$adb" -s emulator-5554 logcat -c
+          timeout 30s "$adb" -s emulator-5554 shell am start -W \
+            -n dev.landiunload.foxity/android.app.NativeActivity --es args --smoke
+          # The game logs as Foxity; the engine's window module logs under
+          # the package name and reports a failed main there.
+          deadline=$((SECONDS + 180))
+          until timeout 10s "$adb" -s emulator-5554 logcat -d -s Foxity:V dev.landiunload.foxity:V > "$log" \
+              && grep -Fq 'smoke: 3 of 3 frames presented' "$log"; do
+            if [ "$SECONDS" -ge "$deadline" ] || grep -Fq 'main returned' "$log"; then
+              cat "$log"
+              timeout 10s "$adb" -s emulator-5554 logcat -d -b crash || true
+              exit 1
+            fi
+            sleep 2
+          done
+          cat "$log"
+      - name: Stop the owned emulator process group
+        if: always()
+        timeout-minutes: 1
+        run: |
+          pid_file="$RUNNER_TEMP/fox-emulator.pid"
+          if [ -f "$pid_file" ]; then
+            emulator_pid="$(cat "$pid_file")"
+            if [[ ! "$emulator_pid" =~ ^[0-9]+$ ]]; then exit 1; fi
+            if kill -0 -- "-$emulator_pid" 2>/dev/null; then
+              timeout 10s "$ANDROID_HOME/platform-tools/adb" -s emulator-5554 emu kill || true
+              stop_deadline=$((SECONDS + 20))
+              while kill -0 -- "-$emulator_pid" 2>/dev/null; do
+                if [ "$SECONDS" -ge "$stop_deadline" ]; then
+                  kill -KILL -- "-$emulator_pid" 2>/dev/null || true
+                  break
+                fi
+                sleep 1
+              done
+            fi
+          fi
+      - name: Upload APKs
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: foxity-android
+          path: build/android-apks
+          if-no-files-found: error
+      - name: Upload emulator diagnostics
+        if: always() && hashFiles('build/android-results/**') != ''
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: foxity-android-diagnostics
+          path: build/android-results
+          if-no-files-found: error
+      - name: Verify the builds did not modify sources
+        run: |
+          for tree in . _engine; do
+            git -C "$tree" diff --check
+            test -z "$(git -C "$tree" status --porcelain)"
+          done
+
   ci:
     name: All checks
     if: always()
-    needs: [engine-revision, windows, linux, macos]
+    needs: [engine-revision, windows, linux, macos, android]
     runs-on: ubuntu-slim
     steps:
       - name: Require every job to pass
