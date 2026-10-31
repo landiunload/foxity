@@ -1070,8 +1070,12 @@ static const char *const laneNamesRu[FOX_LANE_KIND_COUNT] = {
 
 /* Everything about the city and the frame, for the panel, and the graphs of
  * the last minute. */
-static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
+static void BuildStatistics(FoxScene *scene, const FoxControls *controls)
 {
+    static const char *const powerNames[] = {"авто", "эффективность", "производительность"};
+    const int32_t verticalSync = controls->verticalSync;
+    const bool powerKnown = controls->powerPolicy >= 0 &&
+                            controls->powerPolicy < (int32_t)(sizeof(powerNames) / sizeof(powerNames[0]));
     const FoxWorld *world = scene->city.world;
     const FoxNetwork *network = FoxWorldNetwork(world);
     const FoxTraffic *traffic = FoxWorldTraffic(world);
@@ -1116,6 +1120,9 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
            scene->windowSlowestFrame * 1000.0);
     Append(text, &used, "Вертикальная синхронизация (F7): %s\n",
            verticalSync < 0 ? "недоступна" : (verticalSync != 0 ? "вкл" : "выкл"));
+    Append(text, &used, "Энергия (F8): %s%s\n",
+           powerKnown ? powerNames[controls->powerPolicy] : "недоступна",
+           powerKnown && !controls->powerApplied ? ", система не применяет" : "");
     Append(text, &used, "Тик: %.3f мс, худший %.3f мс, %.0f тиков/с\n", tickMs,
            scene->windowSlowestTick * 1000.0,
            scene->windowSeconds > 0.0 ? (double)scene->windowTicks / scene->windowSeconds : 0.0);
@@ -1196,7 +1203,7 @@ static void BuildStatistics(FoxScene *scene, int32_t verticalSync)
     Append(text, &used, "1-0 инструменты, ESC убрать, T вид полосы\n");
     Append(text, &used, "V скорость времени x1, x2, x4\n");
     Append(text, &used, "Пробел пауза, E/G ±50 машин, R/F ±50 жителей, Shift ×10\n");
-    Append(text, &used, "F3 панель, F7 синхронизация");
+    Append(text, &used, "F3 панель, F7 синхронизация, F8 энергия");
 
     char titles[5][96];
     (void)snprintf(titles[0], sizeof(titles[0]), "Кадр, мс: %.1f", frameMs);
@@ -1279,7 +1286,7 @@ bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSec
     scene->windowSlowestFrame = fmax(scene->windowSlowestFrame, realSeconds);
     if (scene->hud != NULL && scene->statistics && scene->windowSeconds >= STATISTICS_SECONDS)
     {
-        BuildStatistics(scene, controls->verticalSync);
+        BuildStatistics(scene, controls);
     }
     scene->reportTimer += realSeconds;
     if (scene->reportTimer >= REPORT_SECONDS)

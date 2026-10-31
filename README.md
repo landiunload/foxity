@@ -88,6 +88,7 @@ tool again folds it away.
 | E, G | Fifty cars more or fewer; with Shift five hundred |
 | F3 | Statistics panel in Russian: frame and tick times, roads, junctions, signs, vehicles, speeds, arrivals, with graphs of the last minute |
 | F7 | Vertical sync on or off |
+| F8 | Power: automatic, efficiency, performance; only Windows applies it |
 | Esc | Drop the road being placed, then put the tool down, then quit |
 
 On a touch screen the interface grows with the screen's density.
@@ -116,6 +117,7 @@ Foxity --drive left
 | `--focus-east M`, `--focus-north M` | Where the camera looks first, from the pole |
 | `--graphics d3d12\|vulkan` | Choose the graphics provider |
 | `--no-vsync` | Start with vertical sync off |
+| `--power auto\|efficiency\|performance` | Efficiency mode only in the background (the default), always, or never |
 | `--tool N` | Start with a tool in hand, numbered as on the keys |
 | `--capture FILE.bmp`, `--capture-frame N` | Save frame N as a picture and quit |
 | `--smoke` | Present three frames and exit |

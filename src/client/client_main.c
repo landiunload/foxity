@@ -24,6 +24,20 @@ static bool ParseGraphics(const char *value, FoxGraphicsChoice *outChoice)
     return false;
 }
 
+static bool ParsePower(const char *value, FoxPowerChoice *outChoice)
+{
+    static const char *const names[] = {"auto", "efficiency", "performance"};
+    for (uint32_t index = 0u; value != NULL && index < sizeof(names) / sizeof(names[0]); ++index)
+    {
+        if (strcmp(value, names[index]) == 0)
+        {
+            *outChoice = (FoxPowerChoice)index;
+            return true;
+        }
+    }
+    return false;
+}
+
 static int Run(int argumentCount, char **arguments)
 {
     FoxClientOptions options = {
@@ -64,6 +78,10 @@ static int Run(int argumentCount, char **arguments)
         else if (strcmp(argument, "--graphics") == 0)
         {
             parsed = ParseGraphics(value, &options.graphics);
+        }
+        else if (strcmp(argument, "--power") == 0)
+        {
+            parsed = ParsePower(value, &options.power);
         }
         else if (strcmp(argument, "--cars") == 0)
         {
@@ -133,7 +151,8 @@ static int Run(int argumentCount, char **arguments)
                   "[--empty] "
                   "[--camera-distance M] "
                   "[--grid N] [--spacing M] [--focus-east M] [--focus-north M] "
-                  "[--tool N] [--graphics d3d12|vulkan] [--no-vsync] [--smoke] "
+                  "[--tool N] [--graphics d3d12|vulkan] [--no-vsync] "
+                  "[--power auto|efficiency|performance] [--smoke] "
                   "[--capture FILE.bmp] [--capture-frame N]\n",
                   stderr);
             return FOX_CLIENT_EXIT_INVALID_OPTIONS;
