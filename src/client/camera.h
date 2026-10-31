@@ -12,8 +12,8 @@
  * corner up to the whole planet hanging in the sky. "Up" is away from the
  * planet's centre wherever the focus is, and the heading is carried along
  * the surface as the focus moves, so the view never flips at a pole. The
- * focus is an integer world position; floats appear only relative to the
- * render origin near it. */
+ * focus is an integer world position with its fraction of a unit kept
+ * apart; floats appear only relative to the render origin near it. */
 
 #define FOX_CAMERA_MIN_DISTANCE 4.0
 #define FOX_CAMERA_MAX_DISTANCE 9000.0
@@ -25,6 +25,10 @@
 typedef struct FoxCamera
 {
     FoxVec focus;
+    /* What the focus moved beyond it on each axis, under half a unit: steps
+     * smaller than a unit, as at a thousand frames a second, add up instead
+     * of vanishing in rounding. */
+    double focusFraction[3];
     /* A unit tangent at the focus that the yaw is measured from. */
     double heading[3];
     /* Metres from the focus to the eye. */

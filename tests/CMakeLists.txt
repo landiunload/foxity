@@ -44,6 +44,8 @@ endif()
 if(FOX_BUILD_CLIENT)
     # Road meshes the device refuses are built again later, ever more rarely.
     fox_add_unit_test(roads_view fox_client)
+    # The camera covers the same ground at any frame rate.
+    fox_add_unit_test(camera fox_client)
 
     # Presents three frames through the engine modules copied next to the
     # client; fails when no window and graphics provider can present.

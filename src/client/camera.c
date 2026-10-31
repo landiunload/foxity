@@ -108,23 +108,61 @@ void FoxCameraTurn(FoxCamera *camera, float radians)
     camera->yaw = fmod(camera->yaw + (double)radians, 6.283185307179586);
 }
 
-/* Moves the focus along the ground by metres ahead and to the right. */
+/* Adds offset units to the focus: the whole units to its position, the rest
+ * to its fraction. */
+static void Shift(FoxCamera *camera, const double offset[3])
+{
+    int64_t whole[3];
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        const double exact = camera->focusFraction[axis] + offset[axis];
+        whole[axis] = llround(exact);
+        camera->focusFraction[axis] = exact - (double)whole[axis];
+    }
+    camera->focus = (FoxVec){camera->focus.x + whole[0], camera->focus.y + whole[1],
+                             camera->focus.z + whole[2]};
+}
+
+/* Moves the focus along the ground by metres ahead and to the right. The
+ * ground sets only the focus's height: the point it returns lies on a grid of
+ * directions about 1.5 cm apart on the default planet, which would swallow
+ * steps smaller than that and bend the others. */
 static void Move(FoxCamera *camera, const FoxPlanet *planet, double forward, double right)
 {
     double up[3];
     double ahead[3];
     double side[3];
     Frame(camera, up, ahead, side);
-    const FoxVec moved = {
-        camera->focus.x +
-            (int64_t)llround((ahead[0] * forward + side[0] * right) * FOX_UNITS_PER_METRE),
-        camera->focus.y +
-            (int64_t)llround((ahead[1] * forward + side[1] * right) * FOX_UNITS_PER_METRE),
-        camera->focus.z +
-            (int64_t)llround((ahead[2] * forward + side[2] * right) * FOX_UNITS_PER_METRE),
-    };
+    double offset[3];
+    for (uint32_t axis = 0u; axis < 3u; ++axis)
+    {
+        offset[axis] = (ahead[axis] * forward + side[axis] * right) * FOX_UNITS_PER_METRE;
+    }
+    Shift(camera, offset);
     FoxVec ground;
-    camera->focus = FoxPlanetGround(planet, moved, &ground) ? ground : moved;
+    if (FoxPlanetGround(planet, camera->focus, &ground))
+    {
+        /* Along the focus's own direction from the planet's centre to the
+         * ground's distance from it. */
+        const double point[3] = {
+            (double)camera->focus.x + camera->focusFraction[0],
+            (double)camera->focus.y + camera->focusFraction[1],
+            (double)camera->focus.z + camera->focusFraction[2],
+        };
+        const double length = sqrt(point[0] * point[0] + point[1] * point[1] + point[2] * point[2]);
+        const double height = sqrt((double)ground.x * (double)ground.x +
+                                   (double)ground.y * (double)ground.y +
+                                   (double)ground.z * (double)ground.z);
+        if (length > 0.0)
+        {
+            const double lift = height / length - 1.0;
+            for (uint32_t axis = 0u; axis < 3u; ++axis)
+            {
+                offset[axis] = point[axis] * lift;
+            }
+            Shift(camera, offset);
+        }
+    }
     UpAt(camera->focus, up);
     Reorthogonalize(camera, up);
 }
