@@ -44,6 +44,9 @@ typedef struct ClientSession
 {
     const LaiueWindowServiceV1 *windowService;
     uint32_t windowServiceSize;
+    /* Whether the system applies the window service's power policy: false
+     * where it has no such mode, or the service cannot set one. */
+    bool powerApplied;
     Window *window;
     const LaiueInputServiceV1 *inputService;
     uint32_t inputServiceSize;
@@ -82,6 +85,28 @@ static bool FieldPresent(uint32_t publishedSize, uint32_t structSize, size_t off
 #define DEVICE_HAS(device, field)                                                                  \
     ((device)->structSize >= offsetof(LaiueGraphicsDeviceV2, field) + sizeof((device)->field) &&   \
      (device)->field != NULL)
+
+_Static_assert(FOX_POWER_AUTO == WINDOW_POWER_AUTO && FOX_POWER_EFFICIENCY == WINDOW_POWER_EFFICIENCY &&
+                   FOX_POWER_PERFORMANCE == WINDOW_POWER_PERFORMANCE,
+               "power choices follow the engine's policies");
+
+static bool HasPowerPolicy(const ClientSession *session)
+{
+    const LaiueWindowServiceV1 *window = session->windowService;
+    return FieldPresent(session->windowServiceSize, window->structSize,
+                        offsetof(LaiueWindowServiceV1, getPowerPolicy),
+                        sizeof(window->getPowerPolicy)) &&
+           window->setPowerPolicy != NULL && window->getPowerPolicy != NULL;
+}
+
+/* The policy belongs to the whole process and outlives the window. */
+static void SetPowerPolicy(ClientSession *session, FoxPowerChoice choice)
+{
+    static const char *const names[] = {"auto", "efficiency", "performance"};
+    session->powerApplied = session->windowService->setPowerPolicy((uint32_t)choice);
+    FoxLog(FOX_LOG_INFO, "power policy %s%s", names[choice],
+           session->powerApplied ? "" : ", which this system does not apply");
+}
 
 static const LaiueWindowServiceV1 *QueryWindow(const FoxModules *modules, uint32_t *outSize)
 {
@@ -257,6 +282,9 @@ static FoxControls ReadControls(ClientSession *session)
     {
         controls.density = window->getContentScale(session->window);
     }
+    const bool power = HasPowerPolicy(session);
+    controls.powerPolicy = power ? (int32_t)window->getPowerPolicy() : -1;
+    controls.powerApplied = session->powerApplied;
     const LaiueInputServiceV1 *input = session->inputService;
     Input *state = session->input;
     if (state == NULL)
@@ -312,6 +340,14 @@ static FoxControls ReadControls(ClientSession *session)
             controls.verticalSync = (int32_t)wanted;
             FoxLog(FOX_LOG_INFO, "vertical sync %s", wanted != 0u ? "on" : "off");
         }
+    }
+    if (input->consumeKeyPress(state, INPUT_KEY_F8) && power)
+    {
+        /* Automatic, efficiency, performance and round again. */
+        const FoxPowerChoice next = (FoxPowerChoice)(((uint32_t)controls.powerPolicy + 1u) % 3u);
+        SetPowerPolicy(session, next);
+        controls.powerPolicy = (int32_t)next;
+        controls.powerApplied = session->powerApplied;
     }
     controls.carsChange = (input->consumeKeyPress(state, INPUT_KEY_E) ? 1 : 0) -
                           (input->consumeKeyPress(state, INPUT_KEY_G) ? 1 : 0);
@@ -617,6 +653,14 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
     {
         FoxLog(FOX_LOG_WARNING, "window could not be created");
         return false;
+    }
+    if (HasPowerPolicy(&session))
+    {
+        SetPowerPolicy(&session, options->power);
+    }
+    else if (options->power != FOX_POWER_AUTO)
+    {
+        FoxLog(FOX_LOG_WARNING, "this window module cannot change the power policy");
     }
     void *nativeWindow = session.windowService->getNativeHandle(session.window);
     session.device =

@@ -14,6 +14,17 @@ typedef enum FoxGraphicsChoice
     FOX_GRAPHICS_VULKAN,
 } FoxGraphicsChoice;
 
+/* How the process spends power, in the engine's WINDOW_POWER_* order. */
+typedef enum FoxPowerChoice
+{
+    /* Efficiency mode while the game is in the background. */
+    FOX_POWER_AUTO = 0,
+    /* Efficiency mode always. */
+    FOX_POWER_EFFICIENCY,
+    /* Never slowed by the system, even in the background. */
+    FOX_POWER_PERFORMANCE,
+} FoxPowerChoice;
+
 typedef struct FoxClientOptions
 {
     uint64_t seed;
@@ -40,6 +51,7 @@ typedef struct FoxClientOptions
     uint32_t tool;
     /* Presents without waiting for the display's refresh. */
     bool noVerticalSync;
+    FoxPowerChoice power;
 #if defined(FOX_REVIEW)
     /* Where the review build keeps its notes; NULL for "review". */
     const char *reviewDirectory;

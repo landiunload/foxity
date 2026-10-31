@@ -92,6 +92,11 @@ typedef struct FoxControls
     /* Whether presenting waits for the display: 1 on, 0 off, -1 the device
      * cannot tell; shown on the statistics panel. */
     int32_t verticalSync;
+    /* How the process spends power, a FoxPowerChoice, or -1 when the window
+     * cannot change it; powerApplied is false where the system has no such
+     * mode. Shown on the statistics panel. */
+    int32_t powerPolicy;
+    bool powerApplied;
 } FoxControls;
 
 FoxScene *FoxSceneCreate(const FoxSceneDesc *desc);
