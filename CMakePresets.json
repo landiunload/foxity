@@ -16,7 +16,6 @@
         "FOX_AGGRESSIVE_INLINING": "ON",
         "FOX_ENABLE_LTO": "ON",
         "FOX_EXPECTED_ARCHITECTURE": "x86_64",
-        "FOX_X86_64_LEVEL": "avx2",
         "FOX_X86_64_TUNE": "generic"
       }
     },
@@ -65,8 +64,7 @@
         "rhs": "Linux"
       },
       "cacheVariables": {
-        "FOX_EXPECTED_ARCHITECTURE": "x86_64",
-        "FOX_X86_64_LEVEL": "avx2"
+        "FOX_EXPECTED_ARCHITECTURE": "x86_64"
       }
     },
     {
@@ -96,8 +94,7 @@
       },
       "cacheVariables": {
         "CMAKE_C_COMPILER": "clang",
-        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0",
-        "FOX_X86_64_LEVEL": "sse2"
+        "CMAKE_OSX_DEPLOYMENT_TARGET": "11.0"
       }
     },
     {
