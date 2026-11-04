@@ -24,6 +24,11 @@
  * the device skips are expected meanwhile: Android takes the surface away and
  * resizes it while the screen turns. */
 #define FOX_SMOKE_PATIENCE_SECONDS 10.0
+/* A frame that drew nothing is followed by this pause: frames in a row would
+ * only heat the processor, and the city needs a few turns a second to run. */
+#define FOX_UNDRAWN_FRAME_SECONDS 0.05
+/* A driver reset takes a few seconds, and until then a new device fails. */
+#define FOX_DEVICE_RETRY_SECONDS 1.0
 
 typedef struct GraphicsProvider
 {
@@ -58,7 +63,11 @@ typedef struct ClientSession
     float touchY;
     const LaiueGraphicsDeviceServiceV2 *graphicsService;
     uint32_t graphicsServiceSize;
+    /* NULL between a lost device and its replacement. */
     LaiueGraphicsDeviceV2 *device;
+    double deviceRetrySeconds;
+    /* What the lost device was set to, -1 when it could not be switched. */
+    int32_t lostVerticalSync;
     FoxScene *scene;
     double previousSeconds;
     /* When a frame last reached the screen, or the session began. */
@@ -160,7 +169,8 @@ static const LaiueGraphicsDeviceServiceV2 *QueryGraphics(const FoxModules *modul
 }
 
 static LaiueGraphicsDeviceV2 *CreateDevice(const LaiueGraphicsDeviceServiceV2 *service,
-                                           uint32_t serviceSize, void *nativeWindow)
+                                           uint32_t serviceSize, void *nativeWindow, int32_t width,
+                                           int32_t height)
 {
     LaiueGraphicsDeviceV2 *device = NULL;
     const bool withContext =
@@ -168,10 +178,9 @@ static LaiueGraphicsDeviceV2 *CreateDevice(const LaiueGraphicsDeviceServiceV2 *s
                      offsetof(LaiueGraphicsDeviceServiceV2, context), sizeof(service->context)) &&
         service->createDeviceWithContext != NULL && service->context != NULL;
     const uint32_t created =
-        withContext ? service->createDeviceWithContext(service->context, nativeWindow,
-                                                       FOX_CLIENT_WIDTH, FOX_CLIENT_HEIGHT,
-                                                       LAIUE_GRAPHICS_BACKEND_AUTO, &device)
-                    : service->createDevice(nativeWindow, FOX_CLIENT_WIDTH, FOX_CLIENT_HEIGHT,
+        withContext ? service->createDeviceWithContext(service->context, nativeWindow, width,
+                                                       height, LAIUE_GRAPHICS_BACKEND_AUTO, &device)
+                    : service->createDevice(nativeWindow, width, height,
                                             LAIUE_GRAPHICS_BACKEND_AUTO, &device);
     if (created != 0u && device != NULL &&
         device->structSize >=
@@ -225,8 +234,84 @@ static void OnSurface(void *opaque, bool available)
 /* Whether the device lets vertical sync be switched. */
 static bool HasVerticalSync(const LaiueGraphicsDeviceV2 *device)
 {
-    return device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_VERTICAL_SYNC_SIZE &&
+    return device != NULL && device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_VERTICAL_SYNC_SIZE &&
            device->setVerticalSync != NULL && device->getVerticalSync != NULL;
+}
+
+/* The sky stays bright: a clear blue behind everything. */
+static void SetSkyColor(LaiueGraphicsDeviceV2 *device)
+{
+    if (device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_CLEAR_COLOR_SIZE &&
+        device->setClearColor != NULL)
+    {
+        static const float sky[3] = {0.55f, 0.75f, 0.95f};
+        (void)device->setClearColor(device, sky);
+    }
+}
+
+static bool DeviceLost(LaiueGraphicsDeviceV2 *device)
+{
+    LaiueGraphicsDiagnosticsV2 diagnostics = {.structSize = sizeof(diagnostics)};
+    return device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_DIAGNOSTICS_SIZE &&
+           device->getDiagnostics != NULL && device->getDiagnostics(device, &diagnostics) != 0u &&
+           (diagnostics.flags & LAIUE_GRAPHICS_DIAGNOSTICS_DEVICE_LOST) != 0u;
+}
+
+/* After a driver reset every frame fails until the device is replaced. */
+static void CloseLostDevice(ClientSession *session, double now)
+{
+    LaiueGraphicsDeviceV2 *device = session->device;
+    FoxLog(FOX_LOG_ERROR, "the graphics device is lost; the city runs on without a picture");
+    session->lostVerticalSync =
+        HasVerticalSync(device) ? (int32_t)device->getVerticalSync(device) : -1;
+    FoxSceneDetachDevice(session->scene);
+#if defined(FOX_REVIEW)
+    FoxReviewDetachDevice(session->review);
+#endif
+    session->graphicsService->destroyDevice(device);
+    session->device = NULL;
+    session->deviceRetrySeconds = now;
+}
+
+static void ReopenDevice(ClientSession *session, double now, int32_t width, int32_t height)
+{
+    const LaiueWindowServiceV1 *window = session->windowService;
+    void *nativeWindow = window->getNativeHandle(session->window);
+    /* Android has no surface while the game is in the background. */
+    if (now < session->deviceRetrySeconds || nativeWindow == NULL || width <= 0 || height <= 0)
+    {
+        return;
+    }
+    session->deviceRetrySeconds = now + FOX_DEVICE_RETRY_SECONDS;
+    LaiueGraphicsDeviceV2 *device = CreateDevice(
+        session->graphicsService, session->graphicsServiceSize, nativeWindow, width, height);
+    if (device == NULL)
+    {
+        return;
+    }
+    if (session->lostVerticalSync >= 0 && HasVerticalSync(device))
+    {
+        (void)device->setVerticalSync(device, (uint32_t)session->lostVerticalSync);
+    }
+    SetSkyColor(device);
+    session->device = device;
+    FoxSceneAttachDevice(session->scene, device);
+#if defined(FOX_REVIEW)
+    FoxReviewAttachDevice(session->review, device);
+#endif
+    FoxLog(FOX_LOG_INFO, "the picture is back on a new graphics device");
+}
+
+static void PauseAfterUndrawnFrame(const ClientSession *session)
+{
+    const LaiueWindowServiceV1 *window = session->windowService;
+    if (FieldPresent(session->windowServiceSize, window->structSize,
+                     offsetof(LaiueWindowServiceV1, deferNextFrame),
+                     sizeof(window->deferNextFrame)) &&
+        window->deferNextFrame != NULL)
+    {
+        window->deferNextFrame(session->window, FOX_UNDRAWN_FRAME_SECONDS);
+    }
 }
 
 /* Two fingers drag, twist and pinch the view; a finger alone is also the
@@ -448,6 +533,7 @@ static void OnFrame(void *opaque)
         session->inputService->resetState(session->input);
     }
     if (window->consumeResize != NULL && window->consumeResize(session->window) &&
+        session->device != NULL &&
         FieldPresent(session->graphicsServiceSize, session->graphicsService->structSize,
                      offsetof(LaiueGraphicsDeviceServiceV2, resize),
                      sizeof(session->graphicsService->resize)) &&
@@ -510,6 +596,10 @@ static void OnFrame(void *opaque)
     int32_t width = 0;
     int32_t height = 0;
     window->getClientSize(session->window, &width, &height);
+    if (session->device == NULL)
+    {
+        ReopenDevice(session, now, width, height);
+    }
     FoxControls controls = ReadControls(session);
     if (typing)
     {
@@ -529,7 +619,7 @@ static void OnFrame(void *opaque)
     LaiueGraphicsCameraV2 camera = {.structSize = sizeof(camera)};
     const float aspect = width > 0 && height > 0 ? (float)width / (float)height : 1.0f;
     if (FoxSceneUpdate(session->scene, &controls, elapsed, aspect, camera.viewProjection) &&
-        DEVICE_HAS(device, setCamera))
+        device != NULL && DEVICE_HAS(device, setCamera))
     {
         (void)device->setCamera(device, &camera);
     }
@@ -538,7 +628,8 @@ static void OnFrame(void *opaque)
 #if defined(FOX_REVIEW)
     capturing = capturing || session->shooting;
 #endif
-    if (capturing && device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_READBACK_REQUEST_SIZE &&
+    if (capturing && device != NULL &&
+        device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_READBACK_REQUEST_SIZE &&
         device->requestFrameReadback != NULL)
     {
         (void)device->requestFrameReadback(device);
@@ -546,7 +637,8 @@ static void OnFrame(void *opaque)
 #if defined(FOX_REVIEW)
     FoxReviewUpdate(session->review, elapsed);
 #endif
-    if (width > 0 && height > 0)
+    bool presented = false;
+    if (device != NULL && width > 0 && height > 0)
     {
         if (device->beginFrame(device, (uint32_t)width, (uint32_t)height) != 0u)
         {
@@ -560,6 +652,7 @@ static void OnFrame(void *opaque)
 #endif
             if (device->endFrame(device) != 0u)
             {
+                presented = true;
                 ++session->presentedFrames;
                 session->presentedSeconds = now;
 #if defined(FOX_REVIEW)
@@ -610,6 +703,14 @@ static void OnFrame(void *opaque)
                 session->frameFailed = true;
             }
         }
+    }
+    if (!presented)
+    {
+        if (device != NULL && DeviceLost(device))
+        {
+            CloseLostDevice(session, now);
+        }
+        PauseAfterUndrawnFrame(session);
     }
     if (session->smokeFrames != 0u && !session->frameFailed &&
         now - session->presentedSeconds > FOX_SMOKE_PATIENCE_SECONDS)
@@ -663,8 +764,8 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
         FoxLog(FOX_LOG_WARNING, "this window module cannot change the power policy");
     }
     void *nativeWindow = session.windowService->getNativeHandle(session.window);
-    session.device =
-        CreateDevice(session.graphicsService, session.graphicsServiceSize, nativeWindow);
+    session.device = CreateDevice(session.graphicsService, session.graphicsServiceSize,
+                                  nativeWindow, FOX_CLIENT_WIDTH, FOX_CLIENT_HEIGHT);
     if (session.device == NULL)
     {
         FoxLog(FOX_LOG_WARNING, "graphics device could not be created");
@@ -691,13 +792,7 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
             FoxLog(FOX_LOG_WARNING, "this device cannot switch vertical sync");
         }
     }
-    /* The sky stays bright: a clear blue behind everything. */
-    if (session.device->structSize >= LAIUE_GRAPHICS_DEVICE_V2_CLEAR_COLOR_SIZE &&
-        session.device->setClearColor != NULL)
-    {
-        static const float sky[3] = {0.55f, 0.75f, 0.95f};
-        (void)session.device->setClearColor(session.device, sky);
-    }
+    SetSkyColor(session.device);
     FoxSceneDesc sceneDesc = {
         .seed = options->seed,
         .driveSide = options->driveSide,
@@ -764,7 +859,10 @@ static bool RunPresentation(const FoxModules *modules, const FoxClientOptions *o
     {
         session.inputService->destroy(session.input);
     }
-    session.graphicsService->destroyDevice(session.device);
+    if (session.device != NULL)
+    {
+        session.graphicsService->destroyDevice(session.device);
+    }
     session.windowService->destroy(session.window);
 
     if (session.scene == NULL)

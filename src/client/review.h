@@ -18,6 +18,9 @@ typedef struct FoxReview FoxReview;
 /* Notes go to `directory`, made if missing; NULL when it cannot be. */
 FoxReview *FoxReviewCreate(LaiueGraphicsDeviceV2 *device, const char *directory);
 void FoxReviewDestroy(FoxReview *review);
+/* The panel lives on the device, as the scene's views do. */
+void FoxReviewDetachDevice(FoxReview *review);
+void FoxReviewAttachDevice(FoxReview *review, LaiueGraphicsDeviceV2 *device);
 
 /* The path the next shot is saved to, and the note opened on it once saved;
  * `context` is written under the comment. */

@@ -117,6 +117,24 @@ void FoxReviewDestroy(FoxReview *review)
     }
 }
 
+void FoxReviewDetachDevice(FoxReview *review)
+{
+    if (review != NULL)
+    {
+        FoxHudDestroy(review->hud);
+        review->hud = NULL;
+    }
+}
+
+void FoxReviewAttachDevice(FoxReview *review, LaiueGraphicsDeviceV2 *device)
+{
+    if (review != NULL)
+    {
+        review->hud = FoxHudCreate(device);
+        review->changed = true;
+    }
+}
+
 const char *FoxReviewNextShot(FoxReview *review)
 {
     return review == NULL ? NULL : review->shot;
