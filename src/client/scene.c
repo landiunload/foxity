@@ -99,6 +99,8 @@ struct FoxScene
     FoxCamera camera;
     FoxCameraView view;
     const LaiueSceneMathServiceV1 *math;
+    const LaiueMesherServiceV1 *mesher;
+    uint32_t mesherServiceSize;
     FoxPlanetView *planet;
     FoxRoadsView *roads;
     FoxCarsView *cars;
@@ -215,33 +217,9 @@ FoxScene *FoxSceneCreate(const FoxSceneDesc *desc)
     {
         FoxLog(FOX_LOG_WARNING, "camera math is unavailable; the city is not drawn");
     }
-    if (desc->device != NULL)
-    {
-        scene->planet = scene->math == NULL
-                            ? NULL
-                            : FoxPlanetViewCreate(desc->device, desc->mesher,
-                                                  desc->mesherServiceSize, scene->math);
-        if (scene->planet == NULL)
-        {
-            FoxLog(FOX_LOG_WARNING, "surface meshing is unavailable; the ground is not drawn");
-        }
-        scene->roads = FoxRoadsViewCreate(desc->device);
-        scene->cars = FoxCarsViewCreate(desc->device);
-        scene->hud = FoxHudCreate(desc->device);
-        scene->ui = FoxUiCreate(desc->device);
-        if (scene->ui == NULL)
-        {
-            FoxLog(FOX_LOG_WARNING, "the device has no interface layer; tools are on the keys");
-        }
-        if (scene->hud == NULL)
-        {
-            FoxLog(FOX_LOG_WARNING, "the device cannot show the statistics panel");
-        }
-        if (scene->roads == NULL || scene->cars == NULL)
-        {
-            FoxLog(FOX_LOG_WARNING, "roads or cars cannot be drawn");
-        }
-    }
+    scene->mesher = desc->mesher;
+    scene->mesherServiceSize = desc->mesherServiceSize;
+    FoxSceneAttachDevice(scene, desc->device);
     const FoxPlanet *planet = FoxWorldPlanet(scene->city.world);
     FoxVec focus = {(int64_t)llround(desc->focusEast * FOX_UNITS_PER_METRE),
                     (int64_t)llround(desc->focusNorth * FOX_UNITS_PER_METRE),
@@ -268,15 +246,64 @@ void FoxSceneDestroy(FoxScene *scene)
     {
         return;
     }
-    FoxUiDestroy(scene->ui);
-    FoxHudDestroy(scene->hud);
+    FoxSceneDetachDevice(scene);
     free(scene->statisticsText);
-    FoxCarsViewDestroy(scene->cars);
-    FoxRoadsViewDestroy(scene->roads);
-    FoxPlanetViewDestroy(scene->planet);
     FoxCityDestroy(&scene->city);
     free(scene->previewPoints);
     free(scene);
+}
+
+void FoxSceneAttachDevice(FoxScene *scene, LaiueGraphicsDeviceV2 *device)
+{
+    if (scene == NULL || device == NULL)
+    {
+        return;
+    }
+    scene->planet =
+        scene->math == NULL
+            ? NULL
+            : FoxPlanetViewCreate(device, scene->mesher, scene->mesherServiceSize, scene->math);
+    if (scene->planet == NULL)
+    {
+        FoxLog(FOX_LOG_WARNING, "surface meshing is unavailable; the ground is not drawn");
+    }
+    scene->roads = FoxRoadsViewCreate(device);
+    scene->cars = FoxCarsViewCreate(device);
+    scene->hud = FoxHudCreate(device);
+    scene->ui = FoxUiCreate(device);
+    if (scene->ui == NULL)
+    {
+        FoxLog(FOX_LOG_WARNING, "the device has no interface layer; tools are on the keys");
+    }
+    if (scene->hud == NULL)
+    {
+        FoxLog(FOX_LOG_WARNING, "the device cannot show the statistics panel");
+    }
+    if (scene->roads == NULL || scene->cars == NULL)
+    {
+        FoxLog(FOX_LOG_WARNING, "roads or cars cannot be drawn");
+    }
+}
+
+void FoxSceneDetachDevice(FoxScene *scene)
+{
+    if (scene == NULL)
+    {
+        return;
+    }
+    FoxUiDestroy(scene->ui);
+    FoxHudDestroy(scene->hud);
+    FoxCarsViewDestroy(scene->cars);
+    FoxRoadsViewDestroy(scene->roads);
+    FoxPlanetViewDestroy(scene->planet);
+    scene->ui = NULL;
+    scene->hud = NULL;
+    scene->cars = NULL;
+    scene->roads = NULL;
+    scene->planet = NULL;
+    /* The overlay and the preview went with the roads view. */
+    scene->overlayShown = false;
+    scene->previewPlaced = 0u;
 }
 
 bool FoxSceneCancel(FoxScene *scene)

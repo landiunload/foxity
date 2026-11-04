@@ -108,6 +108,11 @@ void FoxSceneDestroy(FoxScene *scene);
 bool FoxSceneUpdate(FoxScene *scene, const FoxControls *controls, double realSeconds,
                     float aspectRatio, float outViewProjection[16]);
 void FoxSceneDraw(FoxScene *scene);
+/* A lost device takes the picture with it, and the city stays. Detaching
+ * releases what the views hold, before the device is destroyed; attaching
+ * builds them on a new one, and they fill up from the city as at the start. */
+void FoxSceneDetachDevice(FoxScene *scene);
+void FoxSceneAttachDevice(FoxScene *scene, LaiueGraphicsDeviceV2 *device);
 /* The camera of the last update; NULL before there is one. */
 const FoxCameraView *FoxSceneView(const FoxScene *scene);
 
