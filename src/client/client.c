@@ -227,6 +227,7 @@ static void OnSurface(void *opaque, bool available)
     {
         FoxLog(FOX_LOG_ERROR, "the graphics device could not take the new surface");
     }
+    FoxLog(FOX_LOG_INFO, available ? "the surface is back" : "the surface is gone");
 }
 
 /* Keyboard and mouse to player intent. Without input the city still runs and
