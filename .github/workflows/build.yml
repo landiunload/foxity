@@ -485,6 +485,49 @@ jobs:
             sleep 2
           done
           cat "$log"
+      # A phone takes the surface away whenever the game goes to the
+      # background; the device swaps it in place and keeps the city.
+      - name: Take the game to the background and back
+        timeout-minutes: 4
+        run: |
+          adb="$ANDROID_HOME/platform-tools/adb"
+          log=build/android-results/foxity-background.log
+          package=dev.landiunload.foxity
+          activity="$package/android.app.NativeActivity"
+          deadline=$((SECONDS + 200))
+          # Waits until the log holds at least $2 lines with the text $1.
+          expect_lines() {
+            until timeout 10s "$adb" -s emulator-5554 logcat -d -s Foxity:V "$package:V" > "$log" \
+                && [ "$(grep -Fc "$1" "$log")" -ge "$2" ]; do
+              if [ "$SECONDS" -ge "$deadline" ] || grep -Fq 'main returned' "$log"; then
+                echo "expected $2 lines with: $1"
+                cat "$log"
+                timeout 10s "$adb" -s emulator-5554 logcat -d -b crash || true
+                exit 1
+              fi
+              sleep 1
+            done
+          }
+          timeout 10s "$adb" -s emulator-5554 shell am force-stop "$package"
+          timeout 10s "$adb" -s emulator-5554 logcat -c
+          timeout 30s "$adb" -s emulator-5554 shell am start -W -n "$activity"
+          expect_lines 'city founded' 1
+          process="$(timeout 10s "$adb" -s emulator-5554 shell pidof "$package" | tr -d '\r')"
+          timeout 10s "$adb" -s emulator-5554 shell input keyevent KEYCODE_HOME
+          expect_lines 'the surface is gone' 1
+          timeout 30s "$adb" -s emulator-5554 shell am start -W -n "$activity"
+          expect_lines 'the surface is back' 1
+          # The periodic line comes from a frame, so the game is drawing again.
+          ticks="$(grep -Fc 'running at tick' "$log" || true)"
+          expect_lines 'running at tick' "$((ticks + 1))"
+          now="$(timeout 10s "$adb" -s emulator-5554 shell pidof "$package" | tr -d '\r')"
+          if [ "$process" != "$now" ]; then
+            echo "the return restarted process $process (now $now)"
+            exit 1
+          fi
+          timeout 15s "$adb" -s emulator-5554 exec-out screencap -p \
+            > build/android-results/after-background.png
+          cat "$log"
       # The whole log, the system's lines included, explains an activity
       # restarted or a surface lost.
       - name: Save the emulator's log
