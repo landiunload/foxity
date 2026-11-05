@@ -4,6 +4,8 @@
 #   which glibc, musl and Apple libc do not provide.
 # - easily-swappable-parameters: engine callbacks and OS entry points fix
 #   their parameter lists.
+# - signed-bitwise: C enumerators have type int, so every combination of flags
+#   fires. UBSan checks the shifts themselves.
 Checks: >
   -*,
   bugprone-*,
@@ -12,6 +14,7 @@ Checks: >
   performance-*,
   portability-*,
   -bugprone-easily-swappable-parameters,
+  -bugprone-signed-bitwise,
   -misc-include-cleaner,
   -clang-analyzer-security.insecureAPI.DeprecatedOrUnsafeBufferHandling
 WarningsAsErrors: '*'

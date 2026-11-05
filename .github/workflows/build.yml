@@ -20,7 +20,11 @@ env:
   # build the reviewed immutable SHA that engine.lock holds instead;
   # engine-revision below picks between them.
   LAIUE_REF: main
-  LLVM_VERSION: '22'
+  # Releases are built with this compiler and runners carry older ones, so CI
+  # installs it: Linux from apt.llvm.org, Windows from the LLVM archives.
+  LLVM_VERSION: '23'
+  LLVM_WINDOWS_RELEASE: 23.1.5
+  LLVM_WINDOWS_SHA256: b2be33385ddc86e83511417a060de927ae8b09d1f3017cc3cdce5c73cd5029d7
   ANDROID_NDK_VERSION: 30.0.16248370
 
 jobs:
@@ -107,6 +111,27 @@ jobs:
             "$name=$([Environment]::GetEnvironmentVariable($name))" |
               Out-File $env:GITHUB_ENV -Append
           }
+      - name: Use the pinned LLVM
+        if: matrix.preset == 'windows-clang'
+        shell: pwsh
+        run: |
+          if (-not $env:LLVM_WINDOWS_RELEASE.StartsWith("$env:LLVM_VERSION.")) {
+            throw 'LLVM_WINDOWS_RELEASE must belong to LLVM_VERSION'
+          }
+          $archive = Join-Path $env:RUNNER_TEMP 'llvm.tar.zst'
+          curl.exe --fail --location --retry 3 --retry-all-errors --output $archive `
+            "https://github.com/llvm/llvm-project/releases/download/llvmorg-$env:LLVM_WINDOWS_RELEASE/clang+llvm-$env:LLVM_WINDOWS_RELEASE-x86_64-pc-windows-msvc.tar.zst"
+          if ((Get-FileHash $archive -Algorithm SHA256).Hash -ne $env:LLVM_WINDOWS_SHA256) {
+            throw 'LLVM archive checksum mismatch'
+          }
+          $llvm = Join-Path $env:RUNNER_TEMP 'llvm'
+          New-Item -ItemType Directory $llvm | Out-Null
+          # The compression window is wider than what tar reads by itself.
+          cmd /c "zstd -d --long=31 -c `"$archive`" | tar -xf - --strip-components=1 -C `"$llvm`""
+          if ($LASTEXITCODE -ne 0) { throw "Unpacking LLVM failed with exit code $LASTEXITCODE" }
+          Remove-Item $archive
+          & (Join-Path $llvm 'bin\clang-cl.exe') --version
+          "PATH=$(Join-Path $llvm 'bin');$env:PATH" | Out-File $env:GITHUB_ENV -Append
       - name: Build engine SDK
         shell: pwsh
         run: |
@@ -194,6 +219,19 @@ jobs:
           repository: landiunload/laiue
           ref: ${{ needs.engine-revision.outputs.ref }}
           path: _engine
+      - name: Add the LLVM packages
+        if: matrix.preset == 'linux-clang'
+        run: &add-llvm-packages |
+          key="$RUNNER_TEMP/llvm.asc"
+          curl --fail --silent --show-error --location --retry 3 --retry-all-errors \
+            https://apt.llvm.org/llvm-snapshot.gpg.key --output "$key"
+          fingerprints="$(gpg --show-keys --with-colons "$key")"
+          grep -q '^fpr:*6084F3CF814B57C1CF12EFD515CF4D18AF4F7421:' <<< "$fingerprints"
+          sudo install -D --mode=644 "$key" /etc/apt/keyrings/llvm.asc
+          . /etc/os-release
+          printf 'deb [signed-by=/etc/apt/keyrings/llvm.asc] https://apt.llvm.org/%s/ llvm-toolchain-%s-%s main\n' \
+            "$VERSION_CODENAME" "$VERSION_CODENAME" "$LLVM_VERSION" \
+            | sudo tee /etc/apt/sources.list.d/llvm.list
       - name: Use the pinned Clang
         if: matrix.preset == 'linux-clang'
         run: |
@@ -247,6 +285,8 @@ jobs:
           repository: landiunload/laiue
           ref: ${{ needs.engine-revision.outputs.ref }}
           path: _engine
+      - name: Add the LLVM packages
+        run: *add-llvm-packages
       - name: Install the pinned Clang, Vulkan, X11 and a software Vulkan driver
         run: |
           sudo apt-get update
@@ -335,6 +375,8 @@ jobs:
     env:
       FOX_ANDROID_PLATFORM: android-37.0
       FOX_BUILD_TOOLS: 37.0.0
+      FOX_CMDLINE_TOOLS: '23.0'
+      FOX_EMULATOR: 37.2.13
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -361,7 +403,7 @@ jobs:
             "$RUNNER_TEMP/fox-sdk-tools.zip" | sha256sum --check -
           unzip -q "$RUNNER_TEMP/fox-sdk-tools.zip" -d "$RUNNER_TEMP/fox-sdk-tools"
           tools="$RUNNER_TEMP/fox-sdk-tools/cmdline-tools/bin"
-          grep -Fx 'Pkg.Revision=23.0' "$tools/../source.properties"
+          grep -Fx "Pkg.Revision=$FOX_CMDLINE_TOOLS" "$tools/../source.properties"
           for ((answer=0; answer<32; ++answer)); do printf 'y\n'; done \
             > "$RUNNER_TEMP/fox-sdk-answers.txt"
           # dl.google.com occasionally cuts a download short (Premature EOF).
@@ -381,12 +423,12 @@ jobs:
           test -f "$ndk/build/cmake/android.toolchain.cmake"
           echo "ANDROID_NDK_HOME=$ndk" >> "$GITHUB_ENV"
           curl --fail --location --connect-timeout 20 --max-time 180 --retry 3 --retry-all-errors \
-            https://dl.google.com/android/repository/emulator-linux_x64-16428233.zip \
+            https://dl.google.com/android/repository/emulator-linux_x64-16740729.zip \
             --output "$RUNNER_TEMP/fox-emulator.zip"
-          printf 'b08fc43d8608d2955f607f1b287beb525041e730086bdca3af152accac3af9c1  %s\n' \
+          printf 'cbc7c3cfb83220b8a0f9c513fdab557712e74d339ec19ddffa43f23350ae9bdd  %s\n' \
             "$RUNNER_TEMP/fox-emulator.zip" | sha256sum --check -
           unzip -q "$RUNNER_TEMP/fox-emulator.zip" -d "$RUNNER_TEMP/fox-emulator"
-          grep -Fx 'Pkg.Revision=37.2.12' "$RUNNER_TEMP/fox-emulator/emulator/source.properties"
+          grep -Fx "Pkg.Revision=$FOX_EMULATOR" "$RUNNER_TEMP/fox-emulator/emulator/source.properties"
           # A throwaway key: CI APKs are for testing, releases are signed elsewhere.
           keytool -genkeypair -keystore "$RUNNER_TEMP/fox-ci-debug.p12" \
             -storetype PKCS12 -storepass android -keypass android \

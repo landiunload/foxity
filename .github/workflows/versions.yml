@@ -1,0 +1,26 @@
+name: Versions
+
+# Compares the pinned versions with the newest stable ones, using the engine's
+# script. A separate workflow: somebody else's release must not turn CI red.
+on:
+  schedule:
+    - cron: '41 5 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  newest-versions:
+    name: Pinned versions are the newest stable
+    runs-on: ubuntu-26.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          repository: landiunload/laiue
+          path: _engine
+      - name: Compare with the newest stable releases
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: python3 -I _engine/tools/check_versions.py --root .
